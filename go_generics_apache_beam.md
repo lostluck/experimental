@@ -124,7 +124,7 @@ func funcMakerMyCaller3x1(type P0, P1, R0)(func(P0,P1) R0) reflectx.Func {
 However, we have an advantage. Go has robust Closure support. We can produce a generic factory factory
 and have the types passed through a closure.
 
-````
+```
 func FuncCaller3x1Maker(type P0, P1, R0)(fn func(P0,P1) R0) (reflect.Type, func(interface{}) reflectx.Func ) {
   // Convenience register to avoid verbosity
   beam.RegisterFunction(fn) 
@@ -140,7 +140,7 @@ beam.RegisterFunc(gbeam.FuncCaller3x1Maker(MyIntFunc)) // Type inference should 
 
 ```
 
-This implies that we can avoid genera
+This implies that we can avoid the code generatore.
 The Maker Factories can live in their own package, and we can generate the PxR variants  all combinations of P 0-7 x R 0-4. (~40 variants), then users just need to add the one type checked registration call.  Function Overloads (HA) would simply avoid the suffix in the user use.
 
 
