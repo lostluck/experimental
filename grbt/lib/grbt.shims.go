@@ -35,19 +35,13 @@ import (
 )
 
 func init() {
-	runtime.RegisterFunction(ConcatPixels)
-	runtime.RegisterFunction(KeyByX)
 	runtime.RegisterFunction(ToPixelColour)
-	runtime.RegisterType(reflect.TypeOf((*Col)(nil)).Elem())
-	schema.RegisterType(reflect.TypeOf((*Col)(nil)).Elem())
 	runtime.RegisterType(reflect.TypeOf((*CombinePixelsFn)(nil)).Elem())
 	schema.RegisterType(reflect.TypeOf((*CombinePixelsFn)(nil)).Elem())
 	runtime.RegisterType(reflect.TypeOf((*ImageConfig)(nil)).Elem())
 	schema.RegisterType(reflect.TypeOf((*ImageConfig)(nil)).Elem())
 	runtime.RegisterType(reflect.TypeOf((*MakeImageFn)(nil)).Elem())
 	schema.RegisterType(reflect.TypeOf((*MakeImageFn)(nil)).Elem())
-	runtime.RegisterType(reflect.TypeOf((*MakeImageFromColFn)(nil)).Elem())
-	schema.RegisterType(reflect.TypeOf((*MakeImageFromColFn)(nil)).Elem())
 	runtime.RegisterType(reflect.TypeOf((*Pixel)(nil)).Elem())
 	schema.RegisterType(reflect.TypeOf((*Pixel)(nil)).Elem())
 	runtime.RegisterType(reflect.TypeOf((*PixelColour)(nil)).Elem())
@@ -67,24 +61,19 @@ func init() {
 	reflectx.RegisterStructWrapper(reflect.TypeOf((*CombinePixelsFn)(nil)).Elem(), wrapMakerCombinePixelsFn)
 	reflectx.RegisterStructWrapper(reflect.TypeOf((*generateRaySDFn)(nil)).Elem(), wrapMakerGenerateRaySDFn)
 	reflectx.RegisterStructWrapper(reflect.TypeOf((*MakeImageFn)(nil)).Elem(), wrapMakerMakeImageFn)
-	reflectx.RegisterStructWrapper(reflect.TypeOf((*MakeImageFromColFn)(nil)).Elem(), wrapMakerMakeImageFromColFn)
 	reflectx.RegisterStructWrapper(reflect.TypeOf((*TraceFn)(nil)).Elem(), wrapMakerTraceFn)
-	reflectx.RegisterFunc(reflect.TypeOf((*func(context.Context, typex.T, func(*Col) bool) (bool, error))(nil)).Elem(), funcMakerContext۰ContextTypex۰TIterColГBoolError)
 	reflectx.RegisterFunc(reflect.TypeOf((*func(context.Context, typex.T, func(*PixelColour) bool) (bool, error))(nil)).Elem(), funcMakerContext۰ContextTypex۰TIterPixelColourГBoolError)
 	reflectx.RegisterFunc(reflect.TypeOf((*func(context.Context, Vec, Vec) Vec)(nil)).Elem(), funcMakerContext۰ContextVecVecГVec)
 	reflectx.RegisterFunc(reflect.TypeOf((*func(ImageConfig, offsetrange.Restriction) float64)(nil)).Elem(), funcMakerImageConfigOffsetrange۰RestrictionГFloat64)
 	reflectx.RegisterFunc(reflect.TypeOf((*func(ImageConfig, offsetrange.Restriction) []offsetrange.Restriction)(nil)).Elem(), funcMakerImageConfigOffsetrange۰RestrictionГSliceOfOffsetrange۰Restriction)
 	reflectx.RegisterFunc(reflect.TypeOf((*func(ImageConfig) offsetrange.Restriction)(nil)).Elem(), funcMakerImageConfigГOffsetrange۰Restriction)
 	reflectx.RegisterFunc(reflect.TypeOf((*func(offsetrange.Restriction) *sdf.LockRTracker)(nil)).Elem(), funcMakerOffsetrange۰RestrictionГᏘSdf۰LockRTracker)
-	reflectx.RegisterFunc(reflect.TypeOf((*func(PixelColour) (int, PixelColour))(nil)).Elem(), funcMakerPixelColourГIntPixelColour)
 	reflectx.RegisterFunc(reflect.TypeOf((*func(Pixel, Vec) PixelColour)(nil)).Elem(), funcMakerPixelVecГPixelColour)
 	reflectx.RegisterFunc(reflect.TypeOf((*func(Pixel, Vec) (Pixel, Vec))(nil)).Elem(), funcMakerPixelVecГPixelVec)
-	reflectx.RegisterFunc(reflect.TypeOf((*func(typex.T, func(*PixelColour) bool) Col)(nil)).Elem(), funcMakerTypex۰TIterPixelColourГCol)
 	reflectx.RegisterFunc(reflect.TypeOf((*func(Vec) Vec)(nil)).Elem(), funcMakerVecГVec)
 	reflectx.RegisterFunc(reflect.TypeOf((*func())(nil)).Elem(), funcMakerГ)
 	reflectx.RegisterFunc(reflect.TypeOf((*func(*sdf.LockRTracker, ImageConfig, func(Pixel, Vec)) error)(nil)).Elem(), funcMakerᏘSdf۰LockRTrackerImageConfigEmitPixelVecГError)
 	exec.RegisterEmitter(reflect.TypeOf((*func(Pixel, Vec))(nil)).Elem(), emitMakerPixelVec)
-	exec.RegisterInput(reflect.TypeOf((*func(*Col) bool)(nil)).Elem(), iterMakerCol)
 	exec.RegisterInput(reflect.TypeOf((*func(*PixelColour) bool)(nil)).Elem(), iterMakerPixelColour)
 }
 
@@ -121,47 +110,12 @@ func wrapMakerMakeImageFn(fn interface{}) map[string]reflectx.Func {
 	}
 }
 
-func wrapMakerMakeImageFromColFn(fn interface{}) map[string]reflectx.Func {
-	dfn := fn.(*MakeImageFromColFn)
-	return map[string]reflectx.Func{
-		"ProcessElement": reflectx.MakeFunc(func(a0 context.Context, a1 typex.T, a2 func(*Col) bool) (bool, error) {
-			return dfn.ProcessElement(a0, a1, a2)
-		}),
-	}
-}
-
 func wrapMakerTraceFn(fn interface{}) map[string]reflectx.Func {
 	dfn := fn.(*TraceFn)
 	return map[string]reflectx.Func{
 		"ProcessElement": reflectx.MakeFunc(func(a0 Pixel, a1 Vec) (Pixel, Vec) { return dfn.ProcessElement(a0, a1) }),
 		"Setup":          reflectx.MakeFunc(func() { dfn.Setup() }),
 	}
-}
-
-type callerContext۰ContextTypex۰TIterColГBoolError struct {
-	fn func(context.Context, typex.T, func(*Col) bool) (bool, error)
-}
-
-func funcMakerContext۰ContextTypex۰TIterColГBoolError(fn interface{}) reflectx.Func {
-	f := fn.(func(context.Context, typex.T, func(*Col) bool) (bool, error))
-	return &callerContext۰ContextTypex۰TIterColГBoolError{fn: f}
-}
-
-func (c *callerContext۰ContextTypex۰TIterColГBoolError) Name() string {
-	return reflectx.FunctionName(c.fn)
-}
-
-func (c *callerContext۰ContextTypex۰TIterColГBoolError) Type() reflect.Type {
-	return reflect.TypeOf(c.fn)
-}
-
-func (c *callerContext۰ContextTypex۰TIterColГBoolError) Call(args []interface{}) []interface{} {
-	out0, out1 := c.fn(args[0].(context.Context), args[1].(typex.T), args[2].(func(*Col) bool))
-	return []interface{}{out0, out1}
-}
-
-func (c *callerContext۰ContextTypex۰TIterColГBoolError) Call3x2(arg0, arg1, arg2 interface{}) (interface{}, interface{}) {
-	return c.fn(arg0.(context.Context), arg1.(typex.T), arg2.(func(*Col) bool))
 }
 
 type callerContext۰ContextTypex۰TIterPixelColourГBoolError struct {
@@ -320,32 +274,6 @@ func (c *callerOffsetrange۰RestrictionГᏘSdf۰LockRTracker) Call1x1(arg0 inte
 	return c.fn(arg0.(offsetrange.Restriction))
 }
 
-type callerPixelColourГIntPixelColour struct {
-	fn func(PixelColour) (int, PixelColour)
-}
-
-func funcMakerPixelColourГIntPixelColour(fn interface{}) reflectx.Func {
-	f := fn.(func(PixelColour) (int, PixelColour))
-	return &callerPixelColourГIntPixelColour{fn: f}
-}
-
-func (c *callerPixelColourГIntPixelColour) Name() string {
-	return reflectx.FunctionName(c.fn)
-}
-
-func (c *callerPixelColourГIntPixelColour) Type() reflect.Type {
-	return reflect.TypeOf(c.fn)
-}
-
-func (c *callerPixelColourГIntPixelColour) Call(args []interface{}) []interface{} {
-	out0, out1 := c.fn(args[0].(PixelColour))
-	return []interface{}{out0, out1}
-}
-
-func (c *callerPixelColourГIntPixelColour) Call1x2(arg0 interface{}) (interface{}, interface{}) {
-	return c.fn(arg0.(PixelColour))
-}
-
 type callerPixelVecГPixelColour struct {
 	fn func(Pixel, Vec) PixelColour
 }
@@ -396,32 +324,6 @@ func (c *callerPixelVecГPixelVec) Call(args []interface{}) []interface{} {
 
 func (c *callerPixelVecГPixelVec) Call2x2(arg0, arg1 interface{}) (interface{}, interface{}) {
 	return c.fn(arg0.(Pixel), arg1.(Vec))
-}
-
-type callerTypex۰TIterPixelColourГCol struct {
-	fn func(typex.T, func(*PixelColour) bool) Col
-}
-
-func funcMakerTypex۰TIterPixelColourГCol(fn interface{}) reflectx.Func {
-	f := fn.(func(typex.T, func(*PixelColour) bool) Col)
-	return &callerTypex۰TIterPixelColourГCol{fn: f}
-}
-
-func (c *callerTypex۰TIterPixelColourГCol) Name() string {
-	return reflectx.FunctionName(c.fn)
-}
-
-func (c *callerTypex۰TIterPixelColourГCol) Type() reflect.Type {
-	return reflect.TypeOf(c.fn)
-}
-
-func (c *callerTypex۰TIterPixelColourГCol) Call(args []interface{}) []interface{} {
-	out0 := c.fn(args[0].(typex.T), args[1].(func(*PixelColour) bool))
-	return []interface{}{out0}
-}
-
-func (c *callerTypex۰TIterPixelColourГCol) Call2x1(arg0, arg1 interface{}) interface{} {
-	return c.fn(arg0.(typex.T), arg1.(func(*PixelColour) bool))
 }
 
 type callerVecГVec struct {
@@ -563,24 +465,6 @@ func (v *iterNative) Reset() error {
 	}
 	v.cur = nil
 	return nil
-}
-
-func iterMakerCol(s exec.ReStream) exec.ReusableInput {
-	ret := &iterNative{s: s}
-	ret.fn = ret.readCol
-	return ret
-}
-
-func (v *iterNative) readCol(value *Col) bool {
-	elm, err := v.cur.Read()
-	if err != nil {
-		if err == io.EOF {
-			return false
-		}
-		panic(fmt.Sprintf("broken stream: %v", err))
-	}
-	*value = elm.Elm.(Col)
-	return true
 }
 
 func iterMakerPixelColour(s exec.ReStream) exec.ReusableInput {

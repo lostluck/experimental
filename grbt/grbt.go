@@ -191,7 +191,12 @@ func main() {
 			log.Printf("Pipeline execution failed: %v", err)
 			return
 		}
-		fmt.Println(pipelineResult.Metrics().AllMetrics().Counters())
+		if pipelineResult != nil {
+			log.Printf("Printing %v counters", len(pipelineResult.Metrics().AllMetrics().Counters()))
+		}
+		for _, c := range pipelineResult.Metrics().AllMetrics().Counters() {
+			log.Printf("%v.%v = %v", c.Key.Name, c.Key.Namespace, c.Result())
+		}
 	} else {
 		grbt.OrdinaryTracer(position, cfg, *word, *outputDir)
 	}

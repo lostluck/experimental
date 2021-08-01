@@ -13,7 +13,7 @@ import (
 )
 
 //go:generate go install github.com/apache/beam/sdks/go/cmd/starcgen
-//go:generate starcgen --package=grbt --identifiers=generateRaySDFn,CombinePixelsFn,MakeImageFn,MakeImageFromColFn,TraceFn,ConcatPixels,KeyByX,ToPixelColour
+//go:generate starcgen --package=grbt --identifiers=generateRaySDFn,CombinePixelsFn,MakeImageFn,TraceFn,ToPixelColour
 //go:generate go fmt
 
 // Setup to do the static initializing of the camera instead?
@@ -41,9 +41,9 @@ func (fn *generateRaySDFn) CreateInitialRestriction(config ImageConfig) offsetra
 	}
 }
 
-// SplitRestriction dynamically into 64 even chunks.
+// SplitRestriction splits the restriction into 1024 chunks.
 func (fn *generateRaySDFn) SplitRestriction(config ImageConfig, rest offsetrange.Restriction) (splits []offsetrange.Restriction) {
-	return rest.EvenSplits(64)
+	return rest.EvenSplits(1024)
 }
 
 // RestrictionSize outputs the size of the restriction as the number of elements
@@ -114,7 +114,7 @@ type CombinePixelsFn struct {
 }
 
 var (
-	pixelAddInputCount = beam.NewCounter("gbrt", "pixelMerges")
+	pixelAddInputCount = beam.NewCounter("gbrt", "pixelAddInput")
 	pixelMergesCount   = beam.NewCounter("gbrt", "pixelMerges")
 )
 
@@ -151,24 +151,9 @@ func ToPixelColour(k Pixel, colour Vec) PixelColour {
 	return PixelColour{k, colour}
 }
 
-// KeyByX keys each PixelColour by its X coordinate.
-func KeyByX(v PixelColour) (int, PixelColour) {
-	return v.K.X, v
-}
-
 // Col is a column of pixels in the final image.
 type Col struct {
 	Col []PixelColour
-}
-
-// ConcatPixels combines individual columns together.
-func ConcatPixels(_ beam.T, iter func(*PixelColour) bool) Col {
-	var p PixelColour
-	var ps Col
-	for iter(&p) {
-		ps.Col = append(ps.Col, p)
-	}
-	return ps
 }
 
 // MakeImageFn writes the image to wherever.
@@ -192,37 +177,14 @@ func (f *MakeImageFn) ProcessElement(ctx context.Context, _ beam.T, iter func(*P
 	return true, nil
 }
 
-// MakeImageFromColFn writes the image to wherever.
-type MakeImageFromColFn struct {
-	Width, Height int
-	Out           string
-}
-
-// ProcessElement iterates over all the functions and writes
-// Writes the file to the designated spot.
-func (f *MakeImageFromColFn) ProcessElement(ctx context.Context, _ beam.T, iter func(*Col) bool) (bool, error) {
-	img := image.NewRGBA(image.Rect(0, 0, f.Width, f.Height))
-	var pcs Col
-	for iter(&pcs) {
-		for _, pc := range pcs.Col {
-			img.Set(f.Width-pc.K.X-1, f.Height-pc.K.Y-1, color.RGBA{uint8(pc.C.X), uint8(pc.C.Y), uint8(pc.C.Z), 255})
-		}
-	}
-	if err := writeToFile(ctx, f.Out, img); err != nil {
-		log.Infof(ctx, "ERROR:", err)
-		return false, err
-	}
-	return true, nil
-}
-
 // BeamTracer runs the ray tracer as a Apache Beam Pipeline on the runner of choice.
 func BeamTracer(position Vec, img ImageConfig, word, dir string) *beam.Pipeline {
 	p, s := beam.NewPipelineWithRoot()
 
 	rays := generateRays(s, img)
 
-	trace := beam.ParDo(s, &TraceFn{Position: position, Bounces: img.Bounces, Word: word}, rays)
-	finalPixels := beam.CombinePerKey(s, &CombinePixelsFn{int(img.Samples)}, trace)
+	trace := beam.ParDo(s.Scope("Trace"), &TraceFn{Position: position, Bounces: img.Bounces, Word: word}, rays)
+	finalPixels := beam.CombinePerKey(s.Scope("MergeRays"), &CombinePixelsFn{int(img.Samples)}, trace)
 
 	output := OutputPath(dir, word, int(img.Samples))
 	toImage(s, finalPixels, img, output)
@@ -230,28 +192,16 @@ func BeamTracer(position Vec, img ImageConfig, word, dir string) *beam.Pipeline 
 }
 
 func generateRays(s beam.Scope, img ImageConfig) beam.PCollection {
-	s = s.Scope("generateRays")
+	s = s.Scope("GenerateRays")
 	cfg := beam.Create(s, img)
 	return beam.ParDo(s, &generateRaySDFn{}, cfg)
 }
 
 func toImage(s beam.Scope, finalPixels beam.PCollection, img ImageConfig, output string) {
+	s = s.Scope("ToImage")
 	pixelColours := beam.ParDo(s, ToPixelColour, finalPixels)
 	fixedKeyPixelColours := beam.AddFixedKey(s, pixelColours)
 	// Get everything onto a single machine again.
 	groupedPixelColours := beam.GroupByKey(s, fixedKeyPixelColours)
 	beam.ParDo(s, &MakeImageFn{Width: int(img.Width), Height: int(img.Height), Out: output}, groupedPixelColours)
-}
-
-func toImageByColumns(s beam.Scope, finalPixels beam.PCollection, img ImageConfig, output string) {
-	s = s.Scope("toImageByColumns")
-	pixelColours := beam.ParDo(s, ToPixelColour, finalPixels)
-	pixelColoursX := beam.ParDo(s, KeyByX, pixelColours)
-	foo := beam.GroupByKey(s, pixelColoursX)
-	columnColours := beam.ParDo(s, ConcatPixels, foo)
-	fixedKeyPixelColours := beam.AddFixedKey(s, columnColours)
-	// Get everything onto a single machine again.
-	groupedPixelColours := beam.GroupByKey(s, fixedKeyPixelColours)
-
-	beam.ParDo(s, &MakeImageFromColFn{Width: int(img.Width), Height: int(img.Height), Out: output}, groupedPixelColours)
 }
