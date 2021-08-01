@@ -41,13 +41,9 @@ func (fn *generateRaySDFn) CreateInitialRestriction(config ImageConfig) offsetra
 	}
 }
 
-// SplitRestriction dynamically into smaller chunks, first by samples, which preserve pixel locality
-// with smaller restrictions divided into up to 16 parts.
+// SplitRestriction dynamically into 64 even chunks.
 func (fn *generateRaySDFn) SplitRestriction(config ImageConfig, rest offsetrange.Restriction) (splits []offsetrange.Restriction) {
-	if rest.Size() > float64(config.Samples) {
-		return rest.SizedSplits(config.Samples)
-	}
-	return rest.EvenSplits(16)
+	return rest.EvenSplits(64)
 }
 
 // RestrictionSize outputs the size of the restriction as the number of elements

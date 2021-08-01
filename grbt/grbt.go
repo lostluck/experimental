@@ -186,11 +186,12 @@ func main() {
 	fmt.Fprintf(os.Stderr, "maxDistance%d.bounces%d.samples%d.%s.\n", maxDistance, *bounces, *samplesCount, *word)
 	if *useBeam {
 		p := grbt.BeamTracer(position, cfg, *word, *outputDir)
-		_, err := beam.Run(context.Background(), *runner, p)
+		pipelineResult, err := beam.Run(context.Background(), *runner, p)
 		if err != nil {
 			log.Printf("Pipeline execution failed: %v", err)
 			return
 		}
+		fmt.Println(pipelineResult.Metrics().AllMetrics().Counters())
 	} else {
 		grbt.OrdinaryTracer(position, cfg, *word, *outputDir)
 	}
