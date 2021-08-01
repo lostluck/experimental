@@ -35,22 +35,17 @@ import (
 )
 
 func init() {
-	runtime.RegisterFunction(AddRandomKey)
 	runtime.RegisterFunction(ConcatPixels)
 	runtime.RegisterFunction(KeyByX)
-	runtime.RegisterFunction(RePair)
-	runtime.RegisterFunction(RePairPixels)
 	runtime.RegisterFunction(ToPixelColour)
 	runtime.RegisterType(reflect.TypeOf((*Col)(nil)).Elem())
 	schema.RegisterType(reflect.TypeOf((*Col)(nil)).Elem())
 	runtime.RegisterType(reflect.TypeOf((*CombinePixelsFn)(nil)).Elem())
 	schema.RegisterType(reflect.TypeOf((*CombinePixelsFn)(nil)).Elem())
-	runtime.RegisterType(reflect.TypeOf((*GeneratePixelsFn)(nil)).Elem())
-	schema.RegisterType(reflect.TypeOf((*GeneratePixelsFn)(nil)).Elem())
-	runtime.RegisterType(reflect.TypeOf((*GenerateSampleRaysFn)(nil)).Elem())
-	schema.RegisterType(reflect.TypeOf((*GenerateSampleRaysFn)(nil)).Elem())
 	runtime.RegisterType(reflect.TypeOf((*ImageConfig)(nil)).Elem())
 	schema.RegisterType(reflect.TypeOf((*ImageConfig)(nil)).Elem())
+	runtime.RegisterType(reflect.TypeOf((*MakeImageFn)(nil)).Elem())
+	schema.RegisterType(reflect.TypeOf((*MakeImageFn)(nil)).Elem())
 	runtime.RegisterType(reflect.TypeOf((*MakeImageFromColFn)(nil)).Elem())
 	schema.RegisterType(reflect.TypeOf((*MakeImageFromColFn)(nil)).Elem())
 	runtime.RegisterType(reflect.TypeOf((*Pixel)(nil)).Elem())
@@ -70,49 +65,35 @@ func init() {
 	runtime.RegisterType(reflect.TypeOf((*sdf.LockRTracker)(nil)).Elem())
 	schema.RegisterType(reflect.TypeOf((*sdf.LockRTracker)(nil)).Elem())
 	reflectx.RegisterStructWrapper(reflect.TypeOf((*CombinePixelsFn)(nil)).Elem(), wrapMakerCombinePixelsFn)
-	reflectx.RegisterStructWrapper(reflect.TypeOf((*GeneratePixelsFn)(nil)).Elem(), wrapMakerGeneratePixelsFn)
 	reflectx.RegisterStructWrapper(reflect.TypeOf((*generateRaySDFn)(nil)).Elem(), wrapMakerGenerateRaySDFn)
-	reflectx.RegisterStructWrapper(reflect.TypeOf((*GenerateSampleRaysFn)(nil)).Elem(), wrapMakerGenerateSampleRaysFn)
+	reflectx.RegisterStructWrapper(reflect.TypeOf((*MakeImageFn)(nil)).Elem(), wrapMakerMakeImageFn)
 	reflectx.RegisterStructWrapper(reflect.TypeOf((*MakeImageFromColFn)(nil)).Elem(), wrapMakerMakeImageFromColFn)
 	reflectx.RegisterStructWrapper(reflect.TypeOf((*TraceFn)(nil)).Elem(), wrapMakerTraceFn)
 	reflectx.RegisterFunc(reflect.TypeOf((*func(context.Context, typex.T, func(*Col) bool) (bool, error))(nil)).Elem(), funcMakerContext۰ContextTypex۰TIterColГBoolError)
+	reflectx.RegisterFunc(reflect.TypeOf((*func(context.Context, typex.T, func(*PixelColour) bool) (bool, error))(nil)).Elem(), funcMakerContext۰ContextTypex۰TIterPixelColourГBoolError)
+	reflectx.RegisterFunc(reflect.TypeOf((*func(context.Context, Vec, Vec) Vec)(nil)).Elem(), funcMakerContext۰ContextVecVecГVec)
 	reflectx.RegisterFunc(reflect.TypeOf((*func(ImageConfig, offsetrange.Restriction) float64)(nil)).Elem(), funcMakerImageConfigOffsetrange۰RestrictionГFloat64)
 	reflectx.RegisterFunc(reflect.TypeOf((*func(ImageConfig, offsetrange.Restriction) []offsetrange.Restriction)(nil)).Elem(), funcMakerImageConfigOffsetrange۰RestrictionГSliceOfOffsetrange۰Restriction)
 	reflectx.RegisterFunc(reflect.TypeOf((*func(ImageConfig) offsetrange.Restriction)(nil)).Elem(), funcMakerImageConfigГOffsetrange۰Restriction)
 	reflectx.RegisterFunc(reflect.TypeOf((*func(offsetrange.Restriction) *sdf.LockRTracker)(nil)).Elem(), funcMakerOffsetrange۰RestrictionГᏘSdf۰LockRTracker)
 	reflectx.RegisterFunc(reflect.TypeOf((*func(PixelColour) (int, PixelColour))(nil)).Elem(), funcMakerPixelColourГIntPixelColour)
-	reflectx.RegisterFunc(reflect.TypeOf((*func(Pixel, func(Pixel, Vec)))(nil)).Elem(), funcMakerPixelEmitPixelVecГ)
-	reflectx.RegisterFunc(reflect.TypeOf((*func(Pixel, func(*Vec) bool, func(Pixel, Vec)))(nil)).Elem(), funcMakerPixelIterVecEmitPixelVecГ)
 	reflectx.RegisterFunc(reflect.TypeOf((*func(Pixel, Vec) PixelColour)(nil)).Elem(), funcMakerPixelVecГPixelColour)
 	reflectx.RegisterFunc(reflect.TypeOf((*func(Pixel, Vec) (Pixel, Vec))(nil)).Elem(), funcMakerPixelVecГPixelVec)
-	reflectx.RegisterFunc(reflect.TypeOf((*func([]byte, func(Pixel)))(nil)).Elem(), funcMakerSliceOfByteEmitPixelГ)
 	reflectx.RegisterFunc(reflect.TypeOf((*func(typex.T, func(*PixelColour) bool) Col)(nil)).Elem(), funcMakerTypex۰TIterPixelColourГCol)
-	reflectx.RegisterFunc(reflect.TypeOf((*func(typex.T, func(*Pixel) bool, func(Pixel)))(nil)).Elem(), funcMakerTypex۰TIterPixelEmitPixelГ)
-	reflectx.RegisterFunc(reflect.TypeOf((*func(typex.T) (int64, typex.T))(nil)).Elem(), funcMakerTypex۰TГInt64Typex۰T)
-	reflectx.RegisterFunc(reflect.TypeOf((*func(Vec, Vec) Vec)(nil)).Elem(), funcMakerVecVecГVec)
 	reflectx.RegisterFunc(reflect.TypeOf((*func(Vec) Vec)(nil)).Elem(), funcMakerVecГVec)
 	reflectx.RegisterFunc(reflect.TypeOf((*func())(nil)).Elem(), funcMakerГ)
 	reflectx.RegisterFunc(reflect.TypeOf((*func(*sdf.LockRTracker, ImageConfig, func(Pixel, Vec)) error)(nil)).Elem(), funcMakerᏘSdf۰LockRTrackerImageConfigEmitPixelVecГError)
-	exec.RegisterEmitter(reflect.TypeOf((*func(Pixel))(nil)).Elem(), emitMakerPixel)
 	exec.RegisterEmitter(reflect.TypeOf((*func(Pixel, Vec))(nil)).Elem(), emitMakerPixelVec)
 	exec.RegisterInput(reflect.TypeOf((*func(*Col) bool)(nil)).Elem(), iterMakerCol)
-	exec.RegisterInput(reflect.TypeOf((*func(*Pixel) bool)(nil)).Elem(), iterMakerPixel)
 	exec.RegisterInput(reflect.TypeOf((*func(*PixelColour) bool)(nil)).Elem(), iterMakerPixelColour)
-	exec.RegisterInput(reflect.TypeOf((*func(*Vec) bool)(nil)).Elem(), iterMakerVec)
 }
 
 func wrapMakerCombinePixelsFn(fn interface{}) map[string]reflectx.Func {
 	dfn := fn.(*CombinePixelsFn)
 	return map[string]reflectx.Func{
+		"AddInput":          reflectx.MakeFunc(func(a0 context.Context, a1 Vec, a2 Vec) Vec { return dfn.AddInput(a0, a1, a2) }),
 		"ExtractOutput":     reflectx.MakeFunc(func(a0 Vec) Vec { return dfn.ExtractOutput(a0) }),
-		"MergeAccumulators": reflectx.MakeFunc(func(a0 Vec, a1 Vec) Vec { return dfn.MergeAccumulators(a0, a1) }),
-	}
-}
-
-func wrapMakerGeneratePixelsFn(fn interface{}) map[string]reflectx.Func {
-	dfn := fn.(*GeneratePixelsFn)
-	return map[string]reflectx.Func{
-		"ProcessElement": reflectx.MakeFunc(func(a0 []byte, a1 func(Pixel)) { dfn.ProcessElement(a0, a1) }),
+		"MergeAccumulators": reflectx.MakeFunc(func(a0 context.Context, a1 Vec, a2 Vec) Vec { return dfn.MergeAccumulators(a0, a1, a2) }),
 	}
 }
 
@@ -131,10 +112,12 @@ func wrapMakerGenerateRaySDFn(fn interface{}) map[string]reflectx.Func {
 	}
 }
 
-func wrapMakerGenerateSampleRaysFn(fn interface{}) map[string]reflectx.Func {
-	dfn := fn.(*GenerateSampleRaysFn)
+func wrapMakerMakeImageFn(fn interface{}) map[string]reflectx.Func {
+	dfn := fn.(*MakeImageFn)
 	return map[string]reflectx.Func{
-		"ProcessElement": reflectx.MakeFunc(func(a0 Pixel, a1 func(Pixel, Vec)) { dfn.ProcessElement(a0, a1) }),
+		"ProcessElement": reflectx.MakeFunc(func(a0 context.Context, a1 typex.T, a2 func(*PixelColour) bool) (bool, error) {
+			return dfn.ProcessElement(a0, a1, a2)
+		}),
 	}
 }
 
@@ -179,6 +162,58 @@ func (c *callerContext۰ContextTypex۰TIterColГBoolError) Call(args []interface
 
 func (c *callerContext۰ContextTypex۰TIterColГBoolError) Call3x2(arg0, arg1, arg2 interface{}) (interface{}, interface{}) {
 	return c.fn(arg0.(context.Context), arg1.(typex.T), arg2.(func(*Col) bool))
+}
+
+type callerContext۰ContextTypex۰TIterPixelColourГBoolError struct {
+	fn func(context.Context, typex.T, func(*PixelColour) bool) (bool, error)
+}
+
+func funcMakerContext۰ContextTypex۰TIterPixelColourГBoolError(fn interface{}) reflectx.Func {
+	f := fn.(func(context.Context, typex.T, func(*PixelColour) bool) (bool, error))
+	return &callerContext۰ContextTypex۰TIterPixelColourГBoolError{fn: f}
+}
+
+func (c *callerContext۰ContextTypex۰TIterPixelColourГBoolError) Name() string {
+	return reflectx.FunctionName(c.fn)
+}
+
+func (c *callerContext۰ContextTypex۰TIterPixelColourГBoolError) Type() reflect.Type {
+	return reflect.TypeOf(c.fn)
+}
+
+func (c *callerContext۰ContextTypex۰TIterPixelColourГBoolError) Call(args []interface{}) []interface{} {
+	out0, out1 := c.fn(args[0].(context.Context), args[1].(typex.T), args[2].(func(*PixelColour) bool))
+	return []interface{}{out0, out1}
+}
+
+func (c *callerContext۰ContextTypex۰TIterPixelColourГBoolError) Call3x2(arg0, arg1, arg2 interface{}) (interface{}, interface{}) {
+	return c.fn(arg0.(context.Context), arg1.(typex.T), arg2.(func(*PixelColour) bool))
+}
+
+type callerContext۰ContextVecVecГVec struct {
+	fn func(context.Context, Vec, Vec) Vec
+}
+
+func funcMakerContext۰ContextVecVecГVec(fn interface{}) reflectx.Func {
+	f := fn.(func(context.Context, Vec, Vec) Vec)
+	return &callerContext۰ContextVecVecГVec{fn: f}
+}
+
+func (c *callerContext۰ContextVecVecГVec) Name() string {
+	return reflectx.FunctionName(c.fn)
+}
+
+func (c *callerContext۰ContextVecVecГVec) Type() reflect.Type {
+	return reflect.TypeOf(c.fn)
+}
+
+func (c *callerContext۰ContextVecVecГVec) Call(args []interface{}) []interface{} {
+	out0 := c.fn(args[0].(context.Context), args[1].(Vec), args[2].(Vec))
+	return []interface{}{out0}
+}
+
+func (c *callerContext۰ContextVecVecГVec) Call3x1(arg0, arg1, arg2 interface{}) interface{} {
+	return c.fn(arg0.(context.Context), arg1.(Vec), arg2.(Vec))
 }
 
 type callerImageConfigOffsetrange۰RestrictionГFloat64 struct {
@@ -311,58 +346,6 @@ func (c *callerPixelColourГIntPixelColour) Call1x2(arg0 interface{}) (interface
 	return c.fn(arg0.(PixelColour))
 }
 
-type callerPixelEmitPixelVecГ struct {
-	fn func(Pixel, func(Pixel, Vec))
-}
-
-func funcMakerPixelEmitPixelVecГ(fn interface{}) reflectx.Func {
-	f := fn.(func(Pixel, func(Pixel, Vec)))
-	return &callerPixelEmitPixelVecГ{fn: f}
-}
-
-func (c *callerPixelEmitPixelVecГ) Name() string {
-	return reflectx.FunctionName(c.fn)
-}
-
-func (c *callerPixelEmitPixelVecГ) Type() reflect.Type {
-	return reflect.TypeOf(c.fn)
-}
-
-func (c *callerPixelEmitPixelVecГ) Call(args []interface{}) []interface{} {
-	c.fn(args[0].(Pixel), args[1].(func(Pixel, Vec)))
-	return []interface{}{}
-}
-
-func (c *callerPixelEmitPixelVecГ) Call2x0(arg0, arg1 interface{}) {
-	c.fn(arg0.(Pixel), arg1.(func(Pixel, Vec)))
-}
-
-type callerPixelIterVecEmitPixelVecГ struct {
-	fn func(Pixel, func(*Vec) bool, func(Pixel, Vec))
-}
-
-func funcMakerPixelIterVecEmitPixelVecГ(fn interface{}) reflectx.Func {
-	f := fn.(func(Pixel, func(*Vec) bool, func(Pixel, Vec)))
-	return &callerPixelIterVecEmitPixelVecГ{fn: f}
-}
-
-func (c *callerPixelIterVecEmitPixelVecГ) Name() string {
-	return reflectx.FunctionName(c.fn)
-}
-
-func (c *callerPixelIterVecEmitPixelVecГ) Type() reflect.Type {
-	return reflect.TypeOf(c.fn)
-}
-
-func (c *callerPixelIterVecEmitPixelVecГ) Call(args []interface{}) []interface{} {
-	c.fn(args[0].(Pixel), args[1].(func(*Vec) bool), args[2].(func(Pixel, Vec)))
-	return []interface{}{}
-}
-
-func (c *callerPixelIterVecEmitPixelVecГ) Call3x0(arg0, arg1, arg2 interface{}) {
-	c.fn(arg0.(Pixel), arg1.(func(*Vec) bool), arg2.(func(Pixel, Vec)))
-}
-
 type callerPixelVecГPixelColour struct {
 	fn func(Pixel, Vec) PixelColour
 }
@@ -415,32 +398,6 @@ func (c *callerPixelVecГPixelVec) Call2x2(arg0, arg1 interface{}) (interface{},
 	return c.fn(arg0.(Pixel), arg1.(Vec))
 }
 
-type callerSliceOfByteEmitPixelГ struct {
-	fn func([]byte, func(Pixel))
-}
-
-func funcMakerSliceOfByteEmitPixelГ(fn interface{}) reflectx.Func {
-	f := fn.(func([]byte, func(Pixel)))
-	return &callerSliceOfByteEmitPixelГ{fn: f}
-}
-
-func (c *callerSliceOfByteEmitPixelГ) Name() string {
-	return reflectx.FunctionName(c.fn)
-}
-
-func (c *callerSliceOfByteEmitPixelГ) Type() reflect.Type {
-	return reflect.TypeOf(c.fn)
-}
-
-func (c *callerSliceOfByteEmitPixelГ) Call(args []interface{}) []interface{} {
-	c.fn(args[0].([]byte), args[1].(func(Pixel)))
-	return []interface{}{}
-}
-
-func (c *callerSliceOfByteEmitPixelГ) Call2x0(arg0, arg1 interface{}) {
-	c.fn(arg0.([]byte), arg1.(func(Pixel)))
-}
-
 type callerTypex۰TIterPixelColourГCol struct {
 	fn func(typex.T, func(*PixelColour) bool) Col
 }
@@ -465,84 +422,6 @@ func (c *callerTypex۰TIterPixelColourГCol) Call(args []interface{}) []interfac
 
 func (c *callerTypex۰TIterPixelColourГCol) Call2x1(arg0, arg1 interface{}) interface{} {
 	return c.fn(arg0.(typex.T), arg1.(func(*PixelColour) bool))
-}
-
-type callerTypex۰TIterPixelEmitPixelГ struct {
-	fn func(typex.T, func(*Pixel) bool, func(Pixel))
-}
-
-func funcMakerTypex۰TIterPixelEmitPixelГ(fn interface{}) reflectx.Func {
-	f := fn.(func(typex.T, func(*Pixel) bool, func(Pixel)))
-	return &callerTypex۰TIterPixelEmitPixelГ{fn: f}
-}
-
-func (c *callerTypex۰TIterPixelEmitPixelГ) Name() string {
-	return reflectx.FunctionName(c.fn)
-}
-
-func (c *callerTypex۰TIterPixelEmitPixelГ) Type() reflect.Type {
-	return reflect.TypeOf(c.fn)
-}
-
-func (c *callerTypex۰TIterPixelEmitPixelГ) Call(args []interface{}) []interface{} {
-	c.fn(args[0].(typex.T), args[1].(func(*Pixel) bool), args[2].(func(Pixel)))
-	return []interface{}{}
-}
-
-func (c *callerTypex۰TIterPixelEmitPixelГ) Call3x0(arg0, arg1, arg2 interface{}) {
-	c.fn(arg0.(typex.T), arg1.(func(*Pixel) bool), arg2.(func(Pixel)))
-}
-
-type callerTypex۰TГInt64Typex۰T struct {
-	fn func(typex.T) (int64, typex.T)
-}
-
-func funcMakerTypex۰TГInt64Typex۰T(fn interface{}) reflectx.Func {
-	f := fn.(func(typex.T) (int64, typex.T))
-	return &callerTypex۰TГInt64Typex۰T{fn: f}
-}
-
-func (c *callerTypex۰TГInt64Typex۰T) Name() string {
-	return reflectx.FunctionName(c.fn)
-}
-
-func (c *callerTypex۰TГInt64Typex۰T) Type() reflect.Type {
-	return reflect.TypeOf(c.fn)
-}
-
-func (c *callerTypex۰TГInt64Typex۰T) Call(args []interface{}) []interface{} {
-	out0, out1 := c.fn(args[0].(typex.T))
-	return []interface{}{out0, out1}
-}
-
-func (c *callerTypex۰TГInt64Typex۰T) Call1x2(arg0 interface{}) (interface{}, interface{}) {
-	return c.fn(arg0.(typex.T))
-}
-
-type callerVecVecГVec struct {
-	fn func(Vec, Vec) Vec
-}
-
-func funcMakerVecVecГVec(fn interface{}) reflectx.Func {
-	f := fn.(func(Vec, Vec) Vec)
-	return &callerVecVecГVec{fn: f}
-}
-
-func (c *callerVecVecГVec) Name() string {
-	return reflectx.FunctionName(c.fn)
-}
-
-func (c *callerVecVecГVec) Type() reflect.Type {
-	return reflect.TypeOf(c.fn)
-}
-
-func (c *callerVecVecГVec) Call(args []interface{}) []interface{} {
-	out0 := c.fn(args[0].(Vec), args[1].(Vec))
-	return []interface{}{out0}
-}
-
-func (c *callerVecVecГVec) Call2x1(arg0, arg1 interface{}) interface{} {
-	return c.fn(arg0.(Vec), arg1.(Vec))
 }
 
 type callerVecГVec struct {
@@ -644,19 +523,6 @@ func (e *emitNative) Value() interface{} {
 	return e.fn
 }
 
-func emitMakerPixel(n exec.ElementProcessor) exec.ReusableEmitter {
-	ret := &emitNative{n: n}
-	ret.fn = ret.invokePixel
-	return ret
-}
-
-func (e *emitNative) invokePixel(val Pixel) {
-	e.value = exec.FullValue{Windows: e.ws, Timestamp: e.et, Elm: val}
-	if err := e.n.ProcessElement(e.ctx, &e.value); err != nil {
-		panic(err)
-	}
-}
-
 func emitMakerPixelVec(n exec.ElementProcessor) exec.ReusableEmitter {
 	ret := &emitNative{n: n}
 	ret.fn = ret.invokePixelVec
@@ -717,24 +583,6 @@ func (v *iterNative) readCol(value *Col) bool {
 	return true
 }
 
-func iterMakerPixel(s exec.ReStream) exec.ReusableInput {
-	ret := &iterNative{s: s}
-	ret.fn = ret.readPixel
-	return ret
-}
-
-func (v *iterNative) readPixel(value *Pixel) bool {
-	elm, err := v.cur.Read()
-	if err != nil {
-		if err == io.EOF {
-			return false
-		}
-		panic(fmt.Sprintf("broken stream: %v", err))
-	}
-	*value = elm.Elm.(Pixel)
-	return true
-}
-
 func iterMakerPixelColour(s exec.ReStream) exec.ReusableInput {
 	ret := &iterNative{s: s}
 	ret.fn = ret.readPixelColour
@@ -750,24 +598,6 @@ func (v *iterNative) readPixelColour(value *PixelColour) bool {
 		panic(fmt.Sprintf("broken stream: %v", err))
 	}
 	*value = elm.Elm.(PixelColour)
-	return true
-}
-
-func iterMakerVec(s exec.ReStream) exec.ReusableInput {
-	ret := &iterNative{s: s}
-	ret.fn = ret.readVec
-	return ret
-}
-
-func (v *iterNative) readVec(value *Vec) bool {
-	elm, err := v.cur.Read()
-	if err != nil {
-		if err == io.EOF {
-			return false
-		}
-		panic(fmt.Sprintf("broken stream: %v", err))
-	}
-	*value = elm.Elm.(Vec)
 	return true
 }
 

@@ -125,8 +125,7 @@ const (
 	maxDistance = 100 // 100 by default
 
 	// TODO make these flags.
-	maxBounces = 3        // 3 by default
-	w, h       = 960, 540 // 960, 540 by default
+	w, h = 960, 540 // 960, 540 by default
 )
 
 var (
@@ -135,9 +134,9 @@ var (
 
 	useBeam    = flag.Bool("use_beam", false, "Whether to use the beam version or not.")
 	runner     = flag.String("runner", "direct", "Which runner to use")
-	rangeIO    = flag.Bool("use_range", true, "Whether to use the rangeio source for ray generation")
 	outputDir  = flag.String("output_dir", "/tmp/gbrt", "The destination file to write the png image.")
 	cpuProfile = flag.String("cpu_profile", "", "The filename to write a cpuprofile to in the output directory.")
+	bounces    = flag.Int("bounces", 3, "The number of bounces for each path traced")
 )
 
 func main() {
@@ -173,6 +172,7 @@ func main() {
 	cfg := grbt.ImageConfig{
 		Width: w, Height: h,
 		Samples: int64(*samplesCount),
+		Bounces: int64(*bounces),
 		Goal:    goal, Left: left, Up: up,
 	}
 
@@ -183,16 +183,16 @@ func main() {
 		fmt.Fprintln(os.Stderr, " ", delta)
 	}()
 
-	fmt.Fprintf(os.Stderr, "maxDistance%d.bounces%d.samples%d.%s.\n", maxDistance, maxBounces, *samplesCount, *word)
+	fmt.Fprintf(os.Stderr, "maxDistance%d.bounces%d.samples%d.%s.\n", maxDistance, *bounces, *samplesCount, *word)
 	if *useBeam {
-		p := grbt.BeamTracer(position, cfg, *word, *outputDir, *samplesCount)
+		p := grbt.BeamTracer(position, cfg, *word, *outputDir)
 		_, err := beam.Run(context.Background(), *runner, p)
 		if err != nil {
 			log.Printf("Pipeline execution failed: %v", err)
 			return
 		}
 	} else {
-		grbt.OrdinaryTracer(position, cfg, *word, *outputDir, *samplesCount)
+		grbt.OrdinaryTracer(position, cfg, *word, *outputDir)
 	}
 	log.Printf("image written to: %s", grbt.OutputPath(*outputDir, *word, *samplesCount))
 }

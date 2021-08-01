@@ -11,7 +11,7 @@ import (
 
 // OrdinaryTracer is a standard implementation of a ray tracer for
 // validation and performance comparison purposes.
-func OrdinaryTracer(position Vec, cfg ImageConfig, word, dir string, samples int) {
+func OrdinaryTracer(position Vec, cfg ImageConfig, word, dir string) {
 	// Code for progress tracking via pixels being worked on.
 	maxProgress := cfg.Height * cfg.Width
 	curProgress := int32(0)
@@ -40,14 +40,14 @@ func OrdinaryTracer(position Vec, cfg ImageConfig, word, dir string, samples int
 	for y := 0; y < int(cfg.Height); y++ {
 		for x := 0; x < int(cfg.Width); x++ {
 			var colour Vec
-			for p := 0; p < samples; p++ {
+			for p := 0; p < int(cfg.Samples); p++ {
 				ray := subPixelJitter(x, y, cfg)
-				result := Trace(position, ray, scene)
+				result := Trace(position, ray, scene, cfg.Bounces)
 				colour = colour.Plus(result)
 			}
 
 			// Reinhard tone mapping
-			colour = colour.Times(MonoVec(1. / float64(samples))).Plus(MonoVec(14. / 241.))
+			colour = colour.Times(MonoVec(1. / float64(cfg.Samples))).Plus(MonoVec(14. / 241.))
 			o := colour.Plus(MonoVec(1))
 			colour = Vec{colour.X / o.X, colour.Y / o.Y, colour.Z / o.Z}.Times(MonoVec(255))
 
@@ -57,7 +57,7 @@ func OrdinaryTracer(position Vec, cfg ImageConfig, word, dir string, samples int
 	}
 	fmt.Fprint(os.Stderr, "\n")
 	ctx := context.Background()
-	output := OutputPath(dir, word, samples)
+	output := OutputPath(dir, word, int(cfg.Samples))
 	if err := writeToFile(ctx, output, img); err != nil {
 		log.Panicf("Unable to create image file at %v: %v", output, err)
 	}

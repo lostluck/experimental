@@ -198,7 +198,7 @@ func (m *Letter) Query(position Vec) (Float, HitType) {
 	// the letters. This should have been obvious from the position.Z parameter.
 	distance = Float(math.Pow(math.Pow(float64(distance), 8)+math.Pow(float64(position.Z), 8), 0.125) - 0.5)
 
-	return distance, HitLetterRed
+	return distance, HitLetterBlack
 }
 
 // ValidateWord checks that the word can be printed by the letter models.

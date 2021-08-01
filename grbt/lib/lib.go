@@ -82,6 +82,14 @@ func (v Vec) InvSqrt() Vec {
 	return Vec{v.X * val, v.Y * val, v.Z * val}
 }
 
+// ImageConfig contains properties of the generated image, used to generate initial rays.
+type ImageConfig struct {
+	Width, Height    float64
+	Samples, Bounces int64
+
+	Goal, Left, Up Vec
+}
+
 // RandomVal returns a random float64 between 0 and 1.
 func RandomVal() float64 {
 	return rand.Float64()
@@ -112,8 +120,11 @@ type HitType int
 // HitTypes for known materials.
 const (
 	HitNone = HitType(iota)
+	HitLetterBlack
+	HitLetterWhite
 	HitLetterRed
 	HitLetterGreen
+	HitLetterBlue
 	HitLetterYellow
 	HitGopherBlue
 	HitGopherTeal
@@ -355,30 +366,40 @@ func RayMarching(origin, direction Vec, scene *Scene) (hitType HitType, hitPos, 
 	return HitNone, hitPos, hitNorm
 }
 
+var (
+	colourFactor = MonoVec(float64(1) / float64(255))
+	black        = MonoVec(0.2)
+)
+
 // Trace casts rays, and handles bounces, returning the colour.
-func Trace(origin, direction Vec, scene *Scene) Vec {
+func Trace(origin, direction Vec, scene *Scene, maxBounces int64) Vec {
 	var hitType HitType
 	// It's important that these are initialized to 1 to start.
 	sampledPosition, normal, attenuation := MonoVec(1), MonoVec(1), MonoVec(1)
 	color := MonoVec(0)                        // This actually makes it black to start. Maybe better with bounces now?
 	lightDirection := Vec{.6, .6, 1}.InvSqrt() // Directional light
 
-	for bounceCount := 0; bounceCount < maxBounces; bounceCount++ {
+	for bounceCount := int64(0); bounceCount < maxBounces; bounceCount++ {
 		hitType, sampledPosition, normal = RayMarching(origin, direction, scene)
 		switch hitType {
 		case HitNone:
 			// No hit. This is over, return color, no op.
 			return color
-		case HitLetterRed, HitLetterGreen, HitLetterYellow: // Specular bounce on a letter. No color acc.
-			//	MonoVec(0.2)
+		case HitLetterRed, HitLetterGreen, HitLetterYellow, HitLetterBlue, HitLetterBlack, HitLetterWhite: // Specular bounce on a letter. No color acc.
 			var albedo Vec
 			switch hitType {
+			case HitLetterBlack:
+				albedo = black
+			case HitLetterWhite:
+				albedo = Vec{250, 250, 250}.Times(colourFactor)
 			case HitLetterRed:
-				albedo = Vec{250, 0, 0}.Times(MonoVec(float64(1) / float64(255)))
+				albedo = Vec{250, 0, 0}.Times(colourFactor)
 			case HitLetterGreen:
-				albedo = Vec{0, 250, 0}.Times(MonoVec(float64(1) / float64(255)))
+				albedo = Vec{0, 250, 0}.Times(colourFactor)
+			case HitLetterBlue:
+				albedo = Vec{0, 0, 250}.Times(colourFactor)
 			case HitLetterYellow:
-				albedo = Vec{250, 250, 0}.Times(MonoVec(float64(1) / float64(255)))
+				albedo = Vec{250, 250, 0}.Times(colourFactor)
 			}
 			direction = direction.Plus(normal.Times(MonoVec(float64(normal.Dot(direction) * -2))))
 			origin = sampledPosition.Plus(direction.Times(MonoVec(0.1)))
@@ -387,9 +408,9 @@ func Trace(origin, direction Vec, scene *Scene) Vec {
 			var albedo Vec
 			switch hitType {
 			case HitGopherBlue:
-				albedo = Vec{52, 152, 219}.Times(MonoVec(float64(1) / float64(255)))
+				albedo = Vec{52, 152, 219}.Times(colourFactor)
 			case HitGopherTeal:
-				albedo = Vec{23, 165, 137}.Times(MonoVec(float64(1) / float64(255)))
+				albedo = Vec{23, 165, 137}.Times(colourFactor)
 			case HitWall:
 				albedo = MonoVec(0.2) // .Times(MonoVec(1 / math.Pi))
 			}
@@ -443,9 +464,6 @@ func Trace(origin, direction Vec, scene *Scene) Vec {
 const (
 	epsilon     = 0.001
 	maxDistance = 100 // 100 by default
-
-	// TODO make these flags?
-	maxBounces = 3 // 3 by default
 )
 
 func populateScene(word string) *Scene {
@@ -510,6 +528,13 @@ func populateScene(word string) *Scene {
 		&Sphere{
 			Radius:   2,
 			Material: HitLetterYellow,
+		},
+	})
+	scene.Ms = append(scene.Ms, &PositionedModel{
+		Vec{X: -4, Y: 2.5, Z: 20},
+		&Sphere{
+			Radius:   3,
+			Material: HitLetterRed,
 		},
 	})
 	fmt.Fprintf(os.Stderr, "\n")
