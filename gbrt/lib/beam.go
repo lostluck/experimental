@@ -13,18 +13,18 @@ import (
 )
 
 //go:generate go install github.com/apache/beam/sdks/go/cmd/starcgen
-//go:generate starcgen --package=grbt --identifiers=generateRaySDFn,CombinePixelsFn,MakeImageFn,TraceFn,ToPixelColour
+//go:generate starcgen --package=gbrt --identifiers=CombinePixelsFn,generateRaySDFn,MakeImageFn,TraceFn,ToPixelColour
 //go:generate go fmt
 
 // Setup to do the static initializing of the camera instead?
 
-// Pixel is an x,y coordinate in an image. Used as a key in
-// the pipeline.
+// Pixel is an x,y coordinate in an image. Used as a key for
+// grouping sample rays back together.
 type Pixel struct {
 	X, Y int
 }
 
-// generateRaySDFn is a splittable DoFn that maps XY samples to the number line.
+// generateRaySDFn is a splittable DoFn that maps XxYxSamples to the number line.
 // Element Restrictions are then offset ranges into the number line, where each
 // index maps to a specific sample for a specific pixel. Samples for a given
 // pixel are contiguous to increase opportunities for combiner lifting to

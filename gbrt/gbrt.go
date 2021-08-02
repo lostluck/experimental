@@ -121,9 +121,6 @@ import (
 )
 
 const (
-	epsilon     = 0.001
-	maxDistance = 100 // 100 by default
-
 	// TODO make these flags.
 	w, h = 960, 540 // 960, 540 by default
 )
@@ -161,10 +158,10 @@ func main() {
 	}
 
 	// Set up the camera.
-	position := gbrt.Vec{-22, 5, 25}                     // Where the camera actually is, notionally.
-	goal := gbrt.Vec{-3, 4, 0}.Minus(position).InvSqrt() // The bottom right corner.
+	position := gbrt.Vec{X: -22, Y: 5, Z: 25}                     // Where the camera actually is, notionally.
+	goal := gbrt.Vec{X: -3, Y: 4, Z: 0}.Minus(position).InvSqrt() // The bottom right corner.
 	invW := 1.0 / w
-	left := gbrt.Vec{goal.Z, 0, -goal.X}.InvSqrt().Times(gbrt.MonoVec(invW))
+	left := gbrt.Vec{X: goal.Z, Y: 0, Z: -goal.X}.InvSqrt().Times(gbrt.MonoVec(invW))
 
 	// Cross-product to get the up vector
 	up := goal.Cross(left)
@@ -179,11 +176,11 @@ func main() {
 	// Timing.
 	start := time.Now()
 	defer func() {
-		delta := time.Now().Sub(start)
+		delta := time.Since(start)
 		fmt.Fprintln(os.Stderr, " ", delta)
 	}()
 
-	fmt.Fprintf(os.Stderr, "maxDistance%d.bounces%d.samples%d.%s.\n", maxDistance, *bounces, *samplesCount, *word)
+	log.Printf("bounces%d.samples%d.%s.\n", *bounces, *samplesCount, *word)
 	if *useBeam {
 		p := gbrt.BeamTracer(position, cfg, *word, *outputDir)
 		pipelineResult, err := beam.Run(context.Background(), *runner, p)
