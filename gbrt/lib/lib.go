@@ -1,5 +1,5 @@
 // Package grbt contains code for a ray tracer in beam.
-package grbt
+package gbrt
 
 import (
 	"fmt"
@@ -543,8 +543,8 @@ func populateScene(word string) *Scene {
 
 // subPixelJitter takes the origin pixel and applies a bit of random noise jitter to it
 // for for each sample.
-// TODO(lostluck): investigate if I can reuse this for Depth of Field.
 func subPixelJitter(x, y int, cfg ImageConfig) Vec {
+	// TODO(lostluck): investigate if I can reuse this for Depth of Field.
 	upJitter := cfg.Up.Times(MonoVec(float64(y) - cfg.Height/2 + RandomVal()))
 	leftJitter := cfg.Left.Times(MonoVec(float64(x) - cfg.Width/2 + RandomVal()))
 	return cfg.Goal.Plus(leftJitter).Plus(upJitter).InvSqrt()

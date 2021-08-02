@@ -107,7 +107,7 @@ import (
 	"time"
 
 	"github.com/apache/beam/sdks/go/pkg/beam"
-	grbt "github.com/lostluck/experimental/grbt/lib"
+	gbrt "github.com/lostluck/experimental/gbrt/lib"
 
 	// Register runners for use with beamx.
 	_ "github.com/apache/beam/sdks/go/pkg/beam/runners/dataflow"
@@ -155,21 +155,21 @@ func main() {
 	*word = strings.ToUpper(*word) // We only have upper case letters.
 
 	// Validate character set of word to render.
-	if err := grbt.ValidateWord(*word); err != nil {
+	if err := gbrt.ValidateWord(*word); err != nil {
 		log.Printf("invalid word: %v", err)
 		return
 	}
 
 	// Set up the camera.
-	position := grbt.Vec{-22, 5, 25}                     // Where the camera actually is, notionally.
-	goal := grbt.Vec{-3, 4, 0}.Minus(position).InvSqrt() // The bottom right corner.
+	position := gbrt.Vec{-22, 5, 25}                     // Where the camera actually is, notionally.
+	goal := gbrt.Vec{-3, 4, 0}.Minus(position).InvSqrt() // The bottom right corner.
 	invW := 1.0 / w
-	left := grbt.Vec{goal.Z, 0, -goal.X}.InvSqrt().Times(grbt.MonoVec(invW))
+	left := gbrt.Vec{goal.Z, 0, -goal.X}.InvSqrt().Times(gbrt.MonoVec(invW))
 
 	// Cross-product to get the up vector
 	up := goal.Cross(left)
 
-	cfg := grbt.ImageConfig{
+	cfg := gbrt.ImageConfig{
 		Width: w, Height: h,
 		Samples: int64(*samplesCount),
 		Bounces: int64(*bounces),
@@ -185,7 +185,7 @@ func main() {
 
 	fmt.Fprintf(os.Stderr, "maxDistance%d.bounces%d.samples%d.%s.\n", maxDistance, *bounces, *samplesCount, *word)
 	if *useBeam {
-		p := grbt.BeamTracer(position, cfg, *word, *outputDir)
+		p := gbrt.BeamTracer(position, cfg, *word, *outputDir)
 		pipelineResult, err := beam.Run(context.Background(), *runner, p)
 		if err != nil {
 			log.Printf("Pipeline execution failed: %v", err)
@@ -198,7 +198,7 @@ func main() {
 			log.Printf("%v.%v = %v", c.Key.Name, c.Key.Namespace, c.Result())
 		}
 	} else {
-		grbt.OrdinaryTracer(position, cfg, *word, *outputDir)
+		gbrt.OrdinaryTracer(position, cfg, *word, *outputDir)
 	}
-	log.Printf("image written to: %s", grbt.OutputPath(*outputDir, *word, *samplesCount))
+	log.Printf("image written to: %s", gbrt.OutputPath(*outputDir, *word, *samplesCount))
 }

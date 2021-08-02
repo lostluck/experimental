@@ -1,4 +1,4 @@
-package grbt
+package gbrt
 
 import (
 	"context"
@@ -58,23 +58,17 @@ func (fn *generateRaySDFn) CreateTracker(rest offsetrange.Restriction) *sdf.Lock
 	return sdf.NewLockRTracker(offsetrange.NewTracker(rest))
 }
 
-// ProcessElement creates it's assigned integer elements based on the restriction
-// tracker received.
+// ProcessElement creates a sample ray vector paired with the pixel it's
+// contributing to.
 func (fn *generateRaySDFn) ProcessElement(rt *sdf.LockRTracker, cfg ImageConfig, emit func(Pixel, Vec)) error {
-	// perSample := cfg.Width * cfg.Height (x aligned indexing)
 	// Sample aligned indexing to preserve pixel locality.
 	// Increases likelyhood that pixels are in the same bundle
 	// improving combiner lifting effectiveness.
 	stride := cfg.Width * float64(cfg.Samples)
 	for i := rt.GetRestriction().(offsetrange.Restriction).Start; rt.TryClaim(i); i++ {
-		// sample aligned indexing to preserve pixel locality
 		Y := math.Floor(float64(i) / stride)
 		sample := math.Mod(float64(i), stride)
 		X := math.Floor(sample / float64(cfg.Samples))
-		// (x aligned indexing)
-		// slice := math.Mod(float64(i), perSample)
-		// X := math.Mod(slice, cfg.Width)
-		// Y := math.Floor(slice / cfg.Width)
 		px := Pixel{int(X), int(Y)}
 		ray := subPixelJitter(px.X, px.Y, cfg)
 		emit(px, ray)

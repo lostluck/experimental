@@ -1,4 +1,4 @@
-package grbt
+package gbrt
 
 import (
 	"bufio"
