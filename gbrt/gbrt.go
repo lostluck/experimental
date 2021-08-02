@@ -190,9 +190,9 @@ func main() {
 		}
 		if pipelineResult != nil {
 			log.Printf("Printing %v counters", len(pipelineResult.Metrics().AllMetrics().Counters()))
-		}
-		for _, c := range pipelineResult.Metrics().AllMetrics().Counters() {
-			log.Printf("%v.%v = %v", c.Key.Name, c.Key.Namespace, c.Result())
+			for _, c := range pipelineResult.Metrics().AllMetrics().Counters() {
+				log.Printf("%v.%v = %v", c.Key.Name, c.Key.Namespace, c.Result())
+			}
 		}
 	} else {
 		gbrt.OrdinaryTracer(position, cfg, *word, *outputDir)
