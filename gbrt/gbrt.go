@@ -106,18 +106,18 @@ import (
 	"strings"
 	"time"
 
-	"github.com/apache/beam/sdks/go/pkg/beam"
+	"github.com/apache/beam/sdks/v2/go/pkg/beam"
 	gbrt "github.com/lostluck/experimental/gbrt/lib"
 
 	// Register runners for use with beamx.
-	_ "github.com/apache/beam/sdks/go/pkg/beam/runners/dataflow"
-	_ "github.com/apache/beam/sdks/go/pkg/beam/runners/direct"
-	_ "github.com/apache/beam/sdks/go/pkg/beam/runners/universal"
+	_ "github.com/apache/beam/sdks/v2/go/pkg/beam/runners/dataflow"
+	_ "github.com/apache/beam/sdks/v2/go/pkg/beam/runners/direct"
+	_ "github.com/apache/beam/sdks/v2/go/pkg/beam/runners/universal"
 
 	// Be able to write to GCS and local systems.
-	"github.com/apache/beam/sdks/go/pkg/beam/io/filesystem"
-	_ "github.com/apache/beam/sdks/go/pkg/beam/io/filesystem/gcs"
-	_ "github.com/apache/beam/sdks/go/pkg/beam/io/filesystem/local"
+	"github.com/apache/beam/sdks/v2/go/pkg/beam/io/filesystem"
+	_ "github.com/apache/beam/sdks/v2/go/pkg/beam/io/filesystem/gcs"
+	_ "github.com/apache/beam/sdks/v2/go/pkg/beam/io/filesystem/local"
 )
 
 const (

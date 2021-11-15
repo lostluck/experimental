@@ -1,9 +1,13 @@
 module github.com/lostluck/experimental
 
-go 1.14
+go 1.16
 
-require (
-	github.com/apache/beam v2.31.0+incompatible
-	github.com/google/uuid v1.3.0 // indirect
-	google.golang.org/api v0.51.0 // indirect
-)
+// require github.com/apache/beam/sdks/v2 v2.0.0-20210914211513-b358127f9859
+
+// require github.com/apache/beam/sdks/v2 v2.0.0-20210823181348-0228419b3764
+
+// replace github.com/apache/beam/sdks/v2 => /home/rebo/git/src/github.com/apache/beam/sdks
+
+// require github.com/apache/beam/sdks/v2 v2.34.0-RC1
+
+require github.com/apache/beam/sdks/v2 v2.34.0-RC2 // indirect
