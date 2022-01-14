@@ -47,12 +47,6 @@ dmitri.shuralyov.com/gpu/mtl v0.0.0-20190408044501-666a987793e9/go.mod h1:H6x//7
 github.com/BurntSushi/toml v0.3.1/go.mod h1:xHWCNGjB5oqiDr8zfno3MHue2Ht5sIBksp03qcyfWMU=
 github.com/BurntSushi/xgb v0.0.0-20160522181843-27f122750802/go.mod h1:IVnqGOEym/WlBOVXweHU+Q+/VP0lqqI8lqeDx9IjBqo=
 github.com/antihax/optional v1.0.0/go.mod h1:uupD/76wgC+ih3iEmQUL+0Ugr19nfwCT1kdvxnR2qWY=
-github.com/apache/beam/sdks/v2 v2.0.0-20211013181004-a9120e083008 h1:7J75mMZ05tNXnZJom2DlKB9bZhQapmjuhZ+QLVdpA5Y=
-github.com/apache/beam/sdks/v2 v2.0.0-20211013181004-a9120e083008/go.mod h1:/kOom7hCyHVzAC/Z7HbZywkZZv6ywF+wb4CvgDVdcB8=
-github.com/apache/beam/sdks/v2 v2.33.0 h1:QQeUai1PCbr1C2SIdzeiIF9OjRD2xyMxi/NPXKvoAKY=
-github.com/apache/beam/sdks/v2 v2.33.0/go.mod h1:2SupnX418OPFdLhDS9n/k6gDcdwNQn1fAQ+XRr0jG8c=
-github.com/apache/beam/sdks/v2 v2.34.0-RC1 h1:bA+IQ0AlFtD97daEEAOHKaSPa2BecFbAVC60aQM9W34=
-github.com/apache/beam/sdks/v2 v2.34.0-RC1/go.mod h1:/kOom7hCyHVzAC/Z7HbZywkZZv6ywF+wb4CvgDVdcB8=
 github.com/apache/beam/sdks/v2 v2.34.0-RC2 h1:aFaLK65MrmZr69haPSNmldeWa3iGQI52Bn0V/W7qbDA=
 github.com/apache/beam/sdks/v2 v2.34.0-RC2/go.mod h1:/kOom7hCyHVzAC/Z7HbZywkZZv6ywF+wb4CvgDVdcB8=
 github.com/armon/circbuf v0.0.0-20150827004946-bbbad097214e/go.mod h1:3U/XgcO3hCbHZ8TKRvWD2dDTCfh9M9ya+I9JpbB7O8o=
