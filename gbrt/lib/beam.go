@@ -42,7 +42,7 @@ func (fn *generateRaySDFn) CreateInitialRestriction(config ImageConfig) offsetra
 }
 
 // SplitRestriction splits the restriction into 1024 chunks.
-func (fn *generateRaySDFn) SplitRestriction(config ImageConfig, rest offsetrange.Restriction) (splits []offsetrange.Restriction) {
+func (fn *generateRaySDFn) SplitRestriction(_ ImageConfig, rest offsetrange.Restriction) (splits []offsetrange.Restriction) {
 	return rest.EvenSplits(1024)
 }
 
@@ -66,9 +66,9 @@ func (fn *generateRaySDFn) ProcessElement(rt *sdf.LockRTracker, cfg ImageConfig,
 	// improving combiner lifting effectiveness.
 	stride := cfg.Width * float64(cfg.Samples)
 	for i := rt.GetRestriction().(offsetrange.Restriction).Start; rt.TryClaim(i); i++ {
-		Y := math.Floor(float64(i) / stride)
 		sample := math.Mod(float64(i), stride)
 		X := math.Floor(sample / float64(cfg.Samples))
+		Y := math.Floor(float64(i) / stride)
 		px := Pixel{int(X), int(Y)}
 		ray := subPixelJitter(px.X, px.Y, cfg)
 		emit(px, ray)
@@ -143,11 +143,6 @@ type PixelColour struct {
 // ToPixelColour combines pixels with it's colour.
 func ToPixelColour(k Pixel, colour Vec) PixelColour {
 	return PixelColour{k, colour}
-}
-
-// Col is a column of pixels in the final image.
-type Col struct {
-	Col []PixelColour
 }
 
 // MakeImageFn writes the image to wherever.

@@ -114,11 +114,15 @@ import (
 	_ "github.com/apache/beam/sdks/v2/go/pkg/beam/runners/direct"
 	_ "github.com/apache/beam/sdks/v2/go/pkg/beam/runners/universal"
 
+	_ "github.com/lostluck/experimental/local"
+
 	// Be able to write to GCS and local systems.
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/io/filesystem"
 	_ "github.com/apache/beam/sdks/v2/go/pkg/beam/io/filesystem/gcs"
 	_ "github.com/apache/beam/sdks/v2/go/pkg/beam/io/filesystem/local"
 )
+
+var logger = log.New(os.Stderr, "[gbrt] ", log.Ldate|log.Ltime|log.Lmicroseconds|log.Lshortfile)
 
 const (
 	// TODO make these flags.
@@ -126,7 +130,7 @@ const (
 )
 
 var (
-	samplesCount = flag.Int("samples", 16, "The number of ray samples per pixel")
+	samplesCount = flag.Int("samples", 4, "The number of ray samples per pixel")
 	word         = flag.String("word", "PIXAR", "The word you'd like to render.")
 
 	useBeam    = flag.Bool("use_beam", false, "Whether to use the beam version or not.")
@@ -142,7 +146,7 @@ func main() {
 	if *cpuProfile != "" {
 		f, err := os.Create(path.Join(*outputDir, *cpuProfile))
 		if err != nil {
-			log.Fatal(err)
+			logger.Fatal(err)
 		}
 		pprof.StartCPUProfile(f)
 		defer pprof.StopCPUProfile()
@@ -153,7 +157,7 @@ func main() {
 
 	// Validate character set of word to render.
 	if err := gbrt.ValidateWord(*word); err != nil {
-		log.Printf("invalid word: %v", err)
+		logger.Printf("invalid word: %v", err)
 		return
 	}
 
@@ -180,22 +184,22 @@ func main() {
 		fmt.Fprintln(os.Stderr, " ", delta)
 	}()
 
-	log.Printf("bounces%d.samples%d.%s.\n", *bounces, *samplesCount, *word)
+	logger.Printf("bounces%d.samples%d.%s.\n", *bounces, *samplesCount, *word)
 	if *useBeam {
 		p := gbrt.BeamTracer(position, cfg, *word, *outputDir)
 		pipelineResult, err := beam.Run(context.Background(), *runner, p)
 		if err != nil {
-			log.Printf("Pipeline execution failed: %v", err)
+			logger.Printf("Pipeline execution failed: %v", err)
 			return
 		}
 		if pipelineResult != nil {
-			log.Printf("Printing %v counters", len(pipelineResult.Metrics().AllMetrics().Counters()))
+			logger.Printf("Printing %v counters", len(pipelineResult.Metrics().AllMetrics().Counters()))
 			for _, c := range pipelineResult.Metrics().AllMetrics().Counters() {
-				log.Printf("%v.%v = %v", c.Key.Name, c.Key.Namespace, c.Result())
+				logger.Printf("%v.%v = %v", c.Key.Name, c.Key.Namespace, c.Result())
 			}
 		}
 	} else {
 		gbrt.OrdinaryTracer(position, cfg, *word, *outputDir)
 	}
-	log.Printf("image written to: %s", gbrt.OutputPath(*outputDir, *word, *samplesCount))
+	logger.Printf("image written to: %s", gbrt.OutputPath(*outputDir, *word, *samplesCount))
 }

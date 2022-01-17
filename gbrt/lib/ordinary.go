@@ -11,7 +11,7 @@ import (
 
 // OrdinaryTracer is a standard implementation of a ray tracer for
 // validation and performance comparison purposes.
-func OrdinaryTracer(position Vec, cfg ImageConfig, word, dir string) {
+func OrdinaryTracer(origin Vec, cfg ImageConfig, word, dir string) {
 	// Code for progress tracking via pixels being worked on.
 	maxProgress := cfg.Height * cfg.Width
 	curProgress := int32(0)
@@ -42,7 +42,7 @@ func OrdinaryTracer(position Vec, cfg ImageConfig, word, dir string) {
 			var colour Vec
 			for p := 0; p < int(cfg.Samples); p++ {
 				ray := subPixelJitter(x, y, cfg)
-				result := Trace(position, ray, scene, cfg.Bounces)
+				result := Trace(origin, ray, scene, cfg.Bounces)
 				colour = colour.Plus(result)
 			}
 
