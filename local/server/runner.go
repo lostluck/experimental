@@ -76,7 +76,7 @@ func (j *jobstate) run(ctx context.Context) {
 	j.msgChan <- "starting " + j.key + " " + j.jobName
 	j.stateChan <- jobpb.JobState_STARTING
 
-	j.wk = newWorker()
+	j.wk = newWorker(j)
 	go j.wk.Serve()
 
 	// In a "proper" runner, we'd iterate through all the
@@ -135,5 +135,5 @@ func (j *jobstate) startWorkerEnvironment(ctx context.Context, env, url string) 
 	pool.StopWorker(ctx, &fnpb.StopWorkerRequest{
 		WorkerId: env,
 	})
-	logger.Printf("context worker stopped")
+	logger.Printf("worker stopped")
 }
