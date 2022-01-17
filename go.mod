@@ -3,6 +3,12 @@ module github.com/lostluck/experimental
 go 1.18
 
 require (
+	github.com/apache/beam/sdks/v2 v2.35.0
+	google.golang.org/grpc v1.39.0
+	google.golang.org/protobuf v1.27.1
+)
+
+require (
 	cloud.google.com/go v0.81.0 // indirect
 	cloud.google.com/go/storage v1.15.0 // indirect
 	github.com/golang/groupcache v0.0.0-20210331224755-41bb18bfe9da // indirect
@@ -22,6 +28,4 @@ require (
 	google.golang.org/api v0.45.0 // indirect
 	google.golang.org/appengine v1.6.7 // indirect
 	google.golang.org/genproto v0.0.0-20210728212813-7823e685a01f // indirect
-	google.golang.org/grpc v1.39.0 // indirect
-	google.golang.org/protobuf v1.27.1 // indirect
 )
