@@ -55,6 +55,9 @@ func Execute(ctx context.Context, p *beam.Pipeline) (beam.PipelineResult, error)
 	return universal.Execute(ctx, p)
 }
 
+// Nothing below is currently being used, and is copied from the Direct Runner.
+// Anything useful will migrate to the core server.
+
 // Execute runs the pipeline in-process.
 func ExecuteOld(ctx context.Context, p *beam.Pipeline) (beam.PipelineResult, error) {
 	log.Info(ctx, "Executing pipeline with the direct runner.")

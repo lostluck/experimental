@@ -83,15 +83,18 @@ func (j *jobstate) run(ctx context.Context) {
 	// environments, and start up docker containers, but
 	// here, we only want and need the go one, operating
 	// in loopback mode.
-	wkctx, cancelFn := context.WithCancel(context.TODO())
-	defer cancelFn()
+	wkctx, _ := context.WithCancel(context.TODO())
+	//defer cancelFn()
 	go j.startWorkerEnvironment(wkctx, "go", j.wk.Endpoint())
 
 	j.msgChan <- "running " + j.key + " " + j.jobName
 	j.stateChan <- jobpb.JobState_RUNNING
 
 	// Lets see what the worker does.
-	time.Sleep(10 * time.Second)
+	time.Sleep(5 * time.Second)
+	// cancelFn()
+	// Stop the worker.
+	j.wk.Stop()
 
 	j.msgChan <- "terminating " + j.key + " " + j.jobName
 	j.stateChan <- jobpb.JobState_DONE
@@ -132,7 +135,8 @@ func (j *jobstate) startWorkerEnvironment(ctx context.Context, env, url string) 
 		logger.Printf("context canceled! stopping worker")
 	}
 
-	pool.StopWorker(ctx, &fnpb.StopWorkerRequest{
+	// Previous context cancelled so we need a new one.
+	pool.StopWorker(context.Background(), &fnpb.StopWorkerRequest{
 		WorkerId: env,
 	})
 	logger.Printf("worker stopped")
