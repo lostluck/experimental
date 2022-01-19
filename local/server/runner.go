@@ -20,7 +20,6 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"time"
 
 	fnpb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/fnexecution_v1"
 	jobpb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/jobmanagement_v1"
@@ -91,7 +90,8 @@ func (j *jobstate) run(ctx context.Context) {
 	j.stateChan <- jobpb.JobState_RUNNING
 
 	// Lets see what the worker does.
-	time.Sleep(5 * time.Second)
+	j.wk.dummyBundle()
+	j.msgChan <- "bundle complete " + j.key + " " + j.jobName
 	// cancelFn()
 	// Stop the worker.
 	j.wk.Stop()

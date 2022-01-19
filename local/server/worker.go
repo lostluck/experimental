@@ -16,15 +16,22 @@
 package server
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"net"
 	"path"
+	"sync"
 	"sync/atomic"
 
+	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/graph/coder"
+	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/graph/window"
+	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/runtime/exec"
+	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/typex"
 	fnpb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/fnexecution_v1"
 	pipepb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/pipeline_v1"
 	"google.golang.org/grpc"
+	"google.golang.org/protobuf/encoding/prototext"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -42,9 +49,16 @@ type worker struct {
 	// BackReference to Job.
 	job *jobstate
 
+	// These are the ID sources
 	inst, bund uint64
 
+	descs map[string]*fnpb.ProcessBundleDescriptor
+
 	instReqs chan *fnpb.InstructionRequest
+	dataReqs chan *fnpb.Elements
+
+	mu      sync.Mutex
+	bundles map[string]*bundle // Bundles keyed by InstructionID
 }
 
 // newWorker starts the server components of FnAPI Execution.
@@ -59,7 +73,10 @@ func newWorker(job *jobstate) *worker {
 		server: grpc.NewServer(opts...),
 		job:    job,
 
-		instReqs: make(chan *fnpb.InstructionRequest, 100),
+		instReqs: make(chan *fnpb.InstructionRequest, 10),
+		dataReqs: make(chan *fnpb.Elements, 10),
+
+		bundles: make(map[string]*bundle),
 	}
 	logger.Printf("Serving Worker components on %v\n", wk.Endpoint())
 	fnpb.RegisterBeamFnControlServer(wk.server, wk)
@@ -112,6 +129,113 @@ func (wk *worker) nextBund() string {
 	return fmt.Sprintf("bundle%05d", atomic.AddUint64(&wk.bund, 1))
 }
 
+func (wk *worker) dummyBundle() {
+	// First instruction, register a descriptor.
+	instID, bundID := wk.nextInst(), wk.nextBund()
+	// Lets try and get 2 things working.
+
+	//	logger.Print(prototext.Format(wk.job.pipeline.GetComponents()))
+
+	port := &fnpb.RemoteGrpcPort{
+		CoderId: "c2",
+		ApiServiceDescriptor: &pipepb.ApiServiceDescriptor{
+			Url: wk.Endpoint(),
+		},
+	}
+	portBytes, err := proto.Marshal(port)
+	if err != nil {
+		logger.Fatalf("bad port: %v", err)
+	}
+
+	wk.instReqs <- &fnpb.InstructionRequest{
+		InstructionId: instID,
+		Request: &fnpb.InstructionRequest_Register{
+			Register: &fnpb.RegisterRequest{
+				ProcessBundleDescriptor: []*fnpb.ProcessBundleDescriptor{
+					{
+						Id: bundID,
+						Transforms: map[string]*pipepb.PTransform{
+							"source": {
+								Spec: &pipepb.FunctionSpec{
+									Urn:     "beam:runner:source:v1",
+									Payload: portBytes,
+								},
+								Outputs: map[string]string{
+									"o1": "p0",
+								},
+							},
+							"sink": {
+								Spec: &pipepb.FunctionSpec{
+									Urn:     "beam:runner:sink:v1",
+									Payload: portBytes,
+								},
+								Inputs: map[string]string{
+									"i1": "p0",
+								},
+							},
+						},
+						Pcollections: map[string]*pipepb.PCollection{
+							"p0": {
+								CoderId: "c2",
+							},
+						},
+						Coders: map[string]*pipepb.Coder{
+							"c0": {
+								Spec: &pipepb.FunctionSpec{
+									Urn: "beam:coder:string_utf8:v1",
+								},
+							},
+							"c1": {
+								Spec: &pipepb.FunctionSpec{
+									Urn: "beam:coder:global_window:v1",
+								},
+							},
+							"c2": {
+								Spec: &pipepb.FunctionSpec{
+									Urn: "beam:coder:windowed_value:v1",
+								},
+								ComponentCoderIds: []string{"c0", "c1"},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	// lets just see how we do?
+	byt, _ := exec.EncodeElement(exec.MakeElementEncoder(coder.NewString()), "pants")
+	buf := bytes.NewBuffer(byt)
+	exec.EncodeWindowedValueHeader(
+		exec.MakeWindowEncoder(coder.NewGlobalWindow()),
+		window.SingleGlobalWindow,
+		typex.EventTime(0),
+		typex.NoFiringPane(),
+		buf,
+	)
+
+	instID = wk.nextInst()
+	b := &bundle{
+		InstID: instID,
+		BundID: bundID,
+
+		TransformID: "source",
+		InputData: [][]byte{
+			buf.Bytes(),
+		},
+		Resp: make(chan *fnpb.ProcessBundleResponse, 1),
+
+		DataReceived: make(map[string][][]byte),
+	}
+	b.DataWait.Add(1) // Only one sink.
+
+	wk.mu.Lock()
+	wk.bundles[instID] = b
+	wk.mu.Unlock()
+
+	// Usually this should be called in a goroutine, but we're skipping for now.
+	wk.Process(b)
+}
+
 func (wk *worker) Control(ctrl fnpb.BeamFnControl_ControlServer) error {
 	done := make(chan bool)
 	go func() {
@@ -124,91 +248,14 @@ func (wk *worker) Control(ctrl fnpb.BeamFnControl_ControlServer) error {
 			if err != nil {
 				logger.Fatalf("cannot receive %v", err)
 			}
-			logger.Printf("Control Resp received: %v", resp)
-		}
-	}()
 
-	// First instruction, register a descriptor.
-	go func() {
-		instID, bundID := wk.nextInst(), wk.nextBund()
-		// Lets try and get 2 things working.
-
-		//	logger.Print(prototext.Format(wk.job.pipeline.GetComponents()))
-
-		port := &fnpb.RemoteGrpcPort{
-			CoderId: "c2",
-			ApiServiceDescriptor: &pipepb.ApiServiceDescriptor{
-				Url: wk.Endpoint(),
-			},
-		}
-		portBytes, err := proto.Marshal(port)
-		if err != nil {
-			logger.Fatalf("bad port: %v", err)
-		}
-
-		wk.instReqs <- &fnpb.InstructionRequest{
-			InstructionId: instID,
-			Request: &fnpb.InstructionRequest_Register{
-				Register: &fnpb.RegisterRequest{
-					ProcessBundleDescriptor: []*fnpb.ProcessBundleDescriptor{
-						{
-							Id: bundID,
-							Transforms: map[string]*pipepb.PTransform{
-								"source": {
-									Spec: &pipepb.FunctionSpec{
-										Urn:     "beam:runner:source:v1",
-										Payload: portBytes,
-									},
-									Outputs: map[string]string{
-										"o1": "p0",
-									},
-								},
-								"sink": {
-									Spec: &pipepb.FunctionSpec{
-										Urn:     "beam:runner:sink:v1",
-										Payload: portBytes,
-									},
-									Inputs: map[string]string{
-										"i1": "p0",
-									},
-								},
-							},
-							Pcollections: map[string]*pipepb.PCollection{
-								"p0": {
-									CoderId: "c2",
-								},
-							},
-							Coders: map[string]*pipepb.Coder{
-								"c0": {
-									Spec: &pipepb.FunctionSpec{
-										Urn: "beam:coder:bytes:v1",
-									},
-								},
-								"c1": {
-									Spec: &pipepb.FunctionSpec{
-										Urn: "beam:coder:global_window:v1",
-									},
-								},
-								"c2": {
-									Spec: &pipepb.FunctionSpec{
-										Urn: "beam:coder:windowed_value:v1",
-									},
-									ComponentCoderIds: []string{"c0", "c1"},
-								},
-							},
-						},
-					},
-				},
-			},
-		}
-		instID = wk.nextInst()
-		wk.instReqs <- &fnpb.InstructionRequest{
-			InstructionId: instID,
-			Request: &fnpb.InstructionRequest_ProcessBundle{
-				ProcessBundle: &fnpb.ProcessBundleRequest{
-					ProcessBundleDescriptorId: bundID,
-				},
-			},
+			wk.mu.Lock()
+			if b, ok := wk.bundles[resp.GetInstructionId()]; ok {
+				b.Resp <- resp.GetProcessBundle()
+			} else {
+				logger.Printf("Control Resp received: %v", resp)
+			}
+			wk.mu.Unlock()
 		}
 	}()
 
@@ -221,39 +268,111 @@ func (wk *worker) Control(ctrl fnpb.BeamFnControl_ControlServer) error {
 }
 
 func (wk *worker) Data(data fnpb.BeamFnData_DataServer) error {
-	done := make(chan bool)
 	go func() {
 		for {
 			resp, err := data.Recv()
 			if err == io.EOF {
-				done <- true //means stream is finished
 				return
 			}
 			if err != nil {
 				logger.Fatalf("Data cannot receive error: %v", err)
 			}
-			logger.Printf("Data Resp received: %v", resp)
+			for _, d := range resp.GetData() {
+				wk.mu.Lock()
+				tID := d.GetTransformId()
+				b, ok := wk.bundles[d.GetInstructionId()]
+				if !ok {
+					logger.Printf("Data Resp received for unknown bundle: %v", resp)
+					continue
+				}
+				output := b.DataReceived[tID]
+				output = append(output, d.GetData())
+				b.DataReceived[tID] = output
+				if d.GetIsLast() {
+					b.DataWait.Done()
+				}
+				wk.mu.Unlock()
+			}
 		}
 	}()
 
-	data.Send(&fnpb.Elements{
-		Data: []*fnpb.Elements_Data{
-			{
-				InstructionId: "inst00002",
-				TransformId:   "source",
-				Data:          []byte{0, 0},
-				IsLast:        true,
+	for req := range wk.dataReqs {
+		data.Send(req)
+	}
+	return nil
+}
+
+// bundle represents an extant ProcessBundle instruction sent to an SDK worker.
+type bundle struct {
+	InstID string // ID for the instruction processing this bundle.
+	BundID string // ID for the ProcessBundleDescriptor
+
+	// InputData is data being sent to the SDK.
+	TransformID string
+	InputData   [][]byte
+
+	// DataReceived is where all the data received from the SDK is put
+	// separated by their TransformIDs.
+	DataReceived map[string][][]byte
+	DataWait     sync.WaitGroup
+	Resp         chan *fnpb.ProcessBundleResponse
+
+	// TODO: Metrics for this bundle, can be handled after the fact.
+}
+
+// Execute the given bundle asynchronously.
+//
+// Assumes the bundle is initialized (all maps are non-nil, and data waitgroup is set.)
+// Assumes the bundle descriptor is already registered.
+func (wk *worker) Process(b *bundle) {
+	// Tell the SDK to start processing the bundle.
+	wk.instReqs <- &fnpb.InstructionRequest{
+		InstructionId: b.InstID,
+		Request: &fnpb.InstructionRequest_ProcessBundle{
+			ProcessBundle: &fnpb.ProcessBundleRequest{
+				ProcessBundleDescriptorId: b.BundID,
 			},
 		},
-	})
-	<-done //we will wait until all response is received
-	return nil
+	}
+
+	// Send the data one at a time, rather than batching.
+	// TODO: Batch Data.
+	for i, d := range b.InputData {
+		wk.dataReqs <- &fnpb.Elements{
+			Data: []*fnpb.Elements_Data{
+				{
+					InstructionId: b.InstID,
+					TransformId:   b.TransformID,
+					Data:          d,
+					IsLast:        i+1 == len(b.InputData),
+				},
+			},
+		}
+	}
+
+	b.DataWait.Wait() // Wait until data is done.
+
+	logger.Printf("ProcessBundle %v done! Resp: %v", b.InstID, prototext.Format(<-b.Resp))
+	logger.Printf("ProcessBundle %v Data: %v", b.InstID, string(b.DataReceived["sink"][0]))
+
+	// TODO figure out how to kick off the next Bundle with the data from here.
 }
 
 // Notes to myself: 2022-01-18
 // Before any of the actual pipeline execution, I think sorting out
 // *proper clean* worker shutdown behavior is likely best. As it stands
 // things shudwon and tests fail, regardless of what the pipeline is doing.
+//
+// Also, we can just do an unoptimized runner to start, one DoFn at a time,
+// and then work on an optimized version. Much simpler.
+//
+// By the end of the evening:
+// I have a successfully stopping worker & SDK. Turns out shutting down
+// properly is the best move. Huzzah.
+//
+// Next up, handling "Impulse" (which uses a global window non firing pane empty byte.),
+// and a DoFn, and getting the DoFn output from the sink.
+// (Everything should be sunk, and not discarded.)
 
 // Notes to myself: 2022-01-17
 // At this point I have a runner that actuates the SDK harness
