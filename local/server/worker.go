@@ -156,16 +156,17 @@ func (wk *worker) dummyBundle(pipeline *pipepb.Pipeline) {
 	// First: default "impulse" bundle. "executed" by the runner.
 	// Second: Derive bundle for a DoFn for the environment.
 
-	// lets just see how we do?
-	byt, _ := exec.EncodeElement(exec.MakeElementEncoder(coder.NewBytes()), []byte("pants"))
-	impulseBuf := bytes.NewBuffer(byt)
+	// lets see how we do?
+	var impulseBuf bytes.Buffer
+	byt, _ := exec.EncodeElement(exec.MakeElementEncoder(coder.NewBytes()), []byte("lostluck"))
 	exec.EncodeWindowedValueHeader(
 		exec.MakeWindowEncoder(coder.NewGlobalWindow()),
 		window.SingleGlobalWindow,
 		typex.EventTime(0),
 		typex.NoFiringPane(),
-		impulseBuf,
+		&impulseBuf,
 	)
+	impulseBuf.Write(byt)
 
 	// This is probably something passed in instead.
 	var parent, b *bundle
@@ -180,7 +181,7 @@ func (wk *worker) dummyBundle(pipeline *pipepb.Pipeline) {
 				parent = &bundle{
 					TransformID: tid, // TODO Fix properly for impulse.
 					DataReceived: map[string][][]byte{
-						tid: [][]byte{impulseBuf.Bytes()},
+						tid: {impulseBuf.Bytes()},
 					},
 				}
 			default:
@@ -390,7 +391,6 @@ func (wk *worker) Control(ctrl fnpb.BeamFnControl_ControlServer) error {
 	for req := range wk.InstReqs {
 		ctrl.Send(req)
 	}
-	logger.Printf("closing control channel")
 	return nil
 }
 
@@ -410,7 +410,7 @@ func (wk *worker) Data(data fnpb.BeamFnData_DataServer) error {
 					logger.Fatalf("data.Recv error: %v", err)
 				}
 			}
-			for i, d := range resp.GetData() {
+			for _, d := range resp.GetData() {
 				wk.mu.Lock()
 				tID := d.GetTransformId()
 				b, ok := wk.bundles[d.GetInstructionId()]
@@ -418,7 +418,6 @@ func (wk *worker) Data(data fnpb.BeamFnData_DataServer) error {
 					logger.Printf("data.Recv for unknown bundle: %v", resp)
 					continue
 				}
-				logger.Printf("XXXXX Recv Data[%v]%v", i, d)
 				output := b.DataReceived[tID]
 				output = append(output, d.GetData())
 				b.DataReceived[tID] = output
@@ -431,7 +430,6 @@ func (wk *worker) Data(data fnpb.BeamFnData_DataServer) error {
 	}()
 
 	for req := range wk.DataReqs {
-		logger.Printf("XXXXX Send Data - %v", req)
 		if err := data.Send(req); err != nil {
 			logger.Printf("data.Send error: %v", err)
 		}

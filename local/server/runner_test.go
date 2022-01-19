@@ -34,14 +34,18 @@ func execute(ctx context.Context, p *beam.Pipeline) (beam.PipelineResult, error)
 func init() {
 	beam.RegisterRunner("testlocal", execute)
 	beam.RegisterFunction(dofn1)
+	beam.RegisterFunction(dofn2)
 }
 
-func dofn1(_ []byte, emit func(int64)) {
+func dofn1(imp []byte, emit func(int64)) {
+	logger.Print("dofn1 impulse:", string(imp))
 	emit(1)
 	emit(2)
 	emit(3)
-	emit(4)
-	emit(5)
+}
+
+func dofn2(v int64, emit func(int64)) {
+	emit(1 + 1)
 }
 
 func TestRunner(t *testing.T) {
@@ -54,11 +58,19 @@ func TestRunner(t *testing.T) {
 	if !jobopts.IsLoopback() {
 		*jobopts.EnvironmentType = "loopback"
 	}
-	t.Run("simple", func(t *testing.T) {
+	// t.Run("simple", func(t *testing.T) {
+	// 	p, s := beam.NewPipelineWithRoot()
+	// 	imp := beam.Impulse(s)
+	// 	beam.ParDo(s, dofn1, imp)
+
+	// 	if _, err := execute(context.Background(), p); err != nil {
+	// 		t.Fatal(err)
+	// 	}
+	// })
+	t.Run("sequence", func(t *testing.T) {
 		p, s := beam.NewPipelineWithRoot()
 		imp := beam.Impulse(s)
-		beam.ParDo(s, dofn1, imp)
-
+		beam.Seq(s, imp, dofn1, dofn2, dofn2)
 		if _, err := execute(context.Background(), p); err != nil {
 			t.Fatal(err)
 		}
