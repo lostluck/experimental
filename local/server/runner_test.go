@@ -28,14 +28,6 @@ import (
 // execute will startup the server, and this will be maintained for the life of
 // all the tests.
 func execute(ctx context.Context, p *beam.Pipeline) (beam.PipelineResult, error) {
-	if *jobopts.Endpoint == "" {
-		s := NewServer(0)
-		*jobopts.Endpoint = s.Endpoint()
-		go s.Serve()
-	}
-	if !jobopts.IsLoopback() {
-		*jobopts.EnvironmentType = "loopback"
-	}
 	return universal.Execute(ctx, p)
 }
 
@@ -48,9 +40,20 @@ func dofn1(_ []byte, emit func(int64)) {
 	emit(1)
 	emit(2)
 	emit(3)
+	emit(4)
+	emit(5)
 }
 
 func TestRunner(t *testing.T) {
+	if *jobopts.Endpoint == "" {
+		s := NewServer(0)
+		*jobopts.Endpoint = s.Endpoint()
+		go s.Serve()
+		t.Cleanup(func() { s.Stop() })
+	}
+	if !jobopts.IsLoopback() {
+		*jobopts.EnvironmentType = "loopback"
+	}
 	t.Run("simple", func(t *testing.T) {
 		p, s := beam.NewPipelineWithRoot()
 		imp := beam.Impulse(s)

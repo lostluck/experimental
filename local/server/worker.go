@@ -27,10 +27,13 @@ import (
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/graph/coder"
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/graph/window"
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/runtime/exec"
+	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/runtime/pipelinex"
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/typex"
 	fnpb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/fnexecution_v1"
 	pipepb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/pipeline_v1"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/prototext"
 	"google.golang.org/protobuf/proto"
 )
@@ -42,39 +45,38 @@ type worker struct {
 	fnpb.UnimplementedBeamFnStateServer
 	fnpb.UnimplementedBeamFnLoggingServer
 
+	ID string
+
 	// Server management
 	lis    net.Listener
 	server *grpc.Server
 
-	// BackReference to Job.
-	job *jobstate
-
 	// These are the ID sources
 	inst, bund uint64
 
-	descs map[string]*fnpb.ProcessBundleDescriptor
+	// descs map[string]*fnpb.ProcessBundleDescriptor
 
-	instReqs chan *fnpb.InstructionRequest
-	dataReqs chan *fnpb.Elements
+	InstReqs chan *fnpb.InstructionRequest
+	DataReqs chan *fnpb.Elements
 
 	mu      sync.Mutex
 	bundles map[string]*bundle // Bundles keyed by InstructionID
 }
 
 // newWorker starts the server components of FnAPI Execution.
-func newWorker(job *jobstate) *worker {
+func newWorker(job *jobstate, env string) *worker {
 	lis, err := net.Listen("tcp", ":0")
 	if err != nil {
 		logger.Fatalf("failed to listen: %v", err)
 	}
 	var opts []grpc.ServerOption
 	wk := &worker{
+		ID:     env,
 		lis:    lis,
 		server: grpc.NewServer(opts...),
-		job:    job,
 
-		instReqs: make(chan *fnpb.InstructionRequest, 10),
-		dataReqs: make(chan *fnpb.Elements, 10),
+		InstReqs: make(chan *fnpb.InstructionRequest, 10),
+		DataReqs: make(chan *fnpb.Elements, 10),
 
 		bundles: make(map[string]*bundle),
 	}
@@ -95,10 +97,15 @@ func (wk *worker) Serve() {
 	wk.server.Serve(wk.lis)
 }
 
+func (wk *worker) String() string {
+	return "worker[" + wk.ID + "]"
+}
+
 // Stop the GRPC server.
 func (wk *worker) Stop() {
-	close(wk.instReqs)
-	//wk.server.Stop()
+	close(wk.InstReqs)
+	logger.Printf("stopping %v", wk)
+	wk.server.Stop()
 }
 
 // TODO set logging level.
@@ -129,111 +136,221 @@ func (wk *worker) nextBund() string {
 	return fmt.Sprintf("bundle%05d", atomic.AddUint64(&wk.bund, 1))
 }
 
-func (wk *worker) dummyBundle() {
-	// First instruction, register a descriptor.
-	instID, bundID := wk.nextInst(), wk.nextBund()
-	// Lets try and get 2 things working.
+func (wk *worker) dummyBundle(pipeline *pipepb.Pipeline) {
+	// None of this should be in the "worker", it should be assigned to the
+	// worker later when the worker is the correct environment.
 
-	//	logger.Print(prototext.Format(wk.job.pipeline.GetComponents()))
+	logger.Print("Pipeline:", prototext.Format(pipeline))
 
-	port := &fnpb.RemoteGrpcPort{
-		CoderId: "c2",
-		ApiServiceDescriptor: &pipepb.ApiServiceDescriptor{
-			Url: wk.Endpoint(),
-		},
-	}
-	portBytes, err := proto.Marshal(port)
-	if err != nil {
-		logger.Fatalf("bad port: %v", err)
-	}
+	ts := pipeline.GetComponents().GetTransforms()
+	topo := pipelinex.TopologicalSort(ts, []string{"e1", "e2"})
 
-	wk.instReqs <- &fnpb.InstructionRequest{
-		InstructionId: instID,
-		Request: &fnpb.InstructionRequest_Register{
-			Register: &fnpb.RegisterRequest{
-				ProcessBundleDescriptor: []*fnpb.ProcessBundleDescriptor{
-					{
-						Id: bundID,
-						Transforms: map[string]*pipepb.PTransform{
-							"source": {
-								Spec: &pipepb.FunctionSpec{
-									Urn:     "beam:runner:source:v1",
-									Payload: portBytes,
-								},
-								Outputs: map[string]string{
-									"o1": "p0",
-								},
-							},
-							"sink": {
-								Spec: &pipepb.FunctionSpec{
-									Urn:     "beam:runner:sink:v1",
-									Payload: portBytes,
-								},
-								Inputs: map[string]string{
-									"i1": "p0",
-								},
-							},
-						},
-						Pcollections: map[string]*pipepb.PCollection{
-							"p0": {
-								CoderId: "c2",
-							},
-						},
-						Coders: map[string]*pipepb.Coder{
-							"c0": {
-								Spec: &pipepb.FunctionSpec{
-									Urn: "beam:coder:string_utf8:v1",
-								},
-							},
-							"c1": {
-								Spec: &pipepb.FunctionSpec{
-									Urn: "beam:coder:global_window:v1",
-								},
-							},
-							"c2": {
-								Spec: &pipepb.FunctionSpec{
-									Urn: "beam:coder:windowed_value:v1",
-								},
-								ComponentCoderIds: []string{"c0", "c1"},
-							},
-						},
-					},
-				},
-			},
-		},
-	}
+	// Basically need to figure out the "plan" at this point.
+	// Long term: Take RootTransforms & TOPO sort them. (technically not necessary, but paranoid)
+	//  - Recurse through composites from there: TOPO sort subtransforms
+	//  - Eventually we have our ordered list of transforms.
+	//  - Then we can figure out how to fuse transforms into bundles
+	//    (producer-consumer & sibling fusion & environment awareness)
+	//
+	// But for now we figure out how to connect bundles together
+	// First: default "impulse" bundle. "executed" by the runner.
+	// Second: Derive bundle for a DoFn for the environment.
+
 	// lets just see how we do?
-	byt, _ := exec.EncodeElement(exec.MakeElementEncoder(coder.NewString()), "pants")
-	buf := bytes.NewBuffer(byt)
+	byt, _ := exec.EncodeElement(exec.MakeElementEncoder(coder.NewBytes()), []byte("pants"))
+	impulseBuf := bytes.NewBuffer(byt)
 	exec.EncodeWindowedValueHeader(
 		exec.MakeWindowEncoder(coder.NewGlobalWindow()),
 		window.SingleGlobalWindow,
 		typex.EventTime(0),
 		typex.NoFiringPane(),
-		buf,
+		impulseBuf,
 	)
 
-	instID = wk.nextInst()
-	b := &bundle{
-		InstID: instID,
-		BundID: bundID,
+	// This is probably something passed in instead.
+	var parent, b *bundle
+	for _, tid := range topo {
+		t := ts[tid]
+		env := t.GetEnvironmentId()
+		switch env {
+		case "": // Runner Transforms
+			urn := t.GetSpec().GetUrn()
+			switch urn {
+			case "beam:transform:impulse:v1":
+				parent = &bundle{
+					TransformID: tid, // TODO Fix properly for impulse.
+					DataReceived: map[string][][]byte{
+						tid: [][]byte{impulseBuf.Bytes()},
+					},
+				}
+			default:
+				logger.Fatalf("unimplemented runner transform[%v]", urn)
+			}
 
-		TransformID: "source",
-		InputData: [][]byte{
-			buf.Bytes(),
-		},
-		Resp: make(chan *fnpb.ProcessBundleResponse, 1),
+		case "go":
+			// Great! this is for this environment.
+			urn := t.GetSpec().GetUrn()
+			switch urn {
+			case "beam:transform:pardo:v1":
+				// This is where we take any parent, and turn it into input data.
+				// and design the consuming bundle.
+				instID, bundID := wk.nextInst(), wk.nextBund()
 
-		DataReceived: make(map[string][][]byte),
+				// Get InputCoderID  (This is where we'd need to wrap things as windowed_value or not)
+				// Get the input Pcollection for this transform
+				if len(t.GetInputs()) > 1 {
+					logger.Fatalf("side inputs not implemented, can't build bundle for: %v", prototext.Format(t))
+				}
+				// Extract the one PCollection ID from the inputs.
+				var inPID string
+				for _, c := range t.GetInputs() {
+					inPID = c
+				}
+				inCol := pipeline.GetComponents().GetPcollections()[inPID]
+				inCid := inCol.GetCoderId()
+				inWCid := pipeline.GetComponents().GetWindowingStrategies()[inCol.GetWindowingStrategyId()].GetWindowCoderId()
+
+				// Get OutputCoderId  (This is where we'd need to wrap things as windowed_value or not)
+				// Get the input Pcollection for this transform
+				if len(t.GetOutputs()) > 1 {
+					logger.Fatalf("multiple outputs not implemented, can't build bundle for: %v", prototext.Format(t))
+				}
+				// Extract the one PCollection ID from the inputs.
+				var outPID string
+				for _, c := range t.GetOutputs() {
+					outPID = c
+				}
+				outCol := pipeline.GetComponents().GetPcollections()[outPID]
+				outCid := outCol.GetCoderId()
+				outWCid := pipeline.GetComponents().GetWindowingStrategies()[outCol.GetWindowingStrategyId()].GetWindowCoderId()
+
+				wInCid := "cwv_" + inPID
+				wOutCid := "cwv_" + outPID
+
+				coders := map[string]*pipepb.Coder{
+					wInCid: {
+						Spec: &pipepb.FunctionSpec{
+							Urn: "beam:coder:windowed_value:v1",
+						},
+						ComponentCoderIds: []string{inCid, inWCid},
+					},
+					wOutCid: {
+						Spec: &pipepb.FunctionSpec{
+							Urn: "beam:coder:windowed_value:v1",
+						},
+						ComponentCoderIds: []string{outCid, outWCid},
+					},
+				}
+
+				reconcileCoders(coders, pipeline.GetComponents().GetCoders())
+
+				sourcePort := &fnpb.RemoteGrpcPort{
+					CoderId: wInCid,
+					ApiServiceDescriptor: &pipepb.ApiServiceDescriptor{
+						Url: wk.Endpoint(),
+					},
+				}
+				sourcePortBytes, err := proto.Marshal(sourcePort)
+				if err != nil {
+					logger.Fatalf("bad port: %v", err)
+				}
+
+				sinkPort := &fnpb.RemoteGrpcPort{
+					CoderId: wOutCid,
+					ApiServiceDescriptor: &pipepb.ApiServiceDescriptor{
+						Url: wk.Endpoint(),
+					},
+				}
+				sinkPortBytes, err := proto.Marshal(sinkPort)
+				if err != nil {
+					logger.Fatalf("bad port: %v", err)
+				}
+
+				desc := &fnpb.ProcessBundleDescriptor{
+					Id: bundID,
+					Transforms: map[string]*pipepb.PTransform{
+						parent.TransformID: {
+							Spec: &pipepb.FunctionSpec{
+								Urn:     "beam:runner:source:v1",
+								Payload: sourcePortBytes,
+							},
+							Outputs: map[string]string{
+								"o1": inPID,
+							},
+						},
+						tid: t, // The Transform to Execute!
+						tid + "_sink": {
+							Spec: &pipepb.FunctionSpec{
+								Urn:     "beam:runner:sink:v1",
+								Payload: sinkPortBytes,
+							},
+							Inputs: map[string]string{
+								"i1": outPID,
+							},
+						},
+					},
+					WindowingStrategies: pipeline.GetComponents().GetWindowingStrategies(),
+					Pcollections:        pipeline.GetComponents().GetPcollections(),
+					Coders:              coders,
+				}
+
+				logger.Print("Desc:", instID, prototext.Format(desc))
+
+				wk.InstReqs <- &fnpb.InstructionRequest{
+					InstructionId: instID,
+					Request: &fnpb.InstructionRequest_Register{
+						Register: &fnpb.RegisterRequest{
+							ProcessBundleDescriptor: []*fnpb.ProcessBundleDescriptor{
+								desc,
+							},
+						},
+					},
+				}
+
+				b = &bundle{
+					BundID: bundID,
+
+					TransformID: parent.TransformID, // Fix for Impulse.
+					InputData:   parent.DataReceived[parent.TransformID],
+					Resp:        make(chan *fnpb.ProcessBundleResponse, 1),
+
+					DataReceived: make(map[string][][]byte),
+				}
+				b.DataWait.Add(1) // Only one sink.
+			default:
+				logger.Fatalf("unimplemented worker transform[%v]", urn)
+			}
+		default:
+			logger.Fatalf("unknown environment[%v]", env)
+		}
 	}
-	b.DataWait.Add(1) // Only one sink.
-
-	wk.mu.Lock()
-	wk.bundles[instID] = b
-	wk.mu.Unlock()
 
 	// Usually this should be called in a goroutine, but we're skipping for now.
-	wk.Process(b)
+	b.ProcessOn(wk)
+}
+
+// reconcileCoders, has coders is primed with initial coders.
+func reconcileCoders(coders, base map[string]*pipepb.Coder) {
+	var comps []string
+	for _, c := range coders {
+		for _, ccid := range c.GetComponentCoderIds() {
+			if _, ok := coders[ccid]; !ok {
+				// We don't have the coder yet, so in we go.
+				comps = append(comps, ccid)
+			}
+		}
+	}
+	if len(comps) == 0 {
+		return
+	}
+	for _, ccid := range comps {
+		c, ok := base[ccid]
+		if !ok {
+			logger.Fatalf("unknown coder id during reconciliation")
+		}
+		coders[ccid] = c
+	}
+	reconcileCoders(coders, base)
 }
 
 func (wk *worker) Control(ctrl fnpb.BeamFnControl_ControlServer) error {
@@ -242,27 +359,37 @@ func (wk *worker) Control(ctrl fnpb.BeamFnControl_ControlServer) error {
 		for {
 			resp, err := ctrl.Recv()
 			if err == io.EOF {
-				done <- true //means stream is finished
+				done <- true // means stream is finished
 				return
 			}
 			if err != nil {
-				logger.Fatalf("cannot receive %v", err)
+				switch status.Code(err) {
+				case codes.Canceled: // Might ignore this all the time instead.
+					logger.Printf("ctrl.Recv Canceled: %v", err)
+					return
+				default:
+					logger.Fatalf("ctrl.Recv error: %v", err)
+				}
 			}
 
 			wk.mu.Lock()
 			if b, ok := wk.bundles[resp.GetInstructionId()]; ok {
+				// TODO. Better pipeline error handling.
+				// No retries. likely ever.
+				if resp.Error != "" {
+					logger.Fatal(resp.Error)
+				}
 				b.Resp <- resp.GetProcessBundle()
 			} else {
-				logger.Printf("Control Resp received: %v", resp)
+				logger.Printf("ctrl.Recv: %v", resp)
 			}
 			wk.mu.Unlock()
 		}
 	}()
 
-	for req := range wk.instReqs {
+	for req := range wk.InstReqs {
 		ctrl.Send(req)
 	}
-	<-done // we will wait until all response is received
 	logger.Printf("closing control channel")
 	return nil
 }
@@ -275,16 +402,23 @@ func (wk *worker) Data(data fnpb.BeamFnData_DataServer) error {
 				return
 			}
 			if err != nil {
-				logger.Fatalf("Data cannot receive error: %v", err)
+				switch status.Code(err) {
+				case codes.Canceled:
+					logger.Printf("data.Recv Canceled: %v", err)
+					return
+				default:
+					logger.Fatalf("data.Recv error: %v", err)
+				}
 			}
-			for _, d := range resp.GetData() {
+			for i, d := range resp.GetData() {
 				wk.mu.Lock()
 				tID := d.GetTransformId()
 				b, ok := wk.bundles[d.GetInstructionId()]
 				if !ok {
-					logger.Printf("Data Resp received for unknown bundle: %v", resp)
+					logger.Printf("data.Recv for unknown bundle: %v", resp)
 					continue
 				}
+				logger.Printf("XXXXX Recv Data[%v]%v", i, d)
 				output := b.DataReceived[tID]
 				output = append(output, d.GetData())
 				b.DataReceived[tID] = output
@@ -296,8 +430,11 @@ func (wk *worker) Data(data fnpb.BeamFnData_DataServer) error {
 		}
 	}()
 
-	for req := range wk.dataReqs {
-		data.Send(req)
+	for req := range wk.DataReqs {
+		logger.Printf("XXXXX Send Data - %v", req)
+		if err := data.Send(req); err != nil {
+			logger.Printf("data.Send error: %v", err)
+		}
 	}
 	return nil
 }
@@ -320,13 +457,18 @@ type bundle struct {
 	// TODO: Metrics for this bundle, can be handled after the fact.
 }
 
-// Execute the given bundle asynchronously.
+// ProcessOn executes the given bundle on the given worker.
 //
 // Assumes the bundle is initialized (all maps are non-nil, and data waitgroup is set.)
 // Assumes the bundle descriptor is already registered.
-func (wk *worker) Process(b *bundle) {
+func (b *bundle) ProcessOn(wk *worker) {
+	wk.mu.Lock()
+	b.InstID = wk.nextInst()
+	wk.bundles[b.InstID] = b
+	wk.mu.Unlock()
+
 	// Tell the SDK to start processing the bundle.
-	wk.instReqs <- &fnpb.InstructionRequest{
+	wk.InstReqs <- &fnpb.InstructionRequest{
 		InstructionId: b.InstID,
 		Request: &fnpb.InstructionRequest_ProcessBundle{
 			ProcessBundle: &fnpb.ProcessBundleRequest{
@@ -338,7 +480,7 @@ func (wk *worker) Process(b *bundle) {
 	// Send the data one at a time, rather than batching.
 	// TODO: Batch Data.
 	for i, d := range b.InputData {
-		wk.dataReqs <- &fnpb.Elements{
+		wk.DataReqs <- &fnpb.Elements{
 			Data: []*fnpb.Elements_Data{
 				{
 					InstructionId: b.InstID,
@@ -352,8 +494,8 @@ func (wk *worker) Process(b *bundle) {
 
 	b.DataWait.Wait() // Wait until data is done.
 
-	logger.Printf("ProcessBundle %v done! Resp: %v", b.InstID, prototext.Format(<-b.Resp))
-	logger.Printf("ProcessBundle %v Data: %v", b.InstID, string(b.DataReceived["sink"][0]))
+	// logger.Printf("ProcessBundle %v done! Resp: %v", b.InstID, prototext.Format(<-b.Resp))
+	logger.Printf("ProcessBundle %v output: %v", b.InstID, b.DataReceived)
 
 	// TODO figure out how to kick off the next Bundle with the data from here.
 }

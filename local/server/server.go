@@ -68,5 +68,5 @@ func (s *Server) Serve() {
 
 // Stop the GRPC server.
 func (s *Server) Stop() {
-	s.server.Stop()
+	s.server.GracefulStop()
 }
