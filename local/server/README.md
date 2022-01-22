@@ -1,4 +1,26 @@
 
+# Notes to myself: 2022-01-22
+
+OK. GBK time. This is where things start to get complicated,
+as the runner will need to parse the data received, and do
+something about it.
+
+Returned values are windowed values.
+The element type is a KV.
+Overall the window bytes and the key bytes are the important bit
+for grouping, and the GBK is ultimately when a Trigger is determined.
+
+Since right now I'm focused on batch, and in memory execution,
+but I don't want to install a foot gun on purpose,
+this means that I'll be doing multi layers of map.
+
+Top layer is the map for Windows to Aggregations.
+Then it's a map from Keys to Values+Timestamps.
+Then timestamps will be dropped, but I want to keep them around for now.
+
+But before that, lets make these unit tests actually validate we're getting
+the expected data! Using DoFns themselves.
+
 # Notes to myself: 2022-01-21
 
 Moved some things around, but the overall execution hierachy is 
