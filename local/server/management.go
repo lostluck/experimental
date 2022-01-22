@@ -32,7 +32,7 @@ func (s *Server) nextId() string {
 func (s *Server) Prepare(ctx context.Context, req *jobpb.PrepareJobRequest) (*jobpb.PrepareJobResponse, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	job := &jobstate{
+	job := &job{
 		key:      s.nextId(),
 		pipeline: req.GetPipeline(),
 		jobName:  req.GetJobName(),

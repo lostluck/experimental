@@ -48,7 +48,7 @@ func isSupported(requirements []string) error {
 	return nil
 }
 
-type jobstate struct {
+type job struct {
 	key     string
 	jobName string
 
@@ -64,7 +64,7 @@ type jobstate struct {
 // Run starts the main thread fo executing this job.
 // It's analoguous to the manager side process for a distributed pipeline.
 // It will begin "workers"
-func (j *jobstate) run(ctx context.Context) {
+func (j *job) run(ctx context.Context) {
 	j.msgChan = make(chan string, 100)
 	j.stateChan = make(chan jobpb.JobState_Enum)
 
@@ -76,18 +76,19 @@ func (j *jobstate) run(ctx context.Context) {
 	// environments, and start up docker containers, but
 	// here, we only want and need the go one, operating
 	// in loopback mode.
-	wk := newWorker(j, "go")
+	env := "go"
+	wk := newWorker(env) // Cheating by having the worker id match the environment id.
 	go wk.Serve()
 
 	wkctx, cancelFn := context.WithCancel(context.TODO())
 	defer cancelFn()
-	go j.startWorkerEnvironment(wkctx, wk)
+	go j.runEnvironment(wkctx, env, wk)
 
 	j.msgChan <- "running " + j.key + " " + j.jobName
 	j.stateChan <- jobpb.JobState_RUNNING
 
 	// Lets see what the worker does.
-	wk.dummyBundle(j.pipeline)
+	dummyBundle(wk, j.pipeline)
 	j.msgChan <- "bundle complete " + j.key + " " + j.jobName
 
 	// Stop the worker.
@@ -97,15 +98,26 @@ func (j *jobstate) run(ctx context.Context) {
 	j.stateChan <- jobpb.JobState_DONE
 }
 
-func (j *jobstate) startWorkerEnvironment(ctx context.Context, wk *worker) {
-	e := j.pipeline.GetComponents().GetEnvironments()[wk.ID]
-
-	ep := &pipepb.ExternalPayload{}
-	if err := (proto.UnmarshalOptions{}).Unmarshal(e.GetPayload(), ep); err != nil {
-		logger.Printf("unmarshalling environment payload %v: %v", wk.ID, err)
+func (j *job) runEnvironment(ctx context.Context, env string, wk *worker) {
+	// TODO fix broken abstraction.
+	// We're starting a worker pool here, because that's the loopback environment.
+	// It's sort of a mess, largely because of loopback, which has
+	// a different flow from a provisioned docker container.
+	e := j.pipeline.GetComponents().GetEnvironments()[env]
+	switch e.GetUrn() {
+	case "beam:env:external:v1":
+		ep := &pipepb.ExternalPayload{}
+		if err := (proto.UnmarshalOptions{}).Unmarshal(e.GetPayload(), ep); err != nil {
+			logger.Printf("unmarshalling environment payload %v: %v", wk.ID, err)
+		}
+		logger.Printf("starting env %v on %v:\n %v", env, wk, prototext.Format(ep))
+		externalEnvironment(ctx, ep, wk)
+	default:
+		logger.Fatalf("environment %v with urn %v unimplemented", env, e.GetUrn())
 	}
-	logger.Printf("starting worker for env %v:\n %v", wk.ID, prototext.Format(ep))
+}
 
+func externalEnvironment(ctx context.Context, ep *pipepb.ExternalPayload, wk *worker) {
 	conn, err := grpc.Dial(ep.GetEndpoint().GetUrl(), grpc.WithInsecure())
 	if err != nil {
 		logger.Fatalf("unable to dial sdk worker %v: %v", ep.GetEndpoint().GetUrl(), err)

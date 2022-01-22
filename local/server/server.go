@@ -36,7 +36,7 @@ type Server struct {
 	// Job Management
 	mu    sync.Mutex
 	index uint32
-	jobs  map[string]*jobstate
+	jobs  map[string]*job
 }
 
 // NewServer acquires the indicated port.
@@ -47,7 +47,7 @@ func NewServer(port int) *Server {
 	}
 	s := &Server{
 		lis:  lis,
-		jobs: make(map[string]*jobstate),
+		jobs: make(map[string]*job),
 	}
 	logger.Printf("Serving JobManagement on %v\n", s.Endpoint())
 	var opts []grpc.ServerOption
