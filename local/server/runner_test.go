@@ -45,7 +45,8 @@ func dofn1(imp []byte, emit func(int64)) {
 }
 
 func dofn2(v int64, emit func(int64)) {
-	emit(1 + 1)
+	logger.Printf("dofn2(%v)", v)
+	emit(v + 1)
 }
 
 func TestRunner(t *testing.T) {
@@ -70,7 +71,7 @@ func TestRunner(t *testing.T) {
 	t.Run("sequence", func(t *testing.T) {
 		p, s := beam.NewPipelineWithRoot()
 		imp := beam.Impulse(s)
-		beam.Seq(s, imp, dofn1, dofn2, dofn2)
+		beam.Seq(s, imp, dofn1, dofn2, dofn2, dofn2)
 		if _, err := execute(context.Background(), p); err != nil {
 			t.Fatal(err)
 		}

@@ -25,7 +25,6 @@ import (
 	jobpb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/jobmanagement_v1"
 	pipepb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/pipeline_v1"
 	"google.golang.org/grpc"
-	"google.golang.org/protobuf/encoding/prototext"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/structpb"
 )
@@ -110,7 +109,6 @@ func (j *job) runEnvironment(ctx context.Context, env string, wk *worker) {
 		if err := (proto.UnmarshalOptions{}).Unmarshal(e.GetPayload(), ep); err != nil {
 			logger.Printf("unmarshalling environment payload %v: %v", wk.ID, err)
 		}
-		logger.Printf("starting env %v on %v:\n %v", env, wk, prototext.Format(ep))
 		externalEnvironment(ctx, ep, wk)
 	default:
 		logger.Fatalf("environment %v with urn %v unimplemented", env, e.GetUrn())

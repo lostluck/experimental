@@ -17,6 +17,7 @@ package server
 
 import (
 	"bytes"
+	"strings"
 	"sync"
 
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/graph/coder"
@@ -30,14 +31,36 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+var (
+	impOnce  sync.Once
+	impBytes []byte
+)
+
+func impulseBytes() []byte {
+	impOnce.Do(func() {
+		var buf bytes.Buffer
+		byt, _ := exec.EncodeElement(exec.MakeElementEncoder(coder.NewBytes()), []byte("lostluck"))
+
+		exec.EncodeWindowedValueHeader(
+			exec.MakeWindowEncoder(coder.NewGlobalWindow()),
+			window.SingleGlobalWindow,
+			typex.EventTime(0),
+			typex.NoFiringPane(),
+			&buf,
+		)
+		buf.Write(byt)
+		impBytes = buf.Bytes()
+	})
+	return impBytes
+}
+
 func dummyBundle(wk *worker, pipeline *pipepb.Pipeline) {
 	// None of this should be in the "worker", it should be assigned to the
 	// worker later when the worker is the correct environment.
 
-	logger.Print("Pipeline:", prototext.Format(pipeline))
+	// logger.Print("Pipeline:", prototext.Format(pipeline))
 
 	ts := pipeline.GetComponents().GetTransforms()
-	topo := pipelinex.TopologicalSort(ts, []string{"e1", "e2"})
 
 	// Basically need to figure out the "plan" at this point.
 	// Long term: Take RootTransforms & TOPO sort them. (technically not necessary, but paranoid)
@@ -50,39 +73,45 @@ func dummyBundle(wk *worker, pipeline *pipepb.Pipeline) {
 	// First: default "impulse" bundle. "executed" by the runner.
 	// Second: Derive bundle for a DoFn for the environment.
 
-	// lets see how we do?
-	var impulseBuf bytes.Buffer
-	byt, _ := exec.EncodeElement(exec.MakeElementEncoder(coder.NewBytes()), []byte("lostluck"))
-	exec.EncodeWindowedValueHeader(
-		exec.MakeWindowEncoder(coder.NewGlobalWindow()),
-		window.SingleGlobalWindow,
-		typex.EventTime(0),
-		typex.NoFiringPane(),
-		&impulseBuf,
-	)
-	impulseBuf.Write(byt)
+	// We're going to do something fun with channels for this,
+	// and do a "Generator" pattern to get the bundles we need
+	// to process.
+	// Ultimately, we'd want some pre-processing of the pipeline
+	// which will determine dependency relationshion ships, and
+	// when it's safe to GC bundle results.
+	// The key idea is that we have a goroutine that will block on
+	// channels, and emit the next bundle to process.
+	toProcess, processed := make(chan *bundle), make(chan *bundle)
 
-	// This is probably something passed in instead.
-	var parent, b *bundle
+	// Goroutine for executing bundles on the worker.
+	go func() {
+		processed <- nil
+		logger.Printf("nil bundle sent")
+		for b := range toProcess {
+			b.ProcessOn(wk) // Blocks until finished.
+			// Send back for dependency handling afterwards.
+			processed <- b
+		}
+		close(processed)
+	}()
+
+	// TODO - Recurse down composite transforms.
+	topo := pipelinex.TopologicalSort(ts, pipeline.GetRootTransformIds())
 	for _, tid := range topo {
+		// Block until the parent bundle is ready.
+		parent := <-processed
+		logger.Printf("making bundle for %v", tid)
+		// TODO stash the parent bundle results in a map for
+		// later access for non-linear pipelines.
+
 		t := ts[tid]
 		switch t.GetEnvironmentId() {
 		case "": // Runner Transforms
-			urn := t.GetSpec().GetUrn()
-			switch urn {
-			case "beam:transform:impulse:v1":
-				parent = &bundle{
-					TransformID: tid, // TODO Fix properly for impulse.
-					DataReceived: map[string][][]byte{
-						tid: {impulseBuf.Bytes()},
-					},
-				}
-			default:
-				logger.Fatalf("unimplemented runner transform[%v]", urn)
-			}
-
+			// Runner transforms are processed immeadiately.
+			runnerTransform(t, processed, tid)
+			continue
 		case wk.ID:
-			// Great! this is for this environment.
+			// Great! this is for this environment. // Broken abstraction.
 			urn := t.GetSpec().GetUrn()
 			switch urn {
 			case "beam:transform:pardo:v1":
@@ -160,10 +189,17 @@ func dummyBundle(wk *worker, pipeline *pipepb.Pipeline) {
 					logger.Fatalf("bad port: %v", err)
 				}
 
+				var dataParentID, parentID string
+				// Only one set of data.
+				for k := range parent.DataReceived {
+					dataParentID = k
+					parentID = strings.TrimSuffix(dataParentID, "_sink")
+				}
+
 				desc := &fnpb.ProcessBundleDescriptor{
 					Id: bundID,
 					Transforms: map[string]*pipepb.PTransform{
-						parent.TransformID: {
+						parentID: {
 							Spec: &pipepb.FunctionSpec{
 								Urn:     "beam:runner:source:v1",
 								Payload: sourcePortBytes,
@@ -188,7 +224,7 @@ func dummyBundle(wk *worker, pipeline *pipepb.Pipeline) {
 					Coders:              coders,
 				}
 
-				logger.Print("Desc:", instID, prototext.Format(desc))
+				logger.Printf("registering %v with %v:", desc.GetId(), instID) // , prototext.Format(desc))
 
 				wk.InstReqs <- &fnpb.InstructionRequest{
 					InstructionId: instID,
@@ -201,16 +237,20 @@ func dummyBundle(wk *worker, pipeline *pipepb.Pipeline) {
 					},
 				}
 
-				b = &bundle{
+				b := &bundle{
 					BundID: bundID,
 
-					TransformID: parent.TransformID, // Fix for Impulse.
-					InputData:   parent.DataReceived[parent.TransformID],
+					TransformID: parentID,
+					InputData:   parent.DataReceived[dataParentID], // Uses the "raw" id from the parent to get the data.
 					Resp:        make(chan *fnpb.ProcessBundleResponse, 1),
 
 					DataReceived: make(map[string][][]byte),
 				}
 				b.DataWait.Add(1) // Only one sink.
+
+				logger.Printf("about to process desc %v with source %v, raw datasource: %v %v", bundID, b.TransformID, dataParentID, parent.DataReceived)
+				toProcess <- b
+				continue
 			default:
 				logger.Fatalf("unimplemented worker transform[%v]", urn)
 			}
@@ -218,9 +258,37 @@ func dummyBundle(wk *worker, pipeline *pipepb.Pipeline) {
 			logger.Fatalf("unknown environment[%v]", t.GetEnvironmentId())
 		}
 	}
+	// We're done with the pipeline!
+	close(toProcess)
+	b := <-processed // Drain the final bundle.
 
-	// Usually this should be called in a goroutine, but we're skipping for now.
-	b.ProcessOn(wk)
+	logger.Printf("pipeline done! Final Bundle: %+v", b)
+}
+
+func runnerTransform(t *pipepb.PTransform, processed chan *bundle, tid string) {
+	urn := t.GetSpec().GetUrn()
+	switch urn {
+	case "beam:transform:impulse:v1":
+		// To avoid conflicts with these single transform
+		// bundles, we suffix the transform IDs.
+		// These will be subbed out by the pardo stage.
+
+		fakeTid := tid + "_sink"
+		b := &bundle{
+			TransformID: fakeTid,
+			DataReceived: map[string][][]byte{
+				fakeTid: {impulseBytes()},
+			},
+		}
+		// Get back to the start of the bundle generation loop since the worker
+		// doesn't need to do anything for this.
+		go func() {
+			processed <- b
+			logger.Printf("bundle for impulse %v sent", tid)
+		}()
+	default:
+		logger.Fatalf("unimplemented runner transform[%v]", urn)
+	}
 }
 
 // reconcileCoders, has coders is primed with initial coders.
@@ -269,14 +337,16 @@ type bundle struct {
 //
 // Assumes the bundle is initialized (all maps are non-nil, and data waitgroup is set.)
 // Assumes the bundle descriptor is already registered.
-func (b *bundle) ProcessOn(env *worker) {
-	env.mu.Lock()
-	b.InstID = env.nextInst()
-	env.bundles[b.InstID] = b
-	env.mu.Unlock()
+func (b *bundle) ProcessOn(wk *worker) {
+	wk.mu.Lock()
+	b.InstID = wk.nextInst()
+	wk.bundles[b.InstID] = b
+	wk.mu.Unlock()
+
+	logger.Printf("processing %v %v on %v", b.InstID, b.BundID, wk)
 
 	// Tell the SDK to start processing the bundle.
-	env.InstReqs <- &fnpb.InstructionRequest{
+	wk.InstReqs <- &fnpb.InstructionRequest{
 		InstructionId: b.InstID,
 		Request: &fnpb.InstructionRequest_ProcessBundle{
 			ProcessBundle: &fnpb.ProcessBundleRequest{
@@ -288,7 +358,7 @@ func (b *bundle) ProcessOn(env *worker) {
 	// Send the data one at a time, rather than batching.
 	// TODO: Batch Data.
 	for i, d := range b.InputData {
-		env.DataReqs <- &fnpb.Elements{
+		wk.DataReqs <- &fnpb.Elements{
 			Data: []*fnpb.Elements_Data{
 				{
 					InstructionId: b.InstID,

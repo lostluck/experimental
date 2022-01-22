@@ -186,22 +186,24 @@ func (wk *worker) Data(data fnpb.BeamFnData_DataServer) error {
 					logger.Fatalf("data.Recv error: %v", err)
 				}
 			}
+			wk.mu.Lock()
 			for _, d := range resp.GetData() {
-				wk.mu.Lock()
 				tID := d.GetTransformId()
 				b, ok := wk.bundles[d.GetInstructionId()]
 				if !ok {
 					logger.Printf("data.Recv for unknown bundle: %v", resp)
 					continue
 				}
-				output := b.DataReceived[tID]
-				output = append(output, d.GetData())
-				b.DataReceived[tID] = output
+				if len(d.GetData()) > 0 {
+					output := b.DataReceived[tID]
+					output = append(output, d.GetData())
+					b.DataReceived[tID] = output
+				}
 				if d.GetIsLast() {
 					b.DataWait.Done()
 				}
-				wk.mu.Unlock()
 			}
+			wk.mu.Unlock()
 		}
 	}()
 
