@@ -54,10 +54,7 @@ func impulseBytes() []byte {
 	return impBytes
 }
 
-func dummyBundle(wk *worker, pipeline *pipepb.Pipeline) {
-	// None of this should be in the "worker", it should be assigned to the
-	// worker later when the worker is the correct environment.
-
+func executePipeline(wk *worker, pipeline *pipepb.Pipeline) {
 	// logger.Print("Pipeline:", prototext.Format(pipeline))
 
 	ts := pipeline.GetComponents().GetTransforms()
@@ -115,109 +112,38 @@ func dummyBundle(wk *worker, pipeline *pipepb.Pipeline) {
 			urn := t.GetSpec().GetUrn()
 			switch urn {
 			case "beam:transform:pardo:v1":
-				// This is where we take any parent, and turn it into input data.
 				// and design the consuming bundle.
 				instID, bundID := wk.nextInst(), wk.nextBund()
 
-				// Get InputCoderID  (This is where we'd need to wrap things as windowed_value or not)
-				// Get the input Pcollection for this transform
-				if len(t.GetInputs()) > 1 {
-					logger.Fatalf("side inputs not implemented, can't build bundle for: %v", prototext.Format(t))
-				}
-				// Extract the one PCollection ID from the inputs.
-				var inPID string
-				for _, c := range t.GetInputs() {
-					inPID = c
-				}
-				inCol := pipeline.GetComponents().GetPcollections()[inPID]
-				inCid := inCol.GetCoderId()
-				inWCid := pipeline.GetComponents().GetWindowingStrategies()[inCol.GetWindowingStrategyId()].GetWindowCoderId()
-
-				// Get OutputCoderId  (This is where we'd need to wrap things as windowed_value or not)
-				// Get the input Pcollection for this transform
-				if len(t.GetOutputs()) > 1 {
-					logger.Fatalf("multiple outputs not implemented, can't build bundle for: %v", prototext.Format(t))
-				}
-				// Extract the one PCollection ID from the inputs.
-				var outPID string
-				for _, c := range t.GetOutputs() {
-					outPID = c
-				}
-				outCol := pipeline.GetComponents().GetPcollections()[outPID]
-				outCid := outCol.GetCoderId()
-				outWCid := pipeline.GetComponents().GetWindowingStrategies()[outCol.GetWindowingStrategyId()].GetWindowCoderId()
-
-				wInCid := "cwv_" + inPID
-				wOutCid := "cwv_" + outPID
+				// Get WindowedValue Coders for the transform's input and output PCollections.
+				inPID, wInCid, wInC := makeWindowedValueCoder(t, (*pipepb.PTransform).GetInputs, pipeline)
+				outPID, wOutCid, wOutC := makeWindowedValueCoder(t, (*pipepb.PTransform).GetOutputs, pipeline)
 
 				coders := map[string]*pipepb.Coder{
-					wInCid: {
-						Spec: &pipepb.FunctionSpec{
-							Urn: "beam:coder:windowed_value:v1",
-						},
-						ComponentCoderIds: []string{inCid, inWCid},
-					},
-					wOutCid: {
-						Spec: &pipepb.FunctionSpec{
-							Urn: "beam:coder:windowed_value:v1",
-						},
-						ComponentCoderIds: []string{outCid, outWCid},
-					},
+					wInCid:  wInC,
+					wOutCid: wOutC,
 				}
 
 				reconcileCoders(coders, pipeline.GetComponents().GetCoders())
 
-				sourcePort := &fnpb.RemoteGrpcPort{
-					CoderId: wInCid,
-					ApiServiceDescriptor: &pipepb.ApiServiceDescriptor{
-						Url: wk.Endpoint(),
-					},
-				}
-				sourcePortBytes, err := proto.Marshal(sourcePort)
-				if err != nil {
-					logger.Fatalf("bad port: %v", err)
-				}
-
-				sinkPort := &fnpb.RemoteGrpcPort{
-					CoderId: wOutCid,
-					ApiServiceDescriptor: &pipepb.ApiServiceDescriptor{
-						Url: wk.Endpoint(),
-					},
-				}
-				sinkPortBytes, err := proto.Marshal(sinkPort)
-				if err != nil {
-					logger.Fatalf("bad port: %v", err)
-				}
-
+				// Extract the only data from the parent bundle.
 				var dataParentID, parentID string
 				// Only one set of data.
 				for k := range parent.DataReceived {
+					// The matches what the output bundle had.
 					dataParentID = k
 					parentID = strings.TrimSuffix(dataParentID, "_sink")
 				}
 
+				// TODO generate as many sinks as there are output transforms for the bundle
+				// indicated by their local outputIDs not "_sink"
+				sinkID := tid + "_sink"
 				desc := &fnpb.ProcessBundleDescriptor{
 					Id: bundID,
 					Transforms: map[string]*pipepb.PTransform{
-						parentID: {
-							Spec: &pipepb.FunctionSpec{
-								Urn:     "beam:runner:source:v1",
-								Payload: sourcePortBytes,
-							},
-							Outputs: map[string]string{
-								"o1": inPID,
-							},
-						},
-						tid: t, // The Transform to Execute!
-						tid + "_sink": {
-							Spec: &pipepb.FunctionSpec{
-								Urn:     "beam:runner:sink:v1",
-								Payload: sinkPortBytes,
-							},
-							Inputs: map[string]string{
-								"i1": outPID,
-							},
-						},
+						parentID: sourceTransform(parentID, portFor(wInCid, wk), inPID),
+						tid:      t, // The Transform to Execute!
+						sinkID:   sinkTransform(sinkID, portFor(wOutCid, wk), outPID),
 					},
 					WindowingStrategies: pipeline.GetComponents().GetWindowingStrategies(),
 					Pcollections:        pipeline.GetComponents().GetPcollections(),
@@ -241,14 +167,12 @@ func dummyBundle(wk *worker, pipeline *pipepb.Pipeline) {
 					BundID: bundID,
 
 					TransformID: parentID,
-					InputData:   parent.DataReceived[dataParentID], // Uses the "raw" id from the parent to get the data.
+					InputData:   parent.DataReceived[dataParentID],
 					Resp:        make(chan *fnpb.ProcessBundleResponse, 1),
 
 					DataReceived: make(map[string][][]byte),
 				}
 				b.DataWait.Add(1) // Only one sink.
-
-				logger.Printf("about to process desc %v with source %v, raw datasource: %v %v", bundID, b.TransformID, dataParentID, parent.DataReceived)
 				toProcess <- b
 				continue
 			default:
@@ -263,6 +187,73 @@ func dummyBundle(wk *worker, pipeline *pipepb.Pipeline) {
 	b := <-processed // Drain the final bundle.
 
 	logger.Printf("pipeline done! Final Bundle: %+v", b)
+}
+
+func makeWindowedValueCoder(t *pipepb.PTransform, puts func(*pipepb.PTransform) map[string]string, pipeline *pipepb.Pipeline) (string, string, *pipepb.Coder) {
+	if len(puts(t)) > 1 {
+		logger.Fatalf("side inputs/outputs not implemented, can't build bundle for: %v", prototext.Format(t))
+	}
+
+	var pID string
+	for _, c := range puts(t) {
+		pID = c
+	}
+	col := pipeline.GetComponents().GetPcollections()[pID]
+	cID := col.GetCoderId()
+	wcID := pipeline.GetComponents().GetWindowingStrategies()[col.GetWindowingStrategyId()].GetWindowCoderId()
+
+	//pID, cID, wcID := extractOnlyPut(t, (*pipepb.PTransform).GetInputs, pipeline)
+	// Produce ID for the Windowed Value Coder
+	wvcID := "cwv_" + pID
+	wInC := &pipepb.Coder{
+		Spec: &pipepb.FunctionSpec{
+			Urn: "beam:coder:windowed_value:v1",
+		},
+		ComponentCoderIds: []string{cID, wcID},
+	}
+	return pID, wvcID, wInC
+}
+
+func sourceTransform(parentID string, sourcePortBytes []byte, inPID string) *pipepb.PTransform {
+	source := &pipepb.PTransform{
+		UniqueName: parentID,
+		Spec: &pipepb.FunctionSpec{
+			Urn:     "beam:runner:source:v1",
+			Payload: sourcePortBytes,
+		},
+		Outputs: map[string]string{
+			"o1": inPID,
+		},
+	}
+	return source
+}
+
+func sinkTransform(sinkID string, sinkPortBytes []byte, outPID string) *pipepb.PTransform {
+	source := &pipepb.PTransform{
+		UniqueName: sinkID,
+		Spec: &pipepb.FunctionSpec{
+			Urn:     "beam:runner:sink:v1",
+			Payload: sinkPortBytes,
+		},
+		Inputs: map[string]string{
+			"i1": outPID,
+		},
+	}
+	return source
+}
+
+func portFor(wInCid string, wk *worker) []byte {
+	sourcePort := &fnpb.RemoteGrpcPort{
+		CoderId: wInCid,
+		ApiServiceDescriptor: &pipepb.ApiServiceDescriptor{
+			Url: wk.Endpoint(),
+		},
+	}
+	sourcePortBytes, err := proto.Marshal(sourcePort)
+	if err != nil {
+		logger.Fatalf("bad port: %v", err)
+	}
+	return sourcePortBytes
 }
 
 func runnerTransform(t *pipepb.PTransform, processed chan *bundle, tid string) {

@@ -14,6 +14,13 @@ Environment has hardware requirments like GPUs and other
 accelerators, which almost make me want to reverse the
 relationship. It feels like an awkwardness of the model.
 
+Otherwise, the local runner can now execute linear strings of
+DoFns! Did some consolidation and cleanup too.
+
+Toss up between branching and GBKs next. Probably GBKs.
+Branching requires building up the bundle dependencies
+better.
+
 # Notes to myself: 2022-01-18
 
 Before any of the actual pipeline execution, I think sorting out

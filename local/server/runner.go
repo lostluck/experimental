@@ -60,6 +60,10 @@ type job struct {
 	stateChan chan jobpb.JobState_Enum
 }
 
+func (j *job) String() string {
+	return fmt.Sprintf("%v[%v]", j.key, j.jobName)
+}
+
 // Run starts the main thread fo executing this job.
 // It's analoguous to the manager side process for a distributed pipeline.
 // It will begin "workers"
@@ -68,7 +72,7 @@ func (j *job) run(ctx context.Context) {
 	j.stateChan = make(chan jobpb.JobState_Enum)
 
 	j.stateChan <- jobpb.JobState_STOPPED
-	j.msgChan <- "starting " + j.key + " " + j.jobName
+	j.msgChan <- "starting " + j.String()
 	j.stateChan <- jobpb.JobState_STARTING
 
 	// In a "proper" runner, we'd iterate through all the
@@ -83,17 +87,17 @@ func (j *job) run(ctx context.Context) {
 	defer cancelFn()
 	go j.runEnvironment(wkctx, env, wk)
 
-	j.msgChan <- "running " + j.key + " " + j.jobName
+	j.msgChan <- "running " + j.String()
 	j.stateChan <- jobpb.JobState_RUNNING
 
 	// Lets see what the worker does.
-	dummyBundle(wk, j.pipeline)
-	j.msgChan <- "bundle complete " + j.key + " " + j.jobName
+	executePipeline(wk, j.pipeline)
+	j.msgChan <- "pipeline completed " + j.String()
 
 	// Stop the worker.
 	wk.Stop()
 
-	j.msgChan <- "terminating " + j.key + " " + j.jobName
+	j.msgChan <- "terminating " + j.String()
 	j.stateChan <- jobpb.JobState_DONE
 }
 
@@ -110,6 +114,7 @@ func (j *job) runEnvironment(ctx context.Context, env string, wk *worker) {
 			logger.Printf("unmarshalling environment payload %v: %v", wk.ID, err)
 		}
 		externalEnvironment(ctx, ep, wk)
+		logger.Printf("%v for %v stopped", wk, j)
 	default:
 		logger.Fatalf("environment %v with urn %v unimplemented", env, e.GetUrn())
 	}
@@ -146,5 +151,4 @@ func externalEnvironment(ctx context.Context, ep *pipepb.ExternalPayload, wk *wo
 	pool.StopWorker(context.Background(), &fnpb.StopWorkerRequest{
 		WorkerId: wk.ID,
 	})
-	logger.Printf("%v stopped", wk)
 }

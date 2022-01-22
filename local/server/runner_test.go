@@ -59,15 +59,15 @@ func TestRunner(t *testing.T) {
 	if !jobopts.IsLoopback() {
 		*jobopts.EnvironmentType = "loopback"
 	}
-	// t.Run("simple", func(t *testing.T) {
-	// 	p, s := beam.NewPipelineWithRoot()
-	// 	imp := beam.Impulse(s)
-	// 	beam.ParDo(s, dofn1, imp)
+	t.Run("simple", func(t *testing.T) {
+		p, s := beam.NewPipelineWithRoot()
+		imp := beam.Impulse(s)
+		beam.ParDo(s, dofn1, imp)
 
-	// 	if _, err := execute(context.Background(), p); err != nil {
-	// 		t.Fatal(err)
-	// 	}
-	// })
+		if _, err := execute(context.Background(), p); err != nil {
+			t.Fatal(err)
+		}
+	})
 	t.Run("sequence", func(t *testing.T) {
 		p, s := beam.NewPipelineWithRoot()
 		imp := beam.Impulse(s)
