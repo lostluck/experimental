@@ -21,6 +21,7 @@ import (
 	"sync"
 
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/graph/coder"
+	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/graph/mtime"
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/graph/window"
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/runtime/exec"
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/runtime/pipelinex"
@@ -44,7 +45,7 @@ func impulseBytes() []byte {
 		exec.EncodeWindowedValueHeader(
 			exec.MakeWindowEncoder(coder.NewGlobalWindow()),
 			window.SingleGlobalWindow,
-			mtime.Now()),
+			mtime.Now(),
 			typex.NoFiringPane(),
 			&buf,
 		)
