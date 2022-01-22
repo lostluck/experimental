@@ -44,7 +44,7 @@ func impulseBytes() []byte {
 		exec.EncodeWindowedValueHeader(
 			exec.MakeWindowEncoder(coder.NewGlobalWindow()),
 			window.SingleGlobalWindow,
-			typex.EventTime(0),
+			mtime.Now()),
 			typex.NoFiringPane(),
 			&buf,
 		)
