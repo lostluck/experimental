@@ -4,6 +4,7 @@ go 1.18
 
 require (
 	github.com/apache/beam/sdks/v2 v2.35.0
+	github.com/google/go-cmp v0.5.6
 	google.golang.org/grpc v1.39.0
 	google.golang.org/protobuf v1.27.1
 )

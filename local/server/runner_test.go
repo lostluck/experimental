@@ -18,6 +18,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"os"
 	"reflect"
 	"sort"
 	"testing"
@@ -44,6 +45,7 @@ func init() {
 	beam.RegisterFunction(dofn2)
 	beam.RegisterFunction(dofn3)
 	beam.RegisterFunction(dofnKV)
+	beam.RegisterFunction(dofnGBK)
 	beam.RegisterType(reflect.TypeOf((*simpleCheck)(nil)))
 }
 
@@ -70,7 +72,6 @@ func (fn *simpleCheck) ProcessElement(v int64, _ func(int64)) {
 func (fn *simpleCheck) FinishBundle(_ func(int64)) error {
 	sort.Ints(fn.got)
 	sort.Ints(fn.Want)
-
 	if d := cmp.Diff(fn.Want, fn.got); d != "" {
 		return fmt.Errorf("simpleCheck[%v] (-want, +got): %v", fn.Name, d)
 	}
@@ -96,6 +97,14 @@ func dofnKV(imp []byte, emit func(string, int64)) {
 	emit("b", 6)
 }
 
+func dofnGBK(k string, vs func(*int64) bool, emit func(int64)) {
+	var v, sum int64
+	for vs(&v) {
+		sum += v
+	}
+	emit(sum)
+}
+
 func TestRunner(t *testing.T) {
 	if *jobopts.Endpoint == "" {
 		s := NewServer(0)
@@ -106,6 +115,13 @@ func TestRunner(t *testing.T) {
 	if !jobopts.IsLoopback() {
 		*jobopts.EnvironmentType = "loopback"
 	}
+	// Since we force loopback, avoid cross-compilation.
+	f, err := os.CreateTemp("", "dummy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Remove(f.Name()) })
+	*jobopts.WorkerBinary = f.Name()
 	// TODO: Explicit DoFn Failure case.
 	t.Run("simple", func(t *testing.T) {
 		p, s := beam.NewPipelineWithRoot()
@@ -124,6 +140,16 @@ func TestRunner(t *testing.T) {
 		p, s := beam.NewPipelineWithRoot()
 		imp := beam.Impulse(s)
 		beam.Seq(s, imp, dofn1, dofn2, dofn2, dofn2, &simpleCheck{Name: "sequence", Want: []int{4, 5, 6}})
+		if _, err := execute(context.Background(), p); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("gbk", func(t *testing.T) {
+		p, s := beam.NewPipelineWithRoot()
+		imp := beam.Impulse(s)
+		col := beam.ParDo(s, dofnKV, imp)
+		gbk := beam.GroupByKey(s, col)
+		beam.Seq(s, gbk, dofnGBK, &simpleCheck{Name: "gbk", Want: []int{9, 12}})
 		if _, err := execute(context.Background(), p); err != nil {
 			t.Fatal(err)
 		}

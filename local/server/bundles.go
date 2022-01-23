@@ -17,6 +17,7 @@ package server
 
 import (
 	"bytes"
+	"io"
 	"strings"
 	"sync"
 
@@ -26,6 +27,7 @@ import (
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/runtime/exec"
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/runtime/pipelinex"
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/typex"
+	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/util/ioutilx"
 	fnpb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/fnexecution_v1"
 	pipepb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/pipeline_v1"
 	"google.golang.org/protobuf/encoding/prototext"
@@ -106,7 +108,7 @@ func executePipeline(wk *worker, pipeline *pipepb.Pipeline) {
 		switch t.GetEnvironmentId() {
 		case "": // Runner Transforms
 			// Runner transforms are processed immeadiately.
-			runnerTransform(t, processed, tid)
+			runnerTransform(t, tid, processed, parent, pipeline)
 			continue
 		case wk.ID:
 			// Great! this is for this environment. // Broken abstraction.
@@ -128,13 +130,8 @@ func executePipeline(wk *worker, pipeline *pipepb.Pipeline) {
 				reconcileCoders(coders, pipeline.GetComponents().GetCoders())
 
 				// Extract the only data from the parent bundle.
-				var dataParentID, parentID string
 				// Only one set of data.
-				for k := range parent.DataReceived {
-					// The matches what the output bundle had.
-					dataParentID = k
-					parentID = strings.TrimSuffix(dataParentID, "_sink")
-				}
+				dataParentID, parentID := sourceIDs(parent)
 
 				// TODO generate as many sinks as there are output transforms for the bundle
 				// indicated by their local outputIDs not "_sink"
@@ -177,7 +174,7 @@ func executePipeline(wk *worker, pipeline *pipepb.Pipeline) {
 				toProcess <- b
 				continue
 			default:
-				logger.Fatalf("unimplemented worker transform[%v]", urn)
+				logger.Fatalf("unimplemented worker transform[%v]: %v", urn, prototext.Format(t))
 			}
 		default:
 			logger.Fatalf("unknown environment[%v]", t.GetEnvironmentId())
@@ -188,6 +185,15 @@ func executePipeline(wk *worker, pipeline *pipepb.Pipeline) {
 	b := <-processed // Drain the final bundle.
 
 	logger.Printf("pipeline done! Final Bundle: %+v", b)
+}
+
+func sourceIDs(parent *bundle) (string, string) {
+	var dataParentID, parentID string
+	for k := range parent.DataReceived {
+		dataParentID = k
+		parentID = strings.TrimSuffix(dataParentID, "_sink")
+	}
+	return dataParentID, parentID
 }
 
 func makeWindowedValueCoder(t *pipepb.PTransform, puts func(*pipepb.PTransform) map[string]string, pipeline *pipepb.Pipeline) (string, string, *pipepb.Coder) {
@@ -257,7 +263,7 @@ func portFor(wInCid string, wk *worker) []byte {
 	return sourcePortBytes
 }
 
-func runnerTransform(t *pipepb.PTransform, processed chan *bundle, tid string) {
+func runnerTransform(t *pipepb.PTransform, tid string, processed chan *bundle, parent *bundle, pipeline *pipepb.Pipeline) {
 	urn := t.GetSpec().GetUrn()
 	switch urn {
 	case "beam:transform:impulse:v1":
@@ -276,11 +282,157 @@ func runnerTransform(t *pipepb.PTransform, processed chan *bundle, tid string) {
 		// doesn't need to do anything for this.
 		go func() {
 			processed <- b
-			logger.Printf("bundle for impulse %v sent", tid)
+		}()
+	case "beam:transform:group_by_key:v1":
+		dataParentID, _ := sourceIDs(parent)
+		fakeTid := tid + "_sink" // The ID from which the consumer will read from.
+
+		ws := windowingStrategy(pipeline, tid)
+		kvc := kvcoder(pipeline, tid)
+
+		wc := exec.MakeWindowDecoder(coder.NewGlobalWindow())
+		kc := pipeline.GetComponents().GetCoders()[kvc.GetComponentCoderIds()[0]]
+		ec := pipeline.GetComponents().GetCoders()[kvc.GetComponentCoderIds()[1]]
+
+		b := &bundle{
+			TransformID: fakeTid,
+			DataReceived: map[string][][]byte{
+				fakeTid: {gbkBytes(ws, wc, kc, ec, parent.DataReceived[dataParentID])},
+			},
+		}
+		go func() {
+			processed <- b
 		}()
 	default:
 		logger.Fatalf("unimplemented runner transform[%v]", urn)
 	}
+}
+
+func kvcoder(pipeline *pipepb.Pipeline, tid string) *pipepb.Coder {
+	comp := pipeline.GetComponents()
+	t := comp.GetTransforms()[tid]
+	var inputPColID string
+	for _, pcolID := range t.GetInputs() {
+		inputPColID = pcolID
+	}
+	pcol := comp.GetPcollections()[inputPColID]
+	return comp.GetCoders()[pcol.GetCoderId()]
+}
+
+// Gets the windowing strategy for the given transform ID.
+func windowingStrategy(pipeline *pipepb.Pipeline, tid string) *pipepb.WindowingStrategy {
+	comp := pipeline.GetComponents()
+	t := comp.GetTransforms()[tid]
+	var inputPColID string
+	for _, pcolID := range t.GetInputs() {
+		inputPColID = pcolID
+	}
+	pcol := comp.GetPcollections()[inputPColID]
+	return comp.GetWindowingStrategies()[pcol.GetWindowingStrategyId()]
+}
+
+func gbkBytes(ws *pipepb.WindowingStrategy, wc exec.WindowDecoder, kc, vc *pipepb.Coder, toAggregate [][]byte) []byte {
+	var outputTime func(typex.Window, mtime.Time) mtime.Time
+	switch ws.GetOutputTime() {
+	case pipepb.OutputTime_END_OF_WINDOW:
+		outputTime = func(w typex.Window, et mtime.Time) mtime.Time {
+			return w.MaxTimestamp()
+		}
+	default:
+		logger.Fatalf("unsupported OutputTime behavior: %v", ws.GetOutputTime())
+	}
+
+	type keyTime struct {
+		key    string
+		w      typex.Window
+		time   mtime.Time
+		values [][]byte
+	}
+	// Map windows to a map of keys to a map of keys to time.
+	// We ultimately emit the window, the key, the time, and the iterable of elements,
+	// all contained in the final value.
+	windows := map[typex.Window]map[string]keyTime{}
+	pulldecoder := func(urn string) func(io.Reader) []byte {
+		switch urn {
+		case "beam:coder:bytes:v1", "beam:coder:string_utf8:v1", "beam:coder:length_prefix:v1":
+			return func(r io.Reader) []byte {
+				l, _ := coder.DecodeVarInt(r)
+				b, _ := ioutilx.ReadN(r, int(l))
+				return b
+			}
+		case "beam:coder:varint:v1":
+			return func(r io.Reader) []byte {
+				// Not efficient. We basically just want to pull the bytes
+				// but not actually decode them.
+				i, _ := coder.DecodeVarInt(r)
+				var buf bytes.Buffer
+				coder.EncodeVarInt(i, &buf)
+				return buf.Bytes()
+			}
+		default:
+			logger.Fatalf("unknown coder urn key: %v", urn)
+
+		}
+		return nil
+	}
+	kd := pulldecoder(kc.GetSpec().GetUrn())
+	vd := pulldecoder(vc.GetSpec().GetUrn())
+
+	// Right, need to get the key coder, and the element coder.
+	// Cus I'll need to pull out anything the runner knows how to deal with.
+	// And repeat.
+	for _, data := range toAggregate {
+		// Parse out each element's data, and repeat.
+		buf := bytes.NewBuffer(data)
+		for {
+			ws, tm, _, err := exec.DecodeWindowedValueHeader(wc, buf)
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				logger.Fatalf("can't decode windowed value header with %v: %v", wc, err)
+			}
+
+			key := string(kd(buf))
+			value := vd(buf)
+			for _, w := range ws {
+				ft := outputTime(w, tm)
+				wk, ok := windows[w]
+				if !ok {
+					wk = make(map[string]keyTime)
+					windows[w] = wk
+				}
+				kt := wk[key]
+				kt.time = ft
+				kt.key = key
+				kt.w = w
+				kt.values = append(kt.values, value)
+				wk[key] = kt
+			}
+		}
+	}
+
+	// Everything's aggregated!
+	// Time to turn things into a windowed KV<K, Iterable<V>>
+
+	var buf bytes.Buffer
+	for _, w := range windows {
+		for _, kt := range w {
+			exec.EncodeWindowedValueHeader(
+				exec.MakeWindowEncoder(coder.NewGlobalWindow()),
+				[]typex.Window{kt.w},
+				kt.time,
+				typex.NoFiringPane(),
+				&buf,
+			)
+			coder.EncodeStringUTF8(kt.key, &buf)
+			coder.EncodeInt32(int32(len(kt.values)), &buf)
+			for _, value := range kt.values {
+				buf.Write(value)
+			}
+		}
+	}
+	return buf.Bytes()
 }
 
 // reconcileCoders, has coders is primed with initial coders.
@@ -365,7 +517,7 @@ func (b *bundle) ProcessOn(wk *worker) {
 	b.DataWait.Wait() // Wait until data is done.
 
 	// logger.Printf("ProcessBundle %v done! Resp: %v", b.InstID, prototext.Format(<-b.Resp))
-	logger.Printf("ProcessBundle %v output: %v", b.InstID, b.DataReceived)
+	// logger.Printf("ProcessBundle %v output: %v", b.InstID, b.DataReceived)
 
 	// TODO figure out how to kick off the next Bundle with the data from here.
 }
