@@ -1,4 +1,38 @@
 
+# Notes to myself: 2022-01-23
+
+Now that we have a GBK, we could run a simple word count.
+
+I think next the trick is to implement handling composites.
+
+And multiple outputs. Then side inputs.
+
+Or just do metrics?
+
+Composites: Find and thow them out, then re-topological sort.
+OK that worked as expected.
+
+gbrt seems to be able to run mostly now, outside of fixing the
+GBK to handle more coders. Since most types don't have a length
+prefix, I'm getting to use a io.TeeReader to avoid re-encode
+steps as we're parsing. I think it might be possible to pass around
+readers or byte.Buffers instead. Done correctly, I might be able
+to avoid doing too much copying of data around and avoid too much
+GC overhead.
+
+Adding a test to make sure that I'm not losing any bytes from the
+TeeReaders.
+
+It occured to me that I can simply tell the SDK to have any coder
+I haven't implemented yet be length prefixed. #Efficiency!
+
+Done and done. local now execute gbrt! At small scales.
+GBRT remains a fancy wordcount.
+Next task is probably dealing with metrics, and then multiple outputs,
+and once side inputs are handled, this will be about on par with the
+direct runner.
+
+
 # Notes to myself: 2022-01-22
 
 OK. GBK time. This is where things start to get complicated,

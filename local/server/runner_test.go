@@ -45,8 +45,15 @@ func init() {
 	beam.RegisterFunction(dofn2)
 	beam.RegisterFunction(dofn3)
 	beam.RegisterFunction(dofnKV)
+	beam.RegisterFunction(dofnKV2)
 	beam.RegisterFunction(dofnGBK)
-	beam.RegisterType(reflect.TypeOf((*simpleCheck)(nil)))
+	beam.RegisterFunction(dofnGBK2)
+	beam.RegisterType(reflect.TypeOf((*int64Check)(nil)))
+	beam.RegisterType(reflect.TypeOf((*stringCheck)(nil)))
+
+	beam.RegisterType(reflect.TypeOf((*testRow)(nil)))
+	beam.RegisterFunction(dofnKV3)
+	beam.RegisterFunction(dofnGBK3)
 }
 
 func dofn1(imp []byte, emit func(int64)) {
@@ -56,24 +63,48 @@ func dofn1(imp []byte, emit func(int64)) {
 	emit(3)
 }
 
-// simpleCheck validates that within a single bundle,
-// we received the expected values.
-// Returns ints, but they are unused, because
-type simpleCheck struct {
+// int64Check validates that within a single bundle,
+// we received the expected int64 values.
+// Returns ints, but they are unused, because we haven't
+// handled ParDo0's yet.
+type int64Check struct {
 	Name string
 	Want []int
 	got  []int
 }
 
-func (fn *simpleCheck) ProcessElement(v int64, _ func(int64)) {
+func (fn *int64Check) ProcessElement(v int64, _ func(int64)) {
 	fn.got = append(fn.got, int(v))
 }
 
-func (fn *simpleCheck) FinishBundle(_ func(int64)) error {
+func (fn *int64Check) FinishBundle(_ func(int64)) error {
 	sort.Ints(fn.got)
 	sort.Ints(fn.Want)
 	if d := cmp.Diff(fn.Want, fn.got); d != "" {
-		return fmt.Errorf("simpleCheck[%v] (-want, +got): %v", fn.Name, d)
+		return fmt.Errorf("int64Check[%v] (-want, +got): %v", fn.Name, d)
+	}
+	return nil
+}
+
+// int64Check validates that within a single bundle,
+// we received the expected int64 values.
+// Returns ints, but they are unused, because we haven't
+// handled ParDo0's yet.
+type stringCheck struct {
+	Name string
+	Want []string
+	got  []string
+}
+
+func (fn *stringCheck) ProcessElement(v string, _ func(string)) {
+	fn.got = append(fn.got, v)
+}
+
+func (fn *stringCheck) FinishBundle(_ func(string)) error {
+	sort.Strings(fn.got)
+	sort.Strings(fn.Want)
+	if d := cmp.Diff(fn.Want, fn.got); d != "" {
+		return fmt.Errorf("stringCheck[%v] (-want, +got): %v", fn.Name, d)
 	}
 	return nil
 }
@@ -97,12 +128,44 @@ func dofnKV(imp []byte, emit func(string, int64)) {
 	emit("b", 6)
 }
 
+func dofnKV2(imp []byte, emit func(int64, string)) {
+	emit(1, "a")
+	emit(2, "b")
+	emit(1, "a")
+	emit(2, "b")
+	emit(1, "a")
+	emit(2, "b")
+}
+
 func dofnGBK(k string, vs func(*int64) bool, emit func(int64)) {
 	var v, sum int64
 	for vs(&v) {
 		sum += v
 	}
 	emit(sum)
+}
+
+func dofnGBK2(k int64, vs func(*string) bool, emit func(string)) {
+	var v, sum string
+	for vs(&v) {
+		sum += v
+	}
+	emit(sum)
+}
+
+type testRow struct {
+	A string
+	B int64
+}
+
+func dofnKV3(imp []byte, emit func(testRow, testRow)) {
+	emit(testRow{"a", 1}, testRow{"a", 1})
+}
+
+func dofnGBK3(k testRow, vs func(*testRow) bool, emit func(string)) {
+	var v testRow
+	vs(&v)
+	emit(fmt.Sprintf("%v: %v", k, v))
 }
 
 func TestRunner(t *testing.T) {
@@ -127,7 +190,7 @@ func TestRunner(t *testing.T) {
 		p, s := beam.NewPipelineWithRoot()
 		imp := beam.Impulse(s)
 		col := beam.ParDo(s, dofn1, imp)
-		beam.ParDo(s, &simpleCheck{
+		beam.ParDo(s, &int64Check{
 			Name: "simple",
 			Want: []int{1, 2, 3},
 		}, col)
@@ -139,7 +202,7 @@ func TestRunner(t *testing.T) {
 	t.Run("sequence", func(t *testing.T) {
 		p, s := beam.NewPipelineWithRoot()
 		imp := beam.Impulse(s)
-		beam.Seq(s, imp, dofn1, dofn2, dofn2, dofn2, &simpleCheck{Name: "sequence", Want: []int{4, 5, 6}})
+		beam.Seq(s, imp, dofn1, dofn2, dofn2, dofn2, &int64Check{Name: "sequence", Want: []int{4, 5, 6}})
 		if _, err := execute(context.Background(), p); err != nil {
 			t.Fatal(err)
 		}
@@ -149,7 +212,27 @@ func TestRunner(t *testing.T) {
 		imp := beam.Impulse(s)
 		col := beam.ParDo(s, dofnKV, imp)
 		gbk := beam.GroupByKey(s, col)
-		beam.Seq(s, gbk, dofnGBK, &simpleCheck{Name: "gbk", Want: []int{9, 12}})
+		beam.Seq(s, gbk, dofnGBK, &int64Check{Name: "gbk", Want: []int{9, 12}})
+		if _, err := execute(context.Background(), p); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("gbk2", func(t *testing.T) {
+		p, s := beam.NewPipelineWithRoot()
+		imp := beam.Impulse(s)
+		col := beam.ParDo(s, dofnKV2, imp)
+		gbk := beam.GroupByKey(s, col)
+		beam.Seq(s, gbk, dofnGBK2, &stringCheck{Name: "gbk2", Want: []string{"aaa", "bbb"}})
+		if _, err := execute(context.Background(), p); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("gbk3", func(t *testing.T) {
+		p, s := beam.NewPipelineWithRoot()
+		imp := beam.Impulse(s)
+		col := beam.ParDo(s, dofnKV3, imp)
+		gbk := beam.GroupByKey(s, col)
+		beam.Seq(s, gbk, dofnGBK3, &stringCheck{Name: "gbk3", Want: []string{"{a 1}: {a 1}"}})
 		if _, err := execute(context.Background(), p); err != nil {
 			t.Fatal(err)
 		}

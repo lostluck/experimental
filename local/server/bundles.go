@@ -27,7 +27,6 @@ import (
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/runtime/exec"
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/runtime/pipelinex"
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/typex"
-	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/util/ioutilx"
 	fnpb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/fnexecution_v1"
 	pipepb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/pipeline_v1"
 	"google.golang.org/protobuf/encoding/prototext"
@@ -85,8 +84,8 @@ func executePipeline(wk *worker, pipeline *pipepb.Pipeline) {
 
 	// Goroutine for executing bundles on the worker.
 	go func() {
+		// Send nil to start, Impulses won't require parental translation.
 		processed <- nil
-		logger.Printf("nil bundle sent")
 		for b := range toProcess {
 			b.ProcessOn(wk) // Blocks until finished.
 			// Send back for dependency handling afterwards.
@@ -96,7 +95,16 @@ func executePipeline(wk *worker, pipeline *pipepb.Pipeline) {
 	}()
 
 	// TODO - Recurse down composite transforms.
-	topo := pipelinex.TopologicalSort(ts, pipeline.GetRootTransformIds())
+	// But lets just ignore composites for now. Leaves only.
+	// What the heck are roots for? We may never know.
+	var roots []string
+	for tid, t := range ts {
+		if len(t.GetSubtransforms()) == 0 {
+			roots = append(roots, tid)
+		}
+	}
+	topo := pipelinex.TopologicalSort(ts, roots)
+
 	for _, tid := range topo {
 		// Block until the parent bundle is ready.
 		parent := <-processed
@@ -118,14 +126,11 @@ func executePipeline(wk *worker, pipeline *pipepb.Pipeline) {
 				// and design the consuming bundle.
 				instID, bundID := wk.nextInst(), wk.nextBund()
 
-				// Get WindowedValue Coders for the transform's input and output PCollections.
-				inPID, wInCid, wInC := makeWindowedValueCoder(t, (*pipepb.PTransform).GetInputs, pipeline)
-				outPID, wOutCid, wOutC := makeWindowedValueCoder(t, (*pipepb.PTransform).GetOutputs, pipeline)
+				coders := map[string]*pipepb.Coder{}
 
-				coders := map[string]*pipepb.Coder{
-					wInCid:  wInC,
-					wOutCid: wOutC,
-				}
+				// Get WindowedValue Coders for the transform's input and output PCollections.
+				inPID, wInCid := makeWindowedValueCoder(t, (*pipepb.PTransform).GetInputs, pipeline, coders)
+				outPID, wOutCid := makeWindowedValueCoder(t, (*pipepb.PTransform).GetOutputs, pipeline, coders)
 
 				reconcileCoders(coders, pipeline.GetComponents().GetCoders())
 
@@ -184,7 +189,7 @@ func executePipeline(wk *worker, pipeline *pipepb.Pipeline) {
 	close(toProcess)
 	b := <-processed // Drain the final bundle.
 
-	logger.Printf("pipeline done! Final Bundle: %+v", b)
+	logger.Printf("pipeline done! Final Bundle: %v", b.InstID)
 }
 
 func sourceIDs(parent *bundle) (string, string) {
@@ -196,32 +201,7 @@ func sourceIDs(parent *bundle) (string, string) {
 	return dataParentID, parentID
 }
 
-func makeWindowedValueCoder(t *pipepb.PTransform, puts func(*pipepb.PTransform) map[string]string, pipeline *pipepb.Pipeline) (string, string, *pipepb.Coder) {
-	if len(puts(t)) > 1 {
-		logger.Fatalf("side inputs/outputs not implemented, can't build bundle for: %v", prototext.Format(t))
-	}
-
-	var pID string
-	for _, c := range puts(t) {
-		pID = c
-	}
-	col := pipeline.GetComponents().GetPcollections()[pID]
-	cID := col.GetCoderId()
-	wcID := pipeline.GetComponents().GetWindowingStrategies()[col.GetWindowingStrategyId()].GetWindowCoderId()
-
-	//pID, cID, wcID := extractOnlyPut(t, (*pipepb.PTransform).GetInputs, pipeline)
-	// Produce ID for the Windowed Value Coder
-	wvcID := "cwv_" + pID
-	wInC := &pipepb.Coder{
-		Spec: &pipepb.FunctionSpec{
-			Urn: "beam:coder:windowed_value:v1",
-		},
-		ComponentCoderIds: []string{cID, wcID},
-	}
-	return pID, wvcID, wInC
-}
-
-func sourceTransform(parentID string, sourcePortBytes []byte, inPID string) *pipepb.PTransform {
+func sourceTransform(parentID string, sourcePortBytes []byte, outPID string) *pipepb.PTransform {
 	source := &pipepb.PTransform{
 		UniqueName: parentID,
 		Spec: &pipepb.FunctionSpec{
@@ -229,13 +209,13 @@ func sourceTransform(parentID string, sourcePortBytes []byte, inPID string) *pip
 			Payload: sourcePortBytes,
 		},
 		Outputs: map[string]string{
-			"o1": inPID,
+			"o1": outPID,
 		},
 	}
 	return source
 }
 
-func sinkTransform(sinkID string, sinkPortBytes []byte, outPID string) *pipepb.PTransform {
+func sinkTransform(sinkID string, sinkPortBytes []byte, inPID string) *pipepb.PTransform {
 	source := &pipepb.PTransform{
 		UniqueName: sinkID,
 		Spec: &pipepb.FunctionSpec{
@@ -243,7 +223,7 @@ func sinkTransform(sinkID string, sinkPortBytes []byte, outPID string) *pipepb.P
 			Payload: sinkPortBytes,
 		},
 		Inputs: map[string]string{
-			"i1": outPID,
+			"i1": inPID,
 		},
 	}
 	return source
@@ -291,8 +271,13 @@ func runnerTransform(t *pipepb.PTransform, tid string, processed chan *bundle, p
 		kvc := kvcoder(pipeline, tid)
 
 		wc := exec.MakeWindowDecoder(coder.NewGlobalWindow())
-		kc := pipeline.GetComponents().GetCoders()[kvc.GetComponentCoderIds()[0]]
-		ec := pipeline.GetComponents().GetCoders()[kvc.GetComponentCoderIds()[1]]
+		// TODO assert this is a KV. It's probably fine, but we should fail anyway.
+		coders := map[string]*pipepb.Coder{}
+		kcID := lpUnknownCoders(kvc.GetComponentCoderIds()[0], coders, pipeline.GetComponents().GetCoders())
+		ecID := lpUnknownCoders(kvc.GetComponentCoderIds()[1], coders, pipeline.GetComponents().GetCoders())
+
+		kc := coders[kcID]
+		ec := coders[ecID]
 
 		b := &bundle{
 			TransformID: fakeTid,
@@ -306,17 +291,6 @@ func runnerTransform(t *pipepb.PTransform, tid string, processed chan *bundle, p
 	default:
 		logger.Fatalf("unimplemented runner transform[%v]", urn)
 	}
-}
-
-func kvcoder(pipeline *pipepb.Pipeline, tid string) *pipepb.Coder {
-	comp := pipeline.GetComponents()
-	t := comp.GetTransforms()[tid]
-	var inputPColID string
-	for _, pcolID := range t.GetInputs() {
-		inputPColID = pcolID
-	}
-	pcol := comp.GetPcollections()[inputPColID]
-	return comp.GetCoders()[pcol.GetCoderId()]
 }
 
 // Gets the windowing strategy for the given transform ID.
@@ -343,7 +317,7 @@ func gbkBytes(ws *pipepb.WindowingStrategy, wc exec.WindowDecoder, kc, vc *pipep
 	}
 
 	type keyTime struct {
-		key    string
+		key    []byte
 		w      typex.Window
 		time   mtime.Time
 		values [][]byte
@@ -352,31 +326,9 @@ func gbkBytes(ws *pipepb.WindowingStrategy, wc exec.WindowDecoder, kc, vc *pipep
 	// We ultimately emit the window, the key, the time, and the iterable of elements,
 	// all contained in the final value.
 	windows := map[typex.Window]map[string]keyTime{}
-	pulldecoder := func(urn string) func(io.Reader) []byte {
-		switch urn {
-		case "beam:coder:bytes:v1", "beam:coder:string_utf8:v1", "beam:coder:length_prefix:v1":
-			return func(r io.Reader) []byte {
-				l, _ := coder.DecodeVarInt(r)
-				b, _ := ioutilx.ReadN(r, int(l))
-				return b
-			}
-		case "beam:coder:varint:v1":
-			return func(r io.Reader) []byte {
-				// Not efficient. We basically just want to pull the bytes
-				// but not actually decode them.
-				i, _ := coder.DecodeVarInt(r)
-				var buf bytes.Buffer
-				coder.EncodeVarInt(i, &buf)
-				return buf.Bytes()
-			}
-		default:
-			logger.Fatalf("unknown coder urn key: %v", urn)
 
-		}
-		return nil
-	}
-	kd := pulldecoder(kc.GetSpec().GetUrn())
-	vd := pulldecoder(vc.GetSpec().GetUrn())
+	kd := pullDecoder(kc)
+	vd := pullDecoder(vc)
 
 	// Right, need to get the key coder, and the element coder.
 	// Cus I'll need to pull out anything the runner knows how to deal with.
@@ -393,7 +345,8 @@ func gbkBytes(ws *pipepb.WindowingStrategy, wc exec.WindowDecoder, kc, vc *pipep
 				logger.Fatalf("can't decode windowed value header with %v: %v", wc, err)
 			}
 
-			key := string(kd(buf))
+			keyByt := kd(buf)
+			key := string(keyByt)
 			value := vd(buf)
 			for _, w := range ws {
 				ft := outputTime(w, tm)
@@ -404,7 +357,7 @@ func gbkBytes(ws *pipepb.WindowingStrategy, wc exec.WindowDecoder, kc, vc *pipep
 				}
 				kt := wk[key]
 				kt.time = ft
-				kt.key = key
+				kt.key = keyByt
 				kt.w = w
 				kt.values = append(kt.values, value)
 				wk[key] = kt
@@ -425,7 +378,7 @@ func gbkBytes(ws *pipepb.WindowingStrategy, wc exec.WindowDecoder, kc, vc *pipep
 				typex.NoFiringPane(),
 				&buf,
 			)
-			coder.EncodeStringUTF8(kt.key, &buf)
+			buf.Write(kt.key)
 			coder.EncodeInt32(int32(len(kt.values)), &buf)
 			for _, value := range kt.values {
 				buf.Write(value)
@@ -433,30 +386,6 @@ func gbkBytes(ws *pipepb.WindowingStrategy, wc exec.WindowDecoder, kc, vc *pipep
 		}
 	}
 	return buf.Bytes()
-}
-
-// reconcileCoders, has coders is primed with initial coders.
-func reconcileCoders(coders, base map[string]*pipepb.Coder) {
-	var comps []string
-	for _, c := range coders {
-		for _, ccid := range c.GetComponentCoderIds() {
-			if _, ok := coders[ccid]; !ok {
-				// We don't have the coder yet, so in we go.
-				comps = append(comps, ccid)
-			}
-		}
-	}
-	if len(comps) == 0 {
-		return
-	}
-	for _, ccid := range comps {
-		c, ok := base[ccid]
-		if !ok {
-			logger.Fatalf("unknown coder id during reconciliation")
-		}
-		coders[ccid] = c
-	}
-	reconcileCoders(coders, base)
 }
 
 // bundle represents an extant ProcessBundle instruction sent to an SDK worker.
@@ -470,6 +399,7 @@ type bundle struct {
 
 	// DataReceived is where all the data received from the SDK is put
 	// separated by their TransformIDs.
+	// TODO( Consider turning these directly to io.Readers to avoid extra copying and allocating & GC.)
 	DataReceived map[string][][]byte
 	DataWait     sync.WaitGroup
 	Resp         chan *fnpb.ProcessBundleResponse
