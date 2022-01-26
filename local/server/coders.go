@@ -106,7 +106,6 @@ func lpUnknownCoders(cID string, coders, base map[string]*pipepb.Coder) string {
 		coders[lpcID] = lpc
 		return lpcID
 	}
-	// We have a composite coder that isn't LP.
 	var needNewComposite bool
 	var comps []string
 	for _, cc := range c.GetComponentCoderIds() {
@@ -147,11 +146,6 @@ func reconcileCoders(coders, base map[string]*pipepb.Coder) {
 			if !ok {
 				logger.Fatalf("unknown coder id during reconciliation")
 			}
-			// Here's where we want to ensure a length prefix?
-			// I almost just want to make a dedicated manager
-			// for coders, so anything we-wrap and modify is maintained
-			// for subsequent bundles.
-
 			coders[ccid] = c
 		}
 	}
@@ -207,7 +201,6 @@ func pullDecoder(c *pipepb.Coder) func(io.Reader) []byte {
 		logger.Fatalf("Runner forgot to LP this Row Coder.")
 	default:
 		logger.Fatalf("unknown coder urn key: %v", urn)
-
 	}
 	return nil
 }
