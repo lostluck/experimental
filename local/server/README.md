@@ -1,3 +1,54 @@
+# Notes to myself: 2022-01-28
+
+I didn't want to have to hardcode all the dang metrics urns
+so now it comes down to decomposing specs to their label 
+keys. Ideally this will allow using a single dang map
+for all the metrics. 
+
+ToDo the same for the payload decoding and storage types
+which I've got the barest bit for. But now we have keys,
+which is half way there.
+
+At best, this allow us to only need to add new required 
+label combos for keys, and decoding/storage types, and then
+the system should be able to take care of itself.
+
+But that's a different problem.
+
+# Notes to myself: 2022-01-25
+
+Metrics? What's a metrics to me? What's a metrics to you?
+
+There's the legacy old style metrics, and the new ones. 
+The Go SDK implements both, but I've not made it work
+with Dataflow, but it's not clear if there's an SDK issue
+or a Dataflow issue somehow. I know the SDK isn't sending
+all the related protocol urns though.
+
+But for now we can ignore those. I'll first implement the
+new ones, and then the old ones, and we should be able to
+compare the results.
+
+The question of course is how to store them... do I just
+re-use the SDK side store? Will that be problematic?
+
+-----
+
+I think I should also rename "runner.go" to "job.go" since
+that's where the job type is living right now. Then I can
+probably just rename the whole package from "server" to 
+"runner" since that's what this is.
+
+----
+
+At long last, I've figured out the right way to deal with
+the proto extensions/options. They are implemented as a
+proto extension to EnumValueOptions, which then refer to 
+a specific type. This saves me from having to write them out
+myself at least. Once more at any rate.
+
+TBH I'm a little annoyed the proto didn't go *farther* so even
+more of this could be automated.
 
 # Notes to myself: 2022-01-23
 
@@ -31,7 +82,6 @@ GBRT remains a fancy wordcount.
 Next task is probably dealing with metrics, and then multiple outputs,
 and once side inputs are handled, this will be about on par with the
 direct runner.
-
 
 # Notes to myself: 2022-01-22
 

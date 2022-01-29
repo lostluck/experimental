@@ -58,6 +58,8 @@ type job struct {
 	// done      chan struct{} // closed when done.
 	msgChan   chan string
 	stateChan chan jobpb.JobState_Enum
+
+	metrics metricsStore
 }
 
 func (j *job) String() string {

@@ -88,6 +88,8 @@ func executePipeline(wk *worker, pipeline *pipepb.Pipeline) {
 		processed <- nil
 		for b := range toProcess {
 			b.ProcessOn(wk) // Blocks until finished.
+			// Metrics?
+			(&metricsStore{}).contributeMetrics(<-b.Resp)
 			// Send back for dependency handling afterwards.
 			processed <- b
 		}

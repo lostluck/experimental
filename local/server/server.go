@@ -57,6 +57,12 @@ func NewServer(port int) *Server {
 	return s
 }
 
+func (s *Server) getJob(id string) *job {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.jobs[id]
+}
+
 func (s *Server) Endpoint() string {
 	return s.lis.Addr().String()
 }

@@ -103,8 +103,9 @@ func (s *Server) GetMessageStream(req *jobpb.JobMessagesRequest, stream jobpb.Jo
 
 }
 
-// Fetch metrics for a given job
+// GetJobMetrics Fetch metrics for a given job.
 func (s *Server) GetJobMetrics(ctx context.Context, req *jobpb.GetJobMetricsRequest) (*jobpb.GetJobMetricsResponse, error) {
+	//j := s.getJob(req.GetJobId())
 	return &jobpb.GetJobMetricsResponse{
 		Metrics: &jobpb.MetricResults{},
 	}, nil
