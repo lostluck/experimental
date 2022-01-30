@@ -24,6 +24,7 @@ import (
 	"testing"
 
 	"github.com/apache/beam/sdks/v2/go/pkg/beam"
+	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/metrics"
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/options/jobopts"
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/runners/universal"
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/testing/ptest"
@@ -54,6 +55,8 @@ func init() {
 	beam.RegisterType(reflect.TypeOf((*testRow)(nil)))
 	beam.RegisterFunction(dofnKV3)
 	beam.RegisterFunction(dofnGBK3)
+
+	beam.RegisterFunction(dofn1Counter)
 }
 
 func dofn1(imp []byte, emit func(int64)) {
@@ -168,12 +171,16 @@ func dofnGBK3(k testRow, vs func(*testRow) bool, emit func(string)) {
 	emit(fmt.Sprintf("%v: %v", k, v))
 }
 
-func TestRunner(t *testing.T) {
+func initRunner(t *testing.T) {
+	t.Helper()
 	if *jobopts.Endpoint == "" {
 		s := NewServer(0)
 		*jobopts.Endpoint = s.Endpoint()
 		go s.Serve()
-		t.Cleanup(func() { s.Stop() })
+		t.Cleanup(func() {
+			*jobopts.Endpoint = ""
+			s.Stop()
+		})
 	}
 	if !jobopts.IsLoopback() {
 		*jobopts.EnvironmentType = "loopback"
@@ -185,6 +192,10 @@ func TestRunner(t *testing.T) {
 	}
 	t.Cleanup(func() { os.Remove(f.Name()) })
 	*jobopts.WorkerBinary = f.Name()
+}
+
+func TestRunner_Pipelines(t *testing.T) {
+	initRunner(t)
 	// TODO: Explicit DoFn Failure case.
 	t.Run("simple", func(t *testing.T) {
 		p, s := beam.NewPipelineWithRoot()
@@ -235,6 +246,29 @@ func TestRunner(t *testing.T) {
 		beam.Seq(s, gbk, dofnGBK3, &stringCheck{Name: "gbk3", Want: []string{"{a 1}: {a 1}"}})
 		if _, err := execute(context.Background(), p); err != nil {
 			t.Fatal(err)
+		}
+	})
+}
+
+func dofn1Counter(ctx context.Context, imp []byte, emit func(int64)) {
+	beam.NewCounter("localtest", "count").Inc(ctx, 1)
+}
+
+func TestRunner_Metrics(t *testing.T) {
+	initRunner(t)
+	t.Run("counter", func(t *testing.T) {
+		p, s := beam.NewPipelineWithRoot()
+		imp := beam.Impulse(s)
+		beam.ParDo(s, dofn1Counter, imp)
+		pr, err := execute(context.Background(), p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		qr := pr.Metrics().Query(func(sr metrics.SingleResult) bool {
+			return sr.Name() == "count"
+		})
+		if got, want := qr.Counters()[0].Committed, int64(1); got != want {
+			t.Errorf("pr.Metrics.Query(Name = \ncount\n)).Committed = %v, want %v", got, want)
 		}
 	})
 }
