@@ -130,7 +130,7 @@ const (
 )
 
 var (
-	samplesCount = flag.Int("samples", 4, "The number of ray samples per pixel")
+	samplesCount = flag.Int("samples", 16, "The number of ray samples per pixel")
 	word         = flag.String("word", "PIXAR", "The word you'd like to render.")
 
 	useBeam    = flag.Bool("use_beam", false, "Whether to use the beam version or not.")
