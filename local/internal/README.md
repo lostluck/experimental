@@ -4,6 +4,19 @@ Started the day off by preventing other packages
 from depending on the server internals. Let's avoid
 unnecessary dependants!
 
+Next up, lets finish the metrics thing. We need to
+be able to pass the bytes to the accumulator directly
+and not manage the types except in abstract.
+
+We'll need to do something different for the progress
+and similar metrics if we ever begin taking advantage
+of them for splitting or similar, but that's a later
+concern.
+
+My goal for today is to get to decoding the payloads,
+logging them and shoving everything into a map.
+Extraction and can happen next time.
+
 # Notes to myself: 2022-01-28
 
 I didn't want to have to hardcode all the dang metrics urns
