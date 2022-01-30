@@ -89,7 +89,7 @@ func executePipeline(wk *worker, pipeline *pipepb.Pipeline) {
 		for b := range toProcess {
 			b.ProcessOn(wk) // Blocks until finished.
 			// Metrics?
-			(&metricsStore{}).contributeMetrics(<-b.Resp)
+			wk.metrics.contributeMetrics(<-b.Resp)
 			// Send back for dependency handling afterwards.
 			processed <- b
 		}
@@ -132,6 +132,10 @@ func executePipeline(wk *worker, pipeline *pipepb.Pipeline) {
 
 				// Get WindowedValue Coders for the transform's input and output PCollections.
 				inPID, wInCid := makeWindowedValueCoder(t, (*pipepb.PTransform).GetInputs, pipeline, coders)
+				// We need a new logical PCollection to represent the source
+				// so we can avoid double counting PCollection metrics later.
+				// But this also means replacing the ID for the input in the bundle.
+				// inPIDSrc := inPID + "_src"
 				outPID, wOutCid := makeWindowedValueCoder(t, (*pipepb.PTransform).GetOutputs, pipeline, coders)
 
 				reconcileCoders(coders, pipeline.GetComponents().GetCoders())
@@ -154,6 +158,11 @@ func executePipeline(wk *worker, pipeline *pipepb.Pipeline) {
 					Pcollections:        pipeline.GetComponents().GetPcollections(),
 					Coders:              coders,
 				}
+				// Copy the input PCollection for the new logical pcolleciton
+				// copyCol := desc.GetPcollections()[inPID]
+				// copyCol = proto.Clone(copyCol).(*pipepb.PCollection)
+				// copyCol.UniqueName = inPIDSrc
+				// desc.GetPcollections()[inPIDSrc] = copyCol
 
 				logger.Printf("registering %v with %v:", desc.GetId(), instID) // , prototext.Format(desc))
 

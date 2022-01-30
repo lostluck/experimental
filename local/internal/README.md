@@ -17,6 +17,16 @@ My goal for today is to get to decoding the payloads,
 logging them and shoving everything into a map.
 Extraction and can happen next time.
 
+Last notes for the night: Because of the way I'm re-using pcollection
+IDs as the data source and sink, and not replacing the
+ids for inputs or outputs of the single transform bundles
+we end up doubling the PCollection metrics. We either need
+to do the re-writing (leading to bonus metrics for the 
+logical pcollections) or filtering out the SDK metrics
+for Sources. We should also do some basic validation with the metrics
+too, like ensuring the final DataChannel count matches the number of
+elements we sent.
+
 # Notes to myself: 2022-01-28
 
 I didn't want to have to hardcode all the dang metrics urns

@@ -343,6 +343,9 @@ type metricsStore struct {
 }
 
 func (m *metricsStore) contributeMetrics(payloads *fnpb.ProcessBundleResponse) {
+	if m.accums == nil {
+		m.accums = map[metricKey]metricAccumulator{}
+	}
 	// Old and busted.
 	mons := payloads.GetMonitoringInfos()
 	for _, mon := range mons {
@@ -353,7 +356,15 @@ func (m *metricsStore) contributeMetrics(payloads *fnpb.ProcessBundleResponse) {
 			continue
 		}
 		key := ops.keyFn(urn, mon.GetLabels())
-		logger.Printf("metrics key for urn %v: %+v", urn, key)
+		a, ok := m.accums[key]
+		if !ok {
+			a = ops.newAccum()
+		}
+		if err := a.accumulate(committed, mon.GetPayload()); err != nil {
+			logger.Fatalf("error decoding metrics %v: %+v\n\t%+v", urn, key, a)
+		}
+		m.accums[key] = a
+		logger.Printf("metrics %v: %+v\n\t%+v", urn, key, a)
 	}
 	// New hotness.
 	mdata := payloads.GetMonitoringData()

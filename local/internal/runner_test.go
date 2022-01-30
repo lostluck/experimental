@@ -239,6 +239,10 @@ func TestRunner(t *testing.T) {
 	})
 }
 
+// TODO: PCollection metrics tests, in particular for elemnt counts, in multi transform pipelines
+// There's a doublding bug since we re-use the same pcollection IDs for the source & sink, and
+// don't do any re-writing.
+
 func TestMain(m *testing.M) {
 	ptest.MainWithDefault(m, "testlocal")
 }
