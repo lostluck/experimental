@@ -55,11 +55,6 @@ type worker struct {
 
 	mu      sync.Mutex
 	bundles map[string]*bundle // Bundles keyed by InstructionID
-
-	// This should be associated with the Job, not the worker
-	// which is where things are a bit complicated with the
-	// implementation at present.
-	metrics metricsStore
 }
 
 // newWorker starts the server components of FnAPI Execution.

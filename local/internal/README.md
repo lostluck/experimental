@@ -1,3 +1,19 @@
+# Notes to myself: 2022-01-30
+
+Lets return metrics back to the user program, through
+the job management API. Factoring things is the trickiest.
+Opting now to simply have committed and tentative be different
+stores, with each type knowing how to make it's own proto.
+But then the protos loook all the same, other than the payload
+and urn, so we may change that later to avoid the dep creep.
+
+Not a huge deal for now. Between the overcount bug, and how big
+the metrics file is getting, we'll likely need an internal package
+to manage things for efficiency's sake.
+
+Once we add tests in, and fix the bug, I'll be done with metrics for
+the time being, and work on additional graph shapes.
+
 # Notes to myself: 2022-01-29
 
 Started the day off by preventing other packages

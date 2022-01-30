@@ -93,7 +93,7 @@ func (j *job) run(ctx context.Context) {
 	j.stateChan <- jobpb.JobState_RUNNING
 
 	// Lets see what the worker does.
-	executePipeline(wk, j.pipeline)
+	executePipeline(wk, j)
 	j.msgChan <- "pipeline completed " + j.String()
 
 	// Stop the worker.

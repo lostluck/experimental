@@ -56,7 +56,8 @@ func impulseBytes() []byte {
 	return impBytes
 }
 
-func executePipeline(wk *worker, pipeline *pipepb.Pipeline) {
+func executePipeline(wk *worker, j *job) {
+	pipeline := j.pipeline
 	// logger.Print("Pipeline:", prototext.Format(pipeline))
 
 	ts := pipeline.GetComponents().GetTransforms()
@@ -89,7 +90,7 @@ func executePipeline(wk *worker, pipeline *pipepb.Pipeline) {
 		for b := range toProcess {
 			b.ProcessOn(wk) // Blocks until finished.
 			// Metrics?
-			wk.metrics.contributeMetrics(<-b.Resp)
+			j.metrics.contributeMetrics(<-b.Resp)
 			// Send back for dependency handling afterwards.
 			processed <- b
 		}

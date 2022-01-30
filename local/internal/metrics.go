@@ -21,6 +21,7 @@ import (
 	"hash/maphash"
 	"log"
 	"sort"
+	"sync"
 
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/graph/coder"
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/metrics"
@@ -54,6 +55,14 @@ func init() {
 		mUrn2Spec[spec.GetUrn()] = spec
 	}
 	mUrn2Ops = buildUrnToOpsMap(mUrn2Spec)
+}
+
+// Should probably just construct a slice or map to get the urns out
+// since we'll ultimately be using them alot.
+var metTyps = (pipepb.MonitoringInfoTypeUrns_Enum)(0).Descriptor().Values()
+
+func getMetTyp(t pipepb.MonitoringInfoTypeUrns_Enum) string {
+	return proto.GetExtension(metTyps.ByNumber(protoreflect.EnumNumber(t)).Options(), pipepb.E_BeamUrn).(string)
 }
 
 func buildUrnToOpsMap(mUrn2Spec map[string]*pipepb.MonitoringInfoSpec) map[string]urnOps {
@@ -154,18 +163,11 @@ func buildUrnToOpsMap(mUrn2Spec map[string]*pipepb.MonitoringInfoSpec) map[strin
 	// and represent how we hold onto them. Ultimately, these will also be
 	// able to extract back out to the protos.
 
-	typs := (pipepb.MonitoringInfoTypeUrns_Enum)(0).Descriptor().Values()
-	getTyp := func(t pipepb.MonitoringInfoTypeUrns_Enum) string {
-		return proto.GetExtension(typs.ByNumber(protoreflect.EnumNumber(t)).Options(), pipepb.E_BeamUrn).(string)
-	}
-	_ = getTyp
-	getTyp(pipepb.MonitoringInfoTypeUrns_SUM_INT64_TYPE)
-
 	typ2accumFac := map[string]accumFactory{
-		getTyp(pipepb.MonitoringInfoTypeUrns_SUM_INT64_TYPE):          func() metricAccumulator { return &sumInt64{} },
-		getTyp(pipepb.MonitoringInfoTypeUrns_SUM_DOUBLE_TYPE):         func() metricAccumulator { return &sumFloat64{} },
-		getTyp(pipepb.MonitoringInfoTypeUrns_DISTRIBUTION_INT64_TYPE): func() metricAccumulator { return &distributionInt64{} },
-		getTyp(pipepb.MonitoringInfoTypeUrns_PROGRESS_TYPE):           func() metricAccumulator { return &progress{} },
+		getMetTyp(pipepb.MonitoringInfoTypeUrns_SUM_INT64_TYPE):          func() metricAccumulator { return &sumInt64{} },
+		getMetTyp(pipepb.MonitoringInfoTypeUrns_SUM_DOUBLE_TYPE):         func() metricAccumulator { return &sumFloat64{} },
+		getMetTyp(pipepb.MonitoringInfoTypeUrns_DISTRIBUTION_INT64_TYPE): func() metricAccumulator { return &distributionInt64{} },
+		getMetTyp(pipepb.MonitoringInfoTypeUrns_PROGRESS_TYPE):           func() metricAccumulator { return &progress{} },
 	}
 
 	ret := make(map[string]urnOps)
@@ -198,36 +200,58 @@ func buildUrnToOpsMap(mUrn2Spec map[string]*pipepb.MonitoringInfoSpec) map[strin
 }
 
 type sumInt64 struct {
-	sum [2]int64
+	sum int64
 }
 
-func (m *sumInt64) accumulate(d durability, pyld []byte) error {
+func (m *sumInt64) accumulate(pyld []byte) error {
 	v, err := coder.DecodeVarInt(bytes.NewBuffer(pyld))
 	if err != nil {
 		return err
 	}
-	m.sum[d] += v
+	m.sum += v
 	return nil
 }
 
-type sumFloat64 struct {
-	sum [2]float64
+func (m *sumInt64) toProto(key metricKey) *pipepb.MonitoringInfo {
+	var buf bytes.Buffer
+	coder.EncodeVarInt(m.sum, &buf)
+	return &pipepb.MonitoringInfo{
+		Urn:     key.Urn(),
+		Type:    getMetTyp(pipepb.MonitoringInfoTypeUrns_SUM_INT64_TYPE),
+		Payload: buf.Bytes(),
+		Labels:  key.Labels(),
+	}
 }
 
-func (m *sumFloat64) accumulate(d durability, pyld []byte) error {
+type sumFloat64 struct {
+	sum float64
+}
+
+func (m *sumFloat64) accumulate(pyld []byte) error {
 	v, err := coder.DecodeDouble(bytes.NewBuffer(pyld))
 	if err != nil {
 		return err
 	}
-	m.sum[d] += v
+	m.sum += v
 	return nil
+}
+
+func (m *sumFloat64) toProto(key metricKey) *pipepb.MonitoringInfo {
+	var buf bytes.Buffer
+	coder.EncodeDouble(m.sum, &buf)
+	return &pipepb.MonitoringInfo{
+		Urn:     key.Urn(),
+		Type:    getMetTyp(pipepb.MonitoringInfoTypeUrns_SUM_DOUBLE_TYPE),
+		Payload: buf.Bytes(),
+		Labels:  key.Labels(),
+	}
 }
 
 type progress struct {
 	snap []float64
 }
 
-func (m *progress) accumulate(_ durability, pyld []byte) error {
+func (m *progress) accumulate(pyld []byte) error {
 	buf := bytes.NewBuffer(pyld)
 	// Assuming known length iterable
 	n, err := coder.DecodeInt32(buf)
@@ -246,6 +270,21 @@ func (m *progress) accumulate(_ durability, pyld []byte) error {
 	return nil
 }
 
+// Probably unused TBH.
+func (m *progress) toProto(key metricKey) *pipepb.MonitoringInfo {
+	var buf bytes.Buffer
+	coder.EncodeInt32(int32(len(m.snap)), &buf)
+	for _, v := range m.snap {
+		coder.EncodeDouble(v, &buf)
+	}
+	return &pipepb.MonitoringInfo{
+		Urn:     key.Urn(),
+		Type:    getMetTyp(pipepb.MonitoringInfoTypeUrns_PROGRESS_TYPE),
+		Payload: buf.Bytes(),
+		Labels:  key.Labels(),
+	}
+}
+
 func ordMin[T constraints.Ordered](a T, b T) T {
 	if a < b {
 		return a
@@ -261,10 +300,10 @@ func ordMax[T constraints.Ordered](a T, b T) T {
 }
 
 type distributionInt64 struct {
-	dist [2]metrics.DistributionValue
+	dist metrics.DistributionValue
 }
 
-func (m *distributionInt64) accumulate(d durability, pyld []byte) error {
+func (m *distributionInt64) accumulate(pyld []byte) error {
 	buf := bytes.NewBuffer(pyld)
 	var dist metrics.DistributionValue
 	var err error
@@ -280,15 +319,27 @@ func (m *distributionInt64) accumulate(d durability, pyld []byte) error {
 	if dist.Max, err = coder.DecodeVarInt(buf); err != nil {
 		return err
 	}
-	cur := m.dist[d]
-
-	m.dist[d] = metrics.DistributionValue{
-		Count: cur.Count + dist.Count,
-		Sum:   cur.Sum + dist.Sum,
-		Min:   ordMin(cur.Min, dist.Min),
-		Max:   ordMax(cur.Max, dist.Max),
+	m.dist = metrics.DistributionValue{
+		Count: m.dist.Count + m.dist.Count,
+		Sum:   m.dist.Sum + m.dist.Sum,
+		Min:   ordMin(m.dist.Min, m.dist.Min),
+		Max:   ordMax(m.dist.Max, m.dist.Max),
 	}
 	return nil
+}
+
+func (m *distributionInt64) toProto(key metricKey) *pipepb.MonitoringInfo {
+	var buf bytes.Buffer
+	coder.EncodeVarInt(m.dist.Count, &buf)
+	coder.EncodeVarInt(m.dist.Sum, &buf)
+	coder.EncodeVarInt(m.dist.Min, &buf)
+	coder.EncodeVarInt(m.dist.Max, &buf)
+	return &pipepb.MonitoringInfo{
+		Urn:     key.Urn(),
+		Type:    getMetTyp(pipepb.MonitoringInfoTypeUrns_DISTRIBUTION_INT64_TYPE),
+		Payload: buf.Bytes(),
+		Labels:  key.Labels(),
+	}
 }
 
 type durability int
@@ -299,50 +350,106 @@ const (
 )
 
 type metricAccumulator interface {
-	accumulate(durability, []byte) error
+	accumulate([]byte) error
+	// TODO, maybe just the payload, and another method for its type urn,
+	// Since they're all the same except for the payloads and type urn.
+	toProto(key metricKey) *pipepb.MonitoringInfo
 }
 
 type accumFactory func() metricAccumulator
 
 type metricKey interface {
-	metricKey() // marker method.
+	Urn() string
+	Labels() map[string]string
 }
 
 type userMetricKey struct {
 	urn, ptransform, namespace, name string
 }
 
-func (userMetricKey) metricKey() {}
+func (k userMetricKey) Urn() string {
+	return k.urn
+}
+
+func (k userMetricKey) Labels() map[string]string {
+	return map[string]string{
+		"PTRANSFORM": k.ptransform,
+		"NAMESPACE":  k.namespace,
+		"NAME":       k.name,
+	}
+}
 
 type pcollectionKey struct {
 	urn, pcollection string
 }
 
-func (pcollectionKey) metricKey() {}
+func (k pcollectionKey) Urn() string {
+	return k.urn
+}
+
+func (k pcollectionKey) Labels() map[string]string {
+	return map[string]string{
+		"PCOLLECTION": k.pcollection,
+	}
+}
 
 type ptransformKey struct {
 	urn, ptransform string
 }
 
-func (ptransformKey) metricKey() {}
+func (k ptransformKey) Urn() string {
+	return k.urn
+}
+
+func (k ptransformKey) Labels() map[string]string {
+	return map[string]string{
+		"PTRANSFORM": k.ptransform,
+	}
+}
 
 type apiRequestKey struct {
 	urn, service, method, resource, ptransform, status string
 }
 
-func (apiRequestKey) metricKey() {}
+func (k apiRequestKey) Urn() string {
+	return k.urn
+}
+
+func (k apiRequestKey) Labels() map[string]string {
+	return map[string]string{
+		"PTRANSFORM": k.ptransform,
+		"SERVICE":    k.service,
+		"METHOD":     k.method,
+		"RESOURCE":   k.resource,
+		"STATUS":     k.status,
+	}
+}
 
 type apiRequestLatenciesKey struct {
 	urn, service, method, resource, ptransform string
 }
 
-func (apiRequestLatenciesKey) metricKey() {}
+func (k apiRequestLatenciesKey) Urn() string {
+	return k.urn
+}
+
+func (k apiRequestLatenciesKey) Labels() map[string]string {
+	return map[string]string{
+		"PTRANSFORM": k.ptransform,
+		"SERVICE":    k.service,
+		"METHOD":     k.method,
+		"RESOURCE":   k.resource,
+	}
+}
 
 type metricsStore struct {
+	mu     sync.Mutex
 	accums map[metricKey]metricAccumulator
 }
 
 func (m *metricsStore) contributeMetrics(payloads *fnpb.ProcessBundleResponse) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if m.accums == nil {
 		m.accums = map[metricKey]metricAccumulator{}
 	}
@@ -360,7 +467,7 @@ func (m *metricsStore) contributeMetrics(payloads *fnpb.ProcessBundleResponse) {
 		if !ok {
 			a = ops.newAccum()
 		}
-		if err := a.accumulate(committed, mon.GetPayload()); err != nil {
+		if err := a.accumulate(mon.GetPayload()); err != nil {
 			logger.Fatalf("error decoding metrics %v: %+v\n\t%+v", urn, key, a)
 		}
 		m.accums[key] = a
@@ -369,4 +476,16 @@ func (m *metricsStore) contributeMetrics(payloads *fnpb.ProcessBundleResponse) {
 	// New hotness.
 	mdata := payloads.GetMonitoringData()
 	_ = mdata
+}
+
+func (m *metricsStore) Results(d durability) []*pipepb.MonitoringInfo {
+	// We don't gather tentative metrics yet.
+	if d == tentative {
+		return nil
+	}
+	infos := make([]*pipepb.MonitoringInfo, 0, len(m.accums))
+	for key, accum := range m.accums {
+		infos = append(infos, accum.toProto(key))
+	}
+	return infos
 }
