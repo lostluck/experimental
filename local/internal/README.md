@@ -1,3 +1,9 @@
+# Notes to myself: 2022-01-29
+
+Started the day off by preventing other packages
+from depending on the server internals. Let's avoid
+unnecessary dependants!
+
 # Notes to myself: 2022-01-28
 
 I didn't want to have to hardcode all the dang metrics urns
