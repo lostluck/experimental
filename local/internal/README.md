@@ -14,6 +14,19 @@ to manage things for efficiency's sake.
 Once we add tests in, and fix the bug, I'll be done with metrics for
 the time being, and work on additional graph shapes.
 
+------------
+
+First up, sinks. That is, DoFns with no Outputs. They end up representing
+the last bundle. Just need to be able to handle outputs properly, and start
+prepping for local output tagged outputs, and critically having the data
+wait set to 0.
+
+Next up, is the harder bit: Downstream dependencies.
+We can't throw away a bundle's data until all of it's successors are done.
+This will also prep us for having side inputs next too.
+Gonna look at the buffering code in the direct runner for inspiration there.
+At which point I might be able to delete what I ported over from it.
+
 # Notes to myself: 2022-01-29
 
 Started the day off by preventing other packages

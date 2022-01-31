@@ -471,7 +471,6 @@ func (m *metricsStore) contributeMetrics(payloads *fnpb.ProcessBundleResponse) {
 			logger.Fatalf("error decoding metrics %v: %+v\n\t%+v", urn, key, a)
 		}
 		m.accums[key] = a
-		logger.Printf("metrics %v: %+v\n\t%+v", urn, key, a)
 	}
 	// New hotness.
 	mdata := payloads.GetMonitoringData()

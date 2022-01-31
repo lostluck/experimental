@@ -17,12 +17,12 @@ package internal
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/graph/coder"
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/util/ioutilx"
 	pipepb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/pipeline_v1"
-	"google.golang.org/protobuf/encoding/prototext"
 )
 
 // leafCoders lists coder urns the runner knows how to manipulate.
@@ -41,15 +41,8 @@ func isLeafCoder(c *pipepb.Coder) bool {
 	return ok
 }
 
-func makeWindowedValueCoder(t *pipepb.PTransform, puts func(*pipepb.PTransform) map[string]string, pipeline *pipepb.Pipeline, coders map[string]*pipepb.Coder) (string, string) {
-	if len(puts(t)) > 1 {
-		logger.Fatalf("side inputs/outputs not implemented, can't build bundle for: %v", prototext.Format(t))
-	}
+func makeWindowedValueCoder(t *pipepb.PTransform, pID string, pipeline *pipepb.Pipeline, coders map[string]*pipepb.Coder) (string, string) {
 
-	var pID string
-	for _, c := range puts(t) {
-		pID = c
-	}
 	col := pipeline.GetComponents().GetPcollections()[pID]
 	cID := lpUnknownCoders(col.GetCoderId(), coders, pipeline.GetComponents().GetCoders())
 	wcID := pipeline.GetComponents().GetWindowingStrategies()[col.GetWindowingStrategyId()].GetWindowCoderId()
@@ -90,7 +83,7 @@ func lpUnknownCoders(cID string, coders, base map[string]*pipepb.Coder) string {
 	c, ok := base[cID]
 	if !ok {
 		// We messed up somewhere.
-		logger.Fatal("unknown coder id:", cID)
+		panic(fmt.Sprint("unknown coder id:", cID))
 	}
 	// Add the original coder to the coders map.
 	coders[cID] = c

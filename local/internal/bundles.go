@@ -18,7 +18,6 @@ package internal
 import (
 	"bytes"
 	"io"
-	"strings"
 	"sync"
 
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/graph/coder"
@@ -31,6 +30,7 @@ import (
 	pipepb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/pipeline_v1"
 	"google.golang.org/protobuf/encoding/prototext"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
 var (
@@ -56,10 +56,24 @@ func impulseBytes() []byte {
 	return impBytes
 }
 
+func ptUrn(v pipepb.StandardPTransforms_Primitives) string {
+	return proto.GetExtension(prims.ByNumber(protoreflect.EnumNumber(v)).Options(), pipepb.E_BeamUrn).(string)
+}
+
+var (
+	prims = (pipepb.StandardPTransforms_Primitives)(0).Descriptor().Values()
+
+	// SDK transforms.
+	urnTransformParDo = ptUrn(pipepb.StandardPTransforms_PAR_DO)
+
+	// Runner transforms.
+	urnTransformImpulse = ptUrn(pipepb.StandardPTransforms_IMPULSE)
+	urnTransformGBK     = ptUrn(pipepb.StandardPTransforms_GROUP_BY_KEY)
+	urnTransformFlatten = ptUrn(pipepb.StandardPTransforms_FLATTEN)
+)
+
 func executePipeline(wk *worker, j *job) {
 	pipeline := j.pipeline
-	// logger.Print("Pipeline:", prototext.Format(pipeline))
-
 	ts := pipeline.GetComponents().GetTransforms()
 
 	// Basically need to figure out the "plan" at this point.
@@ -125,36 +139,44 @@ func executePipeline(wk *worker, j *job) {
 			// Great! this is for this environment. // Broken abstraction.
 			urn := t.GetSpec().GetUrn()
 			switch urn {
-			case "beam:transform:pardo:v1":
+			case urnTransformParDo:
 				// and design the consuming bundle.
 				instID, bundID := wk.nextInst(), wk.nextBund()
-
-				coders := map[string]*pipepb.Coder{}
-
-				// Get WindowedValue Coders for the transform's input and output PCollections.
-				inPID, wInCid := makeWindowedValueCoder(t, (*pipepb.PTransform).GetInputs, pipeline, coders)
-				// We need a new logical PCollection to represent the source
-				// so we can avoid double counting PCollection metrics later.
-				// But this also means replacing the ID for the input in the bundle.
-				// inPIDSrc := inPID + "_src"
-				outPID, wOutCid := makeWindowedValueCoder(t, (*pipepb.PTransform).GetOutputs, pipeline, coders)
-
-				reconcileCoders(coders, pipeline.GetComponents().GetCoders())
 
 				// Extract the only data from the parent bundle.
 				// Only one set of data.
 				dataParentID, parentID := sourceIDs(parent)
 
-				// TODO generate as many sinks as there are output transforms for the bundle
-				// indicated by their local outputIDs not "_sink"
-				sinkID := tid + "_sink"
+				coders := map[string]*pipepb.Coder{}
+				transforms := map[string]*pipepb.PTransform{
+					tid: t, // The Transform to Execute!
+				}
+
+				if len(t.GetInputs()) > 1 {
+					logger.Fatalf("side inputs not implemented, can't build bundle for: %v", prototext.Format(t))
+				}
+
+				// Get WindowedValue Coders for the transform's input and output PCollections.
+				for _, global := range t.GetInputs() {
+					inPID, wInCid := makeWindowedValueCoder(t, global, pipeline, coders)
+					transforms[parentID] = sourceTransform(parentID, portFor(wInCid, wk), inPID)
+				}
+
+				// We need a new logical PCollection to represent the source
+				// so we can avoid double counting PCollection metrics later.
+				// But this also means replacing the ID for the input in the bundle.
+				// inPIDSrc := inPID + "_src"
+				for local, global := range t.GetOutputs() {
+					outPID, wOutCid := makeWindowedValueCoder(t, global, pipeline, coders)
+					sinkID := tid + "_" + local
+					transforms[sinkID] = sinkTransform(sinkID, portFor(wOutCid, wk), outPID)
+				}
+
+				reconcileCoders(coders, pipeline.GetComponents().GetCoders())
+
 				desc := &fnpb.ProcessBundleDescriptor{
-					Id: bundID,
-					Transforms: map[string]*pipepb.PTransform{
-						parentID: sourceTransform(parentID, portFor(wInCid, wk), inPID),
-						tid:      t, // The Transform to Execute!
-						sinkID:   sinkTransform(sinkID, portFor(wOutCid, wk), outPID),
-					},
+					Id:                  bundID,
+					Transforms:          transforms,
 					WindowingStrategies: pipeline.GetComponents().GetWindowingStrategies(),
 					Pcollections:        pipeline.GetComponents().GetPcollections(),
 					Coders:              coders,
@@ -187,7 +209,7 @@ func executePipeline(wk *worker, j *job) {
 
 					DataReceived: make(map[string][][]byte),
 				}
-				b.DataWait.Add(1) // Only one sink.
+				b.DataWait.Add(len(t.GetOutputs()))
 				toProcess <- b
 				continue
 			default:
@@ -208,7 +230,7 @@ func sourceIDs(parent *bundle) (string, string) {
 	var dataParentID, parentID string
 	for k := range parent.DataReceived {
 		dataParentID = k
-		parentID = strings.TrimSuffix(dataParentID, "_sink")
+		parentID = trimRightTo(dataParentID, '_')
 	}
 	return dataParentID, parentID
 }
@@ -257,8 +279,9 @@ func portFor(wInCid string, wk *worker) []byte {
 
 func runnerTransform(t *pipepb.PTransform, tid string, processed chan *bundle, parent *bundle, pipeline *pipepb.Pipeline) {
 	urn := t.GetSpec().GetUrn()
+	logger.Println(urnTransformImpulse, urnTransformGBK)
 	switch urn {
-	case "beam:transform:impulse:v1":
+	case urnTransformImpulse:
 		// To avoid conflicts with these single transform
 		// bundles, we suffix the transform IDs.
 		// These will be subbed out by the pardo stage.
@@ -275,7 +298,7 @@ func runnerTransform(t *pipepb.PTransform, tid string, processed chan *bundle, p
 		go func() {
 			processed <- b
 		}()
-	case "beam:transform:group_by_key:v1":
+	case urnTransformGBK:
 		dataParentID, _ := sourceIDs(parent)
 		fakeTid := tid + "_sink" // The ID from which the consumer will read from.
 

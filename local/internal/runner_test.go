@@ -57,6 +57,7 @@ func init() {
 	beam.RegisterFunction(dofnGBK3)
 
 	beam.RegisterFunction(dofn1Counter)
+	beam.RegisterFunction(dofnSink)
 }
 
 func dofn1(imp []byte, emit func(int64)) {
@@ -171,6 +172,18 @@ func dofnGBK3(k testRow, vs func(*testRow) bool, emit func(string)) {
 	emit(fmt.Sprintf("%v: %v", k, v))
 }
 
+const (
+	ns = "localtest"
+)
+
+func dofnSink(ctx context.Context, _ []byte) {
+	beam.NewCounter(ns, "sunk").Inc(ctx, 73)
+}
+
+func dofn1Counter(ctx context.Context, _ []byte, emit func(int64)) {
+	beam.NewCounter(ns, "count").Inc(ctx, 1)
+}
+
 func initRunner(t *testing.T) {
 	t.Helper()
 	if *jobopts.Endpoint == "" {
@@ -248,10 +261,21 @@ func TestRunner_Pipelines(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
-}
-
-func dofn1Counter(ctx context.Context, imp []byte, emit func(int64)) {
-	beam.NewCounter("localtest", "count").Inc(ctx, 1)
+	t.Run("sink_nooutputs", func(t *testing.T) {
+		p, s := beam.NewPipelineWithRoot()
+		imp := beam.Impulse(s)
+		beam.ParDo0(s, dofnSink, imp)
+		pr, err := execute(context.Background(), p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		qr := pr.Metrics().Query(func(sr metrics.SingleResult) bool {
+			return sr.Name() == "sunk"
+		})
+		if got, want := qr.Counters()[0].Committed, int64(73); got != want {
+			t.Errorf("pr.Metrics.Query(Name = \"sunk\")).Committed = %v, want %v", got, want)
+		}
+	})
 }
 
 func TestRunner_Metrics(t *testing.T) {
@@ -268,7 +292,7 @@ func TestRunner_Metrics(t *testing.T) {
 			return sr.Name() == "count"
 		})
 		if got, want := qr.Counters()[0].Committed, int64(1); got != want {
-			t.Errorf("pr.Metrics.Query(Name = \ncount\n)).Committed = %v, want %v", got, want)
+			t.Errorf("pr.Metrics.Query(Name = \"count\")).Committed = %v, want %v", got, want)
 		}
 	})
 }
