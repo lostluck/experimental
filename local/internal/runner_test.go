@@ -44,7 +44,6 @@ func init() {
 	beam.RegisterRunner("testlocal", execute)
 	beam.RegisterFunction(dofn1)
 	beam.RegisterFunction(dofn2)
-	beam.RegisterFunction(dofn3)
 	beam.RegisterFunction(dofnKV)
 	beam.RegisterFunction(dofnKV2)
 	beam.RegisterFunction(dofnGBK)
@@ -61,7 +60,6 @@ func init() {
 }
 
 func dofn1(imp []byte, emit func(int64)) {
-	logger.Print("dofn1 impulse:", string(imp))
 	emit(1)
 	emit(2)
 	emit(3)
@@ -114,12 +112,6 @@ func (fn *stringCheck) FinishBundle(_ func(string)) error {
 }
 
 func dofn2(v int64, emit func(int64)) {
-	logger.Printf("dofn2(%v)", v)
-	emit(v + 1)
-}
-
-func dofn3(v int64, emit func(int64)) {
-	logger.Printf("dofn2(%v)", v)
 	emit(v + 1)
 }
 
@@ -274,6 +266,39 @@ func TestRunner_Pipelines(t *testing.T) {
 		})
 		if got, want := qr.Counters()[0].Committed, int64(73); got != want {
 			t.Errorf("pr.Metrics.Query(Name = \"sunk\")).Committed = %v, want %v", got, want)
+		}
+	})
+	t.Run("fork_impulse", func(t *testing.T) {
+		p, s := beam.NewPipelineWithRoot()
+		imp := beam.Impulse(s)
+		col1 := beam.ParDo(s, dofn1, imp)
+		col2 := beam.ParDo(s, dofn1, imp)
+		beam.ParDo(s, &int64Check{
+			Name: "fork check1",
+			Want: []int{1, 2, 3},
+		}, col1)
+		beam.ParDo(s, &int64Check{
+			Name: "fork check2",
+			Want: []int{1, 2, 3},
+		}, col2)
+		if _, err := execute(context.Background(), p); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("fork_postDoFn", func(t *testing.T) {
+		p, s := beam.NewPipelineWithRoot()
+		imp := beam.Impulse(s)
+		col := beam.ParDo(s, dofn1, imp)
+		beam.ParDo(s, &int64Check{
+			Name: "fork check1",
+			Want: []int{1, 2, 3},
+		}, col)
+		beam.ParDo(s, &int64Check{
+			Name: "fork check2",
+			Want: []int{1, 2, 3},
+		}, col)
+		if _, err := execute(context.Background(), p); err != nil {
+			t.Fatal(err)
 		}
 	})
 }

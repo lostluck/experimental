@@ -1,3 +1,11 @@
+# Notes to myself: 2022-02-13
+
+After a hiatus, I returned to get the dang "fork" working at least.
+Messy, but it works, and that's the important bit. It involves setting up a map from a user transform to the bundles that generated
+their source data.
+
+I have a plan to begin sorting out side inputs, and flattens too.
+
 # Notes to myself: 2022-01-30
 
 Lets return metrics back to the user program, through

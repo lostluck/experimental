@@ -111,8 +111,36 @@ func executePipeline(wk *worker, j *job) {
 		close(processed)
 	}()
 
+	// Shamelessly derived from the direct runner's processing.
+	type linkID struct {
+		global string // Transform
+		local  string // local input/output id
+	}
+	inputs := make(map[string][]linkID) // TransformID -> []linkID (inputs they consume)
+	succ := make(map[string][]linkID)   // TransformID -> []linkID (successors they generate)
+
+	// Each PCollection only has one parent, determined by transform outputs.
+	// And since we only know pcollections, we need to map from pcol to parent transforms
+	// so we can derive the transform successors map.
+	pcolParents := make(map[string]string)
+	for id, t := range ts {
+		for _, out := range t.GetOutputs() {
+			pcolParents[out] = id
+		}
+	}
+
+	for id, t := range ts {
+		for i, in := range t.GetInputs() {
+			from := pcolParents[in]
+			succ[from] = append(succ[from], linkID{id, i})
+			inputs[id] = append(inputs[id], linkID{from, i})
+		}
+	}
+
 	// TODO - Recurse down composite transforms.
 	// But lets just ignore composites for now. Leaves only.
+	// We only need composites to do "smart" things with
+	// combiners and SDFs.
 	// What the heck are roots for? We may never know.
 	var roots []string
 	for tid, t := range ts {
@@ -122,18 +150,30 @@ func executePipeline(wk *worker, j *job) {
 	}
 	topo := pipelinex.TopologicalSort(ts, roots)
 
+	logger.Printf("TOPO:\n%+v", topo)
+	logger.Printf("SUCCESSORS:\n%+v", succ)
+	logger.Printf("INPUTS:\n%+v", inputs)
+
+	// Map from current transform ID to it's parent bundles.
+	// TODO make the value a map from local ids to bundles instead.
+	prevs := map[string]*bundle{}
+
 	for _, tid := range topo {
-		// Block until the parent bundle is ready.
-		parent := <-processed
+		// Block until the previous bundle is done.
+		<-processed
+		parent := prevs[tid]
+		delete(prevs, tid) // Garbage collect the data.
 		logger.Printf("making bundle for %v", tid)
-		// TODO stash the parent bundle results in a map for
-		// later access for non-linear pipelines.
 
 		t := ts[tid]
 		switch t.GetEnvironmentId() {
 		case "": // Runner Transforms
 			// Runner transforms are processed immeadiately.
-			runnerTransform(t, tid, processed, parent, pipeline)
+			b := runnerTransform(t, tid, processed, parent, pipeline)
+			for _, ch := range succ[tid] {
+				// TODO append to a list instead
+				prevs[ch.global] = b
+			}
 			continue
 		case wk.ID:
 			// Great! this is for this environment. // Broken abstraction.
@@ -203,13 +243,17 @@ func executePipeline(wk *worker, j *job) {
 				b := &bundle{
 					BundID: bundID,
 
-					TransformID: parentID,
-					InputData:   parent.DataReceived[dataParentID],
-					Resp:        make(chan *fnpb.ProcessBundleResponse, 1),
+					InputTransformID: parentID,
+					InputData:        parent.DataReceived[dataParentID],
+					Resp:             make(chan *fnpb.ProcessBundleResponse, 1),
 
 					DataReceived: make(map[string][][]byte),
 				}
 				b.DataWait.Add(len(t.GetOutputs()))
+				for _, ch := range succ[tid] {
+					// TODO append to a list instead
+					prevs[ch.global] = b
+				}
 				toProcess <- b
 				continue
 			default:
@@ -277,9 +321,8 @@ func portFor(wInCid string, wk *worker) []byte {
 	return sourcePortBytes
 }
 
-func runnerTransform(t *pipepb.PTransform, tid string, processed chan *bundle, parent *bundle, pipeline *pipepb.Pipeline) {
+func runnerTransform(t *pipepb.PTransform, tid string, processed chan *bundle, parent *bundle, pipeline *pipepb.Pipeline) *bundle {
 	urn := t.GetSpec().GetUrn()
-	logger.Println(urnTransformImpulse, urnTransformGBK)
 	switch urn {
 	case urnTransformImpulse:
 		// To avoid conflicts with these single transform
@@ -288,7 +331,7 @@ func runnerTransform(t *pipepb.PTransform, tid string, processed chan *bundle, p
 
 		fakeTid := tid + "_sink"
 		b := &bundle{
-			TransformID: fakeTid,
+			InputTransformID: fakeTid,
 			DataReceived: map[string][][]byte{
 				fakeTid: {impulseBytes()},
 			},
@@ -298,6 +341,7 @@ func runnerTransform(t *pipepb.PTransform, tid string, processed chan *bundle, p
 		go func() {
 			processed <- b
 		}()
+		return b
 	case urnTransformGBK:
 		dataParentID, _ := sourceIDs(parent)
 		fakeTid := tid + "_sink" // The ID from which the consumer will read from.
@@ -315,7 +359,7 @@ func runnerTransform(t *pipepb.PTransform, tid string, processed chan *bundle, p
 		ec := coders[ecID]
 
 		b := &bundle{
-			TransformID: fakeTid,
+			InputTransformID: fakeTid,
 			DataReceived: map[string][][]byte{
 				fakeTid: {gbkBytes(ws, wc, kc, ec, parent.DataReceived[dataParentID])},
 			},
@@ -323,9 +367,11 @@ func runnerTransform(t *pipepb.PTransform, tid string, processed chan *bundle, p
 		go func() {
 			processed <- b
 		}()
+		return b
 	default:
 		logger.Fatalf("unimplemented runner transform[%v]", urn)
 	}
+	return nil
 }
 
 // Gets the windowing strategy for the given transform ID.
@@ -428,9 +474,9 @@ type bundle struct {
 	InstID string // ID for the instruction processing this bundle.
 	BundID string // ID for the ProcessBundleDescriptor
 
-	// InputData is data being sent to the SDK.
-	TransformID string
-	InputData   [][]byte
+	// InputTransformID is data being sent to the SDK.
+	InputTransformID string
+	InputData        [][]byte
 
 	// DataReceived is where all the data received from the SDK is put
 	// separated by their TransformIDs.
@@ -471,7 +517,7 @@ func (b *bundle) ProcessOn(wk *worker) {
 			Data: []*fnpb.Elements_Data{
 				{
 					InstructionId: b.InstID,
-					TransformId:   b.TransformID,
+					TransformId:   b.InputTransformID,
 					Data:          d,
 					IsLast:        i+1 == len(b.InputData),
 				},
