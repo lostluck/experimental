@@ -43,6 +43,8 @@ func init() {
 	// the tests if I change things later.
 	beam.RegisterRunner("testlocal", execute)
 	beam.RegisterFunction(dofn1)
+	beam.RegisterFunction(dofn1x2)
+	beam.RegisterFunction(dofn1x5)
 	beam.RegisterFunction(dofn2)
 	beam.RegisterFunction(dofnKV)
 	beam.RegisterFunction(dofnKV2)
@@ -63,6 +65,28 @@ func dofn1(imp []byte, emit func(int64)) {
 	emit(1)
 	emit(2)
 	emit(3)
+}
+
+func dofn1x2(imp []byte, emitA func(int64), emitB func(int64)) {
+	emitA(1)
+	emitA(2)
+	emitA(3)
+	emitB(4)
+	emitB(5)
+	emitB(6)
+}
+
+func dofn1x5(imp []byte, emitA, emitB, emitC, emitD, emitE func(int64)) {
+	emitA(1)
+	emitB(2)
+	emitC(3)
+	emitD(4)
+	emitE(5)
+	emitA(6)
+	emitB(7)
+	emitC(8)
+	emitD(9)
+	emitE(10)
 }
 
 // int64Check validates that within a single bundle,
@@ -297,6 +321,50 @@ func TestRunner_Pipelines(t *testing.T) {
 			Name: "fork check2",
 			Want: []int{1, 2, 3},
 		}, col)
+		if _, err := execute(context.Background(), p); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("fork_multipleOutputs1", func(t *testing.T) {
+		p, s := beam.NewPipelineWithRoot()
+		imp := beam.Impulse(s)
+		col1, col2 := beam.ParDo2(s, dofn1x2, imp)
+		beam.ParDo(s, &int64Check{
+			Name: "col1",
+			Want: []int{1, 2, 3},
+		}, col1)
+		beam.ParDo(s, &int64Check{
+			Name: "col2",
+			Want: []int{4, 5, 6},
+		}, col2)
+		if _, err := execute(context.Background(), p); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("fork_multipleOutputs2", func(t *testing.T) {
+		p, s := beam.NewPipelineWithRoot()
+		imp := beam.Impulse(s)
+		col1, col2, col3, col4, col5 := beam.ParDo5(s, dofn1x5, imp)
+		beam.ParDo(s, &int64Check{
+			Name: "col1",
+			Want: []int{1, 6},
+		}, col1)
+		beam.ParDo(s, &int64Check{
+			Name: "col2",
+			Want: []int{2, 7},
+		}, col2)
+		beam.ParDo(s, &int64Check{
+			Name: "col3",
+			Want: []int{3, 8},
+		}, col3)
+		beam.ParDo(s, &int64Check{
+			Name: "col4",
+			Want: []int{4, 9},
+		}, col4)
+		beam.ParDo(s, &int64Check{
+			Name: "col5",
+			Want: []int{5, 10},
+		}, col5)
 		if _, err := execute(context.Background(), p); err != nil {
 			t.Fatal(err)
 		}

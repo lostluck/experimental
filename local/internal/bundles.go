@@ -116,24 +116,24 @@ func executePipeline(wk *worker, j *job) {
 		global string // Transform
 		local  string // local input/output id
 	}
-	inputs := make(map[string][]linkID) // TransformID -> []linkID (inputs they consume)
-	succ := make(map[string][]linkID)   // TransformID -> []linkID (successors they generate)
+	inputs := make(map[string][]linkID) // TransformID -> []linkID (outputs they consume from the parent)
+	succ := make(map[string][]linkID)   // TransformID -> []linkID (successors inputs they generate for their children)
 
 	// Each PCollection only has one parent, determined by transform outputs.
 	// And since we only know pcollections, we need to map from pcol to parent transforms
 	// so we can derive the transform successors map.
-	pcolParents := make(map[string]string)
+	pcolParents := make(map[string]linkID)
 	for id, t := range ts {
-		for _, out := range t.GetOutputs() {
-			pcolParents[out] = id
+		for o, out := range t.GetOutputs() {
+			pcolParents[out] = linkID{id, o}
 		}
 	}
 
 	for id, t := range ts {
 		for i, in := range t.GetInputs() {
 			from := pcolParents[in]
-			succ[from] = append(succ[from], linkID{id, i})
-			inputs[id] = append(inputs[id], linkID{from, i})
+			succ[from.global] = append(succ[from.global], linkID{id, i})
+			inputs[id] = append(inputs[id], from)
 		}
 	}
 
@@ -196,8 +196,12 @@ func executePipeline(wk *worker, j *job) {
 				instID, bundID := wk.nextInst(), wk.nextBund()
 
 				// Extract the only data from the parent bundle.
-				// Only one set of data.
-				dataParentID, parentID := sourceIDs(parent)
+				in := inputs[tid][0]
+				dataParentID := in.global + "_" + in.local
+				parentID := in.global
+
+				logger.Print(tid, "sources ", dataParentID, " ", parentID)
+				logger.Print(tid, "inputs ", inputs[tid], " ", len(parents))
 
 				coders := map[string]*pipepb.Coder{}
 				transforms := map[string]*pipepb.PTransform{
@@ -233,11 +237,6 @@ func executePipeline(wk *worker, j *job) {
 					Pcollections:        pipeline.GetComponents().GetPcollections(),
 					Coders:              coders,
 				}
-				// Copy the input PCollection for the new logical pcolleciton
-				// copyCol := desc.GetPcollections()[inPID]
-				// copyCol = proto.Clone(copyCol).(*pipepb.PCollection)
-				// copyCol.UniqueName = inPIDSrc
-				// desc.GetPcollections()[inPIDSrc] = copyCol
 
 				logger.Printf("registering %v with %v:", desc.GetId(), instID) // , prototext.Format(desc))
 
@@ -303,7 +302,7 @@ func sourceTransform(parentID string, sourcePortBytes []byte, outPID string) *pi
 			Payload: sourcePortBytes,
 		},
 		Outputs: map[string]string{
-			"o1": outPID,
+			"i0": outPID,
 		},
 	}
 	return source
@@ -317,7 +316,7 @@ func sinkTransform(sinkID string, sinkPortBytes []byte, inPID string) *pipepb.PT
 			Payload: sinkPortBytes,
 		},
 		Inputs: map[string]string{
-			"i1": inPID,
+			"i0": inPID,
 		},
 	}
 	return source
@@ -345,7 +344,8 @@ func runnerTransform(t *pipepb.PTransform, tid string, processed chan *bundle, p
 		// bundles, we suffix the transform IDs.
 		// These will be subbed out by the pardo stage.
 
-		fakeTid := tid + "_sink"
+		// TODO Needs to be the "real" output id for the transform.
+		fakeTid := tid + "_i0"
 		b := &bundle{
 			InputTransformID: fakeTid,
 			DataReceived: map[string][][]byte{
@@ -365,7 +365,8 @@ func runnerTransform(t *pipepb.PTransform, tid string, processed chan *bundle, p
 			parent = pb
 		}
 		dataParentID, _ := sourceIDs(parent)
-		fakeTid := tid + "_sink" // The ID from which the consumer will read from.
+		// TODO Needs to be real output name from the proto.
+		fakeTid := tid + "_i0" // The ID from which the consumer will read from.
 
 		ws := windowingStrategy(pipeline, tid)
 		kvc := kvcoder(pipeline, tid)
@@ -390,7 +391,8 @@ func runnerTransform(t *pipepb.PTransform, tid string, processed chan *bundle, p
 		}()
 		return b
 	case urnTransformFlatten:
-		fakeTid := tid + "_sink" // The ID from which the consumer will read from.
+		// TODO Needs to be real output name from the proto.
+		fakeTid := tid + "_i0" // The ID from which the consumer will read from.
 		// Extract the data from the parents.
 		// TODO extract from the correct output.
 		var data [][]byte

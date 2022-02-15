@@ -4,6 +4,30 @@ Flatten done!
 
 Now to choose: Side Inputs, or Multiple Outputs?
 
+---
+
+DoFns with Mutliple Outputs apparently. Needed to start the
+cleanup of the ad-hoc "_sink" tag I was using. Presently I
+hardcoded in what the Go SDK uses by default `i0`, which is
+not optimal. We really want to be pulling those from the 
+transform ids themselves at least.
+
+This is why we have incrementing layers of tests, since when
+something breaks, you just start running the simpler ones first,
+and get back to fixing those.
+
+The next bit is side inputs, which requires begining to implement
+State service protocols, which means another layer of management.
+Likely, doing this the same as the Data service, as they are
+largely similar, but care will need to be taken for lock contention.
+
+Another thing todo is to remove the various logger.Fatals, and convert them
+to errors. The Fatals ruin the unit test runs, stoping them dead.
+
+The other idea is to make the logging more intentional, so I can have
+all the debug logging for testing the runner, but eventually selectively
+enable certain logs when running it as stand alone if desired.
+
 # Notes to myself: 2022-02-13
 
 After a hiatus, I returned to get the dang "fork" working at least.
