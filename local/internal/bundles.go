@@ -154,25 +154,32 @@ func executePipeline(wk *worker, j *job) {
 	logger.Printf("SUCCESSORS:\n%+v", succ)
 	logger.Printf("INPUTS:\n%+v", inputs)
 
-	// Map from current transform ID to it's parent bundles.
-	// TODO make the value a map from local ids to bundles instead.
-	prevs := map[string]*bundle{}
+	// Map from current transform ID to a map from local ids to bundles instead.
+	prevs := map[string]map[string]*bundle{}
 
 	for _, tid := range topo {
 		// Block until the previous bundle is done.
 		<-processed
-		parent := prevs[tid]
+		parents := prevs[tid]
 		delete(prevs, tid) // Garbage collect the data.
 		logger.Printf("making bundle for %v", tid)
 
 		t := ts[tid]
+		// Much hack.
+		if t.GetSpec().GetUrn() == urnTransformFlatten {
+			t.EnvironmentId = ""
+		}
 		switch t.GetEnvironmentId() {
 		case "": // Runner Transforms
 			// Runner transforms are processed immeadiately.
-			b := runnerTransform(t, tid, processed, parent, pipeline)
+			b := runnerTransform(t, tid, processed, parents, pipeline)
 			for _, ch := range succ[tid] {
-				// TODO append to a list instead
-				prevs[ch.global] = b
+				m, ok := prevs[ch.global]
+				if !ok {
+					m = make(map[string]*bundle)
+				}
+				m[ch.local] = b
+				prevs[ch.global] = m
 			}
 			continue
 		case wk.ID:
@@ -180,6 +187,11 @@ func executePipeline(wk *worker, j *job) {
 			urn := t.GetSpec().GetUrn()
 			switch urn {
 			case urnTransformParDo:
+				var parent *bundle
+				// Extract the one parent.
+				for _, pb := range parents {
+					parent = pb
+				}
 				// and design the consuming bundle.
 				instID, bundID := wk.nextInst(), wk.nextBund()
 
@@ -251,8 +263,12 @@ func executePipeline(wk *worker, j *job) {
 				}
 				b.DataWait.Add(len(t.GetOutputs()))
 				for _, ch := range succ[tid] {
-					// TODO append to a list instead
-					prevs[ch.global] = b
+					m, ok := prevs[ch.global]
+					if !ok {
+						m = make(map[string]*bundle)
+					}
+					m[ch.local] = b
+					prevs[ch.global] = m
 				}
 				toProcess <- b
 				continue
@@ -321,7 +337,7 @@ func portFor(wInCid string, wk *worker) []byte {
 	return sourcePortBytes
 }
 
-func runnerTransform(t *pipepb.PTransform, tid string, processed chan *bundle, parent *bundle, pipeline *pipepb.Pipeline) *bundle {
+func runnerTransform(t *pipepb.PTransform, tid string, processed chan *bundle, parents map[string]*bundle, pipeline *pipepb.Pipeline) *bundle {
 	urn := t.GetSpec().GetUrn()
 	switch urn {
 	case urnTransformImpulse:
@@ -343,6 +359,11 @@ func runnerTransform(t *pipepb.PTransform, tid string, processed chan *bundle, p
 		}()
 		return b
 	case urnTransformGBK:
+		var parent *bundle
+		// Extract the one parent.
+		for _, pb := range parents {
+			parent = pb
+		}
 		dataParentID, _ := sourceIDs(parent)
 		fakeTid := tid + "_sink" // The ID from which the consumer will read from.
 
@@ -362,6 +383,28 @@ func runnerTransform(t *pipepb.PTransform, tid string, processed chan *bundle, p
 			InputTransformID: fakeTid,
 			DataReceived: map[string][][]byte{
 				fakeTid: {gbkBytes(ws, wc, kc, ec, parent.DataReceived[dataParentID])},
+			},
+		}
+		go func() {
+			processed <- b
+		}()
+		return b
+	case urnTransformFlatten:
+		fakeTid := tid + "_sink" // The ID from which the consumer will read from.
+		// Extract the data from the parents.
+		// TODO extract from the correct output.
+		var data [][]byte
+		for _, pb := range parents {
+			for _, ds := range pb.DataReceived {
+				for _, d := range ds {
+					data = append(data, d)
+				}
+			}
+		}
+		b := &bundle{
+			InputTransformID: fakeTid,
+			DataReceived: map[string][][]byte{
+				fakeTid: data,
 			},
 		}
 		go func() {

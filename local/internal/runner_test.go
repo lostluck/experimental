@@ -301,6 +301,20 @@ func TestRunner_Pipelines(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
+	t.Run("flatten", func(t *testing.T) {
+		p, s := beam.NewPipelineWithRoot()
+		imp := beam.Impulse(s)
+		col1 := beam.ParDo(s, dofn1, imp)
+		col2 := beam.ParDo(s, dofn1, imp)
+		flat := beam.Flatten(s, col1, col2)
+		beam.ParDo(s, &int64Check{
+			Name: "flatten check",
+			Want: []int{1, 1, 2, 2, 3, 3},
+		}, flat)
+		if _, err := execute(context.Background(), p); err != nil {
+			t.Fatal(err)
+		}
+	})
 }
 
 func TestRunner_Metrics(t *testing.T) {

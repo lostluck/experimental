@@ -1,3 +1,9 @@
+# Notes to myself: 2022-02-14
+
+Flatten done! 
+
+Now to choose: Side Inputs, or Multiple Outputs?
+
 # Notes to myself: 2022-02-13
 
 After a hiatus, I returned to get the dang "fork" working at least.
