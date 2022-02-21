@@ -26,6 +26,7 @@ import (
 
 	fnpb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/fnexecution_v1"
 	"google.golang.org/grpc"
+	"google.golang.org/protobuf/encoding/prototext"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -213,4 +214,60 @@ func (wk *worker) Data(data fnpb.BeamFnData_DataServer) error {
 		}
 	}
 	return nil
+}
+
+func (wk *worker) State(state fnpb.BeamFnState_StateServer) error {
+	responses := make(chan *fnpb.StateResponse)
+	go func() {
+		// This go routine creates all responses to state requests from the worker
+		// so we want to close the State handler when it's all done.
+		defer close(responses)
+		for {
+			resp, err := state.Recv()
+			if err == io.EOF {
+				return
+			}
+			if err != nil {
+				switch status.Code(err) {
+				case codes.Canceled:
+					logger.Printf("state.Recv Canceled: %v", err)
+					return
+				default:
+					logger.Fatalf("state.Recv error: %v", err)
+				}
+			}
+			switch resp.GetRequest().(type) {
+			case *fnpb.StateRequest_Get:
+				b := wk.bundles[resp.GetInstructionId()]
+				key := resp.GetStateKey()
+				// I need to pre-cache this BS in the original transform.
+				// No need to get clever and JustInTime at the moment.
+				switch key.GetType().(type) {
+				case *fnpb.StateKey_IterableSideInput_:
+					ikey := key.GetIterableSideInput()
+
+					data := b.IterableSideInputData[ikey.GetTransformId()][ikey.GetSideInputId()]
+					responses <- &fnpb.StateResponse{
+						Id: resp.GetId(),
+						Response: &fnpb.StateResponse_Get{
+							Get: &fnpb.StateGetResponse{
+								Data: data,
+							},
+						},
+					}
+
+				default:
+					logger.Fatalf("unsupported StateKey Access type: %T: %v", key.GetType(), prototext.Format(key))
+				}
+			default:
+				logger.Fatalf("unsupported StateRequest kind %T: %v", resp.GetRequest(), prototext.Format(resp))
+			}
+		}
+	}()
+	for resp := range responses {
+		if err := state.Send(resp); err != nil {
+			logger.Printf("state.Send error: %v", err)
+		}
+	}
+	return nil //fmt.Errorf("BAD STATE")
 }

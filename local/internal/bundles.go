@@ -28,6 +28,7 @@ import (
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/typex"
 	fnpb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/fnexecution_v1"
 	pipepb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/pipeline_v1"
+	"golang.org/x/exp/maps"
 	"google.golang.org/protobuf/encoding/prototext"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -60,8 +61,13 @@ func ptUrn(v pipepb.StandardPTransforms_Primitives) string {
 	return proto.GetExtension(prims.ByNumber(protoreflect.EnumNumber(v)).Options(), pipepb.E_BeamUrn).(string)
 }
 
+func siUrn(v pipepb.StandardSideInputTypes_Enum) string {
+	return proto.GetExtension(sids.ByNumber(protoreflect.EnumNumber(v)).Options(), pipepb.E_BeamUrn).(string)
+}
+
 var (
 	prims = (pipepb.StandardPTransforms_Primitives)(0).Descriptor().Values()
+	sids  = (pipepb.StandardSideInputTypes_Enum)(0).Descriptor().Values()
 
 	// SDK transforms.
 	urnTransformParDo = ptUrn(pipepb.StandardPTransforms_PAR_DO)
@@ -70,6 +76,10 @@ var (
 	urnTransformImpulse = ptUrn(pipepb.StandardPTransforms_IMPULSE)
 	urnTransformGBK     = ptUrn(pipepb.StandardPTransforms_GROUP_BY_KEY)
 	urnTransformFlatten = ptUrn(pipepb.StandardPTransforms_FLATTEN)
+
+	// Side Input access patterns
+	urnSideInputIterable = siUrn(pipepb.StandardSideInputTypes_ITERABLE)
+	urnSideInputMultiMap = siUrn(pipepb.StandardSideInputTypes_MULTIMAP)
 )
 
 func executePipeline(wk *worker, j *job) {
@@ -154,7 +164,7 @@ func executePipeline(wk *worker, j *job) {
 	logger.Printf("SUCCESSORS:\n%+v", succ)
 	logger.Printf("INPUTS:\n%+v", inputs)
 
-	// Map from current transform ID to a map from local ids to bundles instead.
+	// prevs is a map from current transform ID to a map from local ids to bundles instead.
 	prevs := map[string]map[string]*bundle{}
 
 	for _, tid := range topo {
@@ -187,35 +197,77 @@ func executePipeline(wk *worker, j *job) {
 			urn := t.GetSpec().GetUrn()
 			switch urn {
 			case urnTransformParDo:
-				var parent *bundle
-				// Extract the one parent.
-				for _, pb := range parents {
-					parent = pb
-				}
 				// and design the consuming bundle.
 				instID, bundID := wk.nextInst(), wk.nextBund()
 
-				// Extract the only data from the parent bundle.
 				in := inputs[tid][0]
 				dataParentID := in.global + "_" + in.local
 				parentID := in.global
 
-				logger.Print(tid, "sources ", dataParentID, " ", parentID)
-				logger.Print(tid, "inputs ", inputs[tid], " ", len(parents))
+				logger.Print(tid, " sources ", dataParentID, " ", parentID)
+				logger.Print(tid, " inputs ", inputs[tid], " ", len(parents))
 
 				coders := map[string]*pipepb.Coder{}
 				transforms := map[string]*pipepb.PTransform{
 					tid: t, // The Transform to Execute!
 				}
 
-				if len(t.GetInputs()) > 1 {
-					logger.Fatalf("side inputs not implemented, can't build bundle for: %v", prototext.Format(t))
+				pardo := &pipepb.ParDoPayload{}
+				if err := (proto.UnmarshalOptions{}).Unmarshal(t.GetSpec().GetPayload(), pardo); err != nil {
+					logger.Fatalf("unable to decode ParDoPayload for transform[%v]", tid)
 				}
 
+				sis := pardo.GetSideInputs()
+				iterSides := make(map[string][]byte)
+
+				var parent *bundle
 				// Get WindowedValue Coders for the transform's input and output PCollections.
-				for _, global := range t.GetInputs() {
+				for local, global := range t.GetInputs() {
 					inPID, wInCid := makeWindowedValueCoder(t, global, pipeline, coders)
-					transforms[parentID] = sourceTransform(parentID, portFor(wInCid, wk), inPID)
+					si, ok := sis[local]
+					// this is the main input!
+					if !ok {
+						parent = parents[local]
+						transforms[parentID] = sourceTransform(parentID, portFor(wInCid, wk), inPID)
+						continue
+					}
+					// TODO, do some kind of prep here?
+					switch si.GetAccessPattern().GetUrn() {
+					case urnSideInputIterable:
+						pb := parents[local]
+						src := pcolParents[global]
+						key := src.global + "_" + src.local
+						logger.Printf("urnSideInputIterable key? %v", key)
+						data, ok := pb.DataReceived[key]
+						if !ok {
+							ks := maps.Keys(pb.DataReceived)
+							logger.Fatalf("%v not a DataReceived key, have %v", key, ks)
+						}
+						col := pipeline.GetComponents().GetPcollections()[global]
+						cID := lpUnknownCoders(col.GetCoderId(), coders, pipeline.GetComponents().GetCoders())
+						ec := coders[cID]
+						ed := pullDecoder(ec)
+
+						wc := exec.MakeWindowDecoder(coder.NewGlobalWindow())
+						inBuf := bytes.NewBuffer(data[0])
+						var outBuf bytes.Buffer
+						for {
+							// TODO window projection and segmentation of side inputs.
+							_, _, _, err := exec.DecodeWindowedValueHeader(wc, inBuf)
+							if err == io.EOF {
+								break
+							}
+							if err != nil {
+								logger.Fatalf("can't decode windowed value header with %v: %v", wc, err)
+							}
+							outBuf.Write(ed(inBuf))
+						}
+
+						iterSides[local] = outBuf.Bytes()
+					default:
+						logger.Fatalf("local input %v (global %v) for transform %v uses accesspattern %v", local, global, tid, si.GetAccessPattern().GetUrn())
+
+					}
 				}
 
 				// We need a new logical PCollection to represent the source
@@ -236,6 +288,9 @@ func executePipeline(wk *worker, j *job) {
 					WindowingStrategies: pipeline.GetComponents().GetWindowingStrategies(),
 					Pcollections:        pipeline.GetComponents().GetPcollections(),
 					Coders:              coders,
+					StateApiServiceDescriptor: &pipepb.ApiServiceDescriptor{
+						Url: wk.Endpoint(),
+					},
 				}
 
 				logger.Printf("registering %v with %v:", desc.GetId(), instID) // , prototext.Format(desc))
@@ -256,7 +311,10 @@ func executePipeline(wk *worker, j *job) {
 
 					InputTransformID: parentID,
 					InputData:        parent.DataReceived[dataParentID],
-					Resp:             make(chan *fnpb.ProcessBundleResponse, 1),
+					IterableSideInputData: map[string]map[string][]byte{
+						tid: iterSides,
+					},
+					Resp: make(chan *fnpb.ProcessBundleResponse, 1),
 
 					DataReceived: make(map[string][][]byte),
 				}
@@ -371,6 +429,7 @@ func runnerTransform(t *pipepb.PTransform, tid string, processed chan *bundle, p
 		ws := windowingStrategy(pipeline, tid)
 		kvc := kvcoder(pipeline, tid)
 
+		// TODO, support other window coders.
 		wc := exec.MakeWindowDecoder(coder.NewGlobalWindow())
 		// TODO assert this is a KV. It's probably fine, but we should fail anyway.
 		coders := map[string]*pipepb.Coder{}
@@ -522,6 +581,9 @@ type bundle struct {
 	// InputTransformID is data being sent to the SDK.
 	InputTransformID string
 	InputData        [][]byte
+
+	// IterableSideInputData is a map from transformID, to inputID to data.
+	IterableSideInputData map[string]map[string][]byte
 
 	// DataReceived is where all the data received from the SDK is put
 	// separated by their TransformIDs.

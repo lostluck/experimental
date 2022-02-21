@@ -1,3 +1,32 @@
+# Notes to myself: 2022-02-19
+
+After a bit of weirdness with my mod cache in what seems to be
+because of using go1.18beta1, resolved though a 
+`go clean --modcache` and moving to RC1, I'm now confident I'm
+using the 2.37.0-RC1 of the Beam Go SDK. It was a very strange
+error where it was looking like I was using some earlier version
+that didn't yet have real iterable side inputs, which is what
+I ultimately wanted to produce today.
+
+It was frustrating, as not only was I not seeing any debug
+messages I was expecting, I was seeing some changes.
+Very strange indeed.
+
+Several Minutes Later
+
+Ultimately it's because I'm an idiot who was using the new Go workspace
+feature to refer to the SDK deps and forgot it. Wow. Real dumb.
+After commenting out the line, everything started to work as expected with
+the expected results.
+
+Had proper Iterable side inputs not been added to the Go SDK in 2.37
+it's likely I wouldn't have noticed for quite some time.
+
+Anyway. Similarly to how data is being handled, I need to add striping
+of the windows, and re-concatenating the data to an iterable. This should
+also work for KVs if I have the type be length prefixed by the SDK side
+first.
+
 # Notes to myself: 2022-02-14
 
 Flatten done! 
