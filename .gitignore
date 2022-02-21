@@ -16,3 +16,4 @@
 # Ignore the binaries
 gbrt/gbrt  
 go.work
+go.work.sum

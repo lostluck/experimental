@@ -42,7 +42,6 @@ func isLeafCoder(c *pipepb.Coder) bool {
 }
 
 func makeWindowedValueCoder(t *pipepb.PTransform, pID string, pipeline *pipepb.Pipeline, coders map[string]*pipepb.Coder) (string, string) {
-
 	col := pipeline.GetComponents().GetPcollections()[pID]
 	cID := lpUnknownCoders(col.GetCoderId(), coders, pipeline.GetComponents().GetCoders())
 	wcID := pipeline.GetComponents().GetWindowingStrategies()[col.GetWindowingStrategyId()].GetWindowCoderId()
