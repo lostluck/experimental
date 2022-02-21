@@ -1,3 +1,20 @@
+# Notes to myself: 2022-02-20
+
+Not too bad to add iterable KV handling.
+
+Now there seems to be a bit of contention WRT either the additional
+tests, or worse, some non-determinism in the runner or the SDK.
+
+Other than that, Multimap side inputs are next on the docket, and
+various cleanups I think. The better logging set up might be the
+right way to figure out the reason for the flakes. It's more
+likely to be in this code than the SDK, but who knows?
+
+There's lots of refactoring to do too, to better segment the
+processing, and contexts for passing things down.
+
+Then we start to need to deal with Windows and all they entail.
+
 # Notes to myself: 2022-02-19
 
 After a bit of weirdness with my mod cache in what seems to be

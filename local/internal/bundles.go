@@ -246,7 +246,7 @@ func executePipeline(wk *worker, j *job) {
 						col := pipeline.GetComponents().GetPcollections()[global]
 						cID := lpUnknownCoders(col.GetCoderId(), coders, pipeline.GetComponents().GetCoders())
 						ec := coders[cID]
-						ed := pullDecoder(ec)
+						ed := pullDecoder(ec, coders)
 
 						wc := exec.MakeWindowDecoder(coder.NewGlobalWindow())
 						inBuf := bytes.NewBuffer(data[0])
@@ -435,6 +435,7 @@ func runnerTransform(t *pipepb.PTransform, tid string, processed chan *bundle, p
 		coders := map[string]*pipepb.Coder{}
 		kcID := lpUnknownCoders(kvc.GetComponentCoderIds()[0], coders, pipeline.GetComponents().GetCoders())
 		ecID := lpUnknownCoders(kvc.GetComponentCoderIds()[1], coders, pipeline.GetComponents().GetCoders())
+		reconcileCoders(coders, pipeline.GetComponents().GetCoders())
 
 		kc := coders[kcID]
 		ec := coders[ecID]
@@ -442,7 +443,7 @@ func runnerTransform(t *pipepb.PTransform, tid string, processed chan *bundle, p
 		b := &bundle{
 			InputTransformID: fakeTid,
 			DataReceived: map[string][][]byte{
-				fakeTid: {gbkBytes(ws, wc, kc, ec, parent.DataReceived[dataParentID])},
+				fakeTid: {gbkBytes(ws, wc, kc, ec, parent.DataReceived[dataParentID], coders)},
 			},
 		}
 		go func() {
@@ -490,7 +491,7 @@ func windowingStrategy(pipeline *pipepb.Pipeline, tid string) *pipepb.WindowingS
 	return comp.GetWindowingStrategies()[pcol.GetWindowingStrategyId()]
 }
 
-func gbkBytes(ws *pipepb.WindowingStrategy, wc exec.WindowDecoder, kc, vc *pipepb.Coder, toAggregate [][]byte) []byte {
+func gbkBytes(ws *pipepb.WindowingStrategy, wc exec.WindowDecoder, kc, vc *pipepb.Coder, toAggregate [][]byte, coders map[string]*pipepb.Coder) []byte {
 	var outputTime func(typex.Window, mtime.Time) mtime.Time
 	switch ws.GetOutputTime() {
 	case pipepb.OutputTime_END_OF_WINDOW:
@@ -512,8 +513,8 @@ func gbkBytes(ws *pipepb.WindowingStrategy, wc exec.WindowDecoder, kc, vc *pipep
 	// all contained in the final value.
 	windows := map[typex.Window]map[string]keyTime{}
 
-	kd := pullDecoder(kc)
-	vd := pullDecoder(vc)
+	kd := pullDecoder(kc, coders)
+	vd := pullDecoder(vc, coders)
 
 	// Right, need to get the key coder, and the element coder.
 	// Cus I'll need to pull out anything the runner knows how to deal with.

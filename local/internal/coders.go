@@ -156,7 +156,7 @@ func kvcoder(pipeline *pipepb.Pipeline, tid string) *pipepb.Coder {
 
 // pullDecoder return a function that will extract the bytes
 // for the associated coder.
-func pullDecoder(c *pipepb.Coder) func(io.Reader) []byte {
+func pullDecoder(c *pipepb.Coder, coders map[string]*pipepb.Coder) func(io.Reader) []byte {
 	urn := c.GetSpec().GetUrn()
 	switch urn {
 	// Anything length prefixed can be treated as opaque.
@@ -189,10 +189,23 @@ func pullDecoder(c *pipepb.Coder) func(io.Reader) []byte {
 			coder.DecodeDouble(tr)
 			return buf.Bytes()
 		}
+	case "beam:coder:kv:v1":
+		ccids := c.GetComponentCoderIds()
+		kd := pullDecoder(coders[ccids[0]], coders)
+		vd := pullDecoder(coders[ccids[1]], coders)
+		// TODO-rejigger all of these to avoid all the wasteful byte copies.
+		// The utility of the io interfaces strike again!
+		return func(r io.Reader) []byte {
+			var buf bytes.Buffer
+			tr := io.TeeReader(r, &buf)
+			kd(tr)
+			vd(tr)
+			return buf.Bytes()
+		}
 	case "beam:coder:row:v1":
 		logger.Fatalf("Runner forgot to LP this Row Coder.")
 	default:
-		logger.Fatalf("unknown coder urn key: %v", urn)
+		panic(fmt.Sprintf("unknown coder urn key: %v", urn))
 	}
 	return nil
 }

@@ -46,6 +46,7 @@ func init() {
 	beam.RegisterFunction(dofn1x2)
 	beam.RegisterFunction(dofn1x5)
 	beam.RegisterFunction(dofn2x1)
+	beam.RegisterFunction(dofn2x2KV)
 	beam.RegisterFunction(dofn2)
 	beam.RegisterFunction(dofnKV)
 	beam.RegisterFunction(dofnKV2)
@@ -90,13 +91,22 @@ func dofn1x5(imp []byte, emitA, emitB, emitC, emitD, emitE func(int64)) {
 	emitE(10)
 }
 
-func dofn2x1(ctx context.Context, imp []byte, iter func(*int64) bool, emit func(int64)) {
-	fmt.Println("STARTING SIDE INPUT DOFN")
+func dofn2x1(imp []byte, iter func(*int64) bool, emit func(int64)) {
 	var v, sum int64
 	for iter(&v) {
 		sum += v
 	}
 	emit(sum)
+}
+
+func dofn2x2KV(imp []byte, iter func(*string, *int64) bool, emitK func(string), emitV func(int64)) {
+	var k string
+	var v, sum int64
+	for iter(&k, &v) {
+		sum += v
+		emitK(k)
+	}
+	emitV(sum)
 }
 
 // int64Check validates that within a single bundle,
@@ -401,6 +411,23 @@ func TestRunner_Pipelines(t *testing.T) {
 		beam.ParDo(s, &int64Check{
 			Name: "iter sideinput check",
 			Want: []int{6},
+		}, sum)
+		if _, err := execute(context.Background(), p); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("sideinput_iterableKV", func(t *testing.T) {
+		p, s := beam.NewPipelineWithRoot()
+		imp := beam.Impulse(s)
+		col1 := beam.ParDo(s, dofnKV, imp)
+		keys, sum := beam.ParDo2(s, dofn2x2KV, imp, beam.SideInput{Input: col1})
+		beam.ParDo(s, &stringCheck{
+			Name: "iterKV sideinput check K",
+			Want: []string{"a", "a", "a", "b", "b", "b"},
+		}, keys)
+		beam.ParDo(s, &int64Check{
+			Name: "iterKV sideinput check V",
+			Want: []int{21},
 		}, sum)
 		if _, err := execute(context.Background(), p); err != nil {
 			t.Fatal(err)
