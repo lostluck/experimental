@@ -37,6 +37,11 @@ func execute(ctx context.Context, p *beam.Pipeline) (beam.PipelineResult, error)
 	return universal.Execute(ctx, p)
 }
 
+func executeWithT(ctx context.Context, t *testing.T, p *beam.Pipeline) (beam.PipelineResult, error) {
+	logger.Println("startingTest - ", t.Name())
+	return execute(ctx, p)
+}
+
 func init() {
 	// Not actually being used, but explicitly registering
 	// will avoid accidentally using a different runner for
@@ -255,7 +260,7 @@ func TestRunner_Pipelines(t *testing.T) {
 			Want: []int{1, 2, 3},
 		}, col)
 
-		if _, err := execute(context.Background(), p); err != nil {
+		if _, err := executeWithT(context.Background(), t, p); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -263,7 +268,7 @@ func TestRunner_Pipelines(t *testing.T) {
 		p, s := beam.NewPipelineWithRoot()
 		imp := beam.Impulse(s)
 		beam.Seq(s, imp, dofn1, dofn2, dofn2, dofn2, &int64Check{Name: "sequence", Want: []int{4, 5, 6}})
-		if _, err := execute(context.Background(), p); err != nil {
+		if _, err := executeWithT(context.Background(), t, p); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -273,7 +278,7 @@ func TestRunner_Pipelines(t *testing.T) {
 		col := beam.ParDo(s, dofnKV, imp)
 		gbk := beam.GroupByKey(s, col)
 		beam.Seq(s, gbk, dofnGBK, &int64Check{Name: "gbk", Want: []int{9, 12}})
-		if _, err := execute(context.Background(), p); err != nil {
+		if _, err := executeWithT(context.Background(), t, p); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -283,7 +288,7 @@ func TestRunner_Pipelines(t *testing.T) {
 		col := beam.ParDo(s, dofnKV2, imp)
 		gbk := beam.GroupByKey(s, col)
 		beam.Seq(s, gbk, dofnGBK2, &stringCheck{Name: "gbk2", Want: []string{"aaa", "bbb"}})
-		if _, err := execute(context.Background(), p); err != nil {
+		if _, err := executeWithT(context.Background(), t, p); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -293,7 +298,7 @@ func TestRunner_Pipelines(t *testing.T) {
 		col := beam.ParDo(s, dofnKV3, imp)
 		gbk := beam.GroupByKey(s, col)
 		beam.Seq(s, gbk, dofnGBK3, &stringCheck{Name: "gbk3", Want: []string{"{a 1}: {a 1}"}})
-		if _, err := execute(context.Background(), p); err != nil {
+		if _, err := executeWithT(context.Background(), t, p); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -301,7 +306,7 @@ func TestRunner_Pipelines(t *testing.T) {
 		p, s := beam.NewPipelineWithRoot()
 		imp := beam.Impulse(s)
 		beam.ParDo0(s, dofnSink, imp)
-		pr, err := execute(context.Background(), p)
+		pr, err := executeWithT(context.Background(), t, p)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -325,7 +330,7 @@ func TestRunner_Pipelines(t *testing.T) {
 			Name: "fork check2",
 			Want: []int{1, 2, 3},
 		}, col2)
-		if _, err := execute(context.Background(), p); err != nil {
+		if _, err := executeWithT(context.Background(), t, p); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -341,7 +346,7 @@ func TestRunner_Pipelines(t *testing.T) {
 			Name: "fork check2",
 			Want: []int{1, 2, 3},
 		}, col)
-		if _, err := execute(context.Background(), p); err != nil {
+		if _, err := executeWithT(context.Background(), t, p); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -357,7 +362,7 @@ func TestRunner_Pipelines(t *testing.T) {
 			Name: "col2",
 			Want: []int{4, 5, 6},
 		}, col2)
-		if _, err := execute(context.Background(), p); err != nil {
+		if _, err := executeWithT(context.Background(), t, p); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -385,7 +390,7 @@ func TestRunner_Pipelines(t *testing.T) {
 			Name: "col5",
 			Want: []int{5, 10},
 		}, col5)
-		if _, err := execute(context.Background(), p); err != nil {
+		if _, err := executeWithT(context.Background(), t, p); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -399,7 +404,7 @@ func TestRunner_Pipelines(t *testing.T) {
 			Name: "flatten check",
 			Want: []int{1, 1, 2, 2, 3, 3},
 		}, flat)
-		if _, err := execute(context.Background(), p); err != nil {
+		if _, err := executeWithT(context.Background(), t, p); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -412,7 +417,7 @@ func TestRunner_Pipelines(t *testing.T) {
 			Name: "iter sideinput check",
 			Want: []int{6},
 		}, sum)
-		if _, err := execute(context.Background(), p); err != nil {
+		if _, err := executeWithT(context.Background(), t, p); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -429,7 +434,7 @@ func TestRunner_Pipelines(t *testing.T) {
 			Name: "iterKV sideinput check V",
 			Want: []int{21},
 		}, sum)
-		if _, err := execute(context.Background(), p); err != nil {
+		if _, err := executeWithT(context.Background(), t, p); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -441,7 +446,7 @@ func TestRunner_Metrics(t *testing.T) {
 		p, s := beam.NewPipelineWithRoot()
 		imp := beam.Impulse(s)
 		beam.ParDo(s, dofn1Counter, imp)
-		pr, err := execute(context.Background(), p)
+		pr, err := executeWithT(context.Background(), t, p)
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -99,8 +99,10 @@ func (wk *worker) String() string {
 // Stop the GRPC server.
 func (wk *worker) Stop() {
 	close(wk.InstReqs)
+	close(wk.DataReqs)
 	logger.Printf("stopping %v", wk)
 	wk.server.Stop()
+	wk.lis.Close()
 }
 
 func (wk *worker) nextInst() string {

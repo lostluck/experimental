@@ -1,3 +1,31 @@
+# TODOs - no particular order.
+
+* Multimap Side Inputs
+* Windowing in Side Inputs / Projection
+* Triggers / TestStream
+* Logger cleanup
+* pullDecoder refactor
+* []byte avoidance -> To io.Reader/Writer streams
+* Composite Handling
+  * Combiner Lifting
+  * SplittableDoFns
+* Error plumbing rather than log.Fatals or panics.
+* Ensure full cleanup.
+
+# Notes to myself: 2022-02-21
+
+Figure I should keep the list of extant tasks at the top of this file,
+instead of losing them in the stream of notes. In looking at the flaky trace
+I see too many lefover Data channels waiting on a channel receive. I need
+to close the channel!
+
+I am also clearly missing a connection somewhere, as there are a number of 
+leftover GRPC connections/transports that need addressing.
+Fully closing the listener seems to make the hanging flake that happens 
+at the side input test pretty regular like. Since I want to nip this in the
+bud, I'll commit this so it comes up more often and force me to do a
+proper package refactor.
+
 # Notes to myself: 2022-02-20
 
 Not too bad to add iterable KV handling.
