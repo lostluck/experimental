@@ -19,13 +19,14 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"reflect"
 	"sort"
+	"sync"
 	"testing"
 
 	"github.com/apache/beam/sdks/v2/go/pkg/beam"
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/metrics"
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/options/jobopts"
+	"github.com/apache/beam/sdks/v2/go/pkg/beam/register"
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/runners/universal"
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/testing/ptest"
 	"github.com/google/go-cmp/cmp"
@@ -47,25 +48,22 @@ func init() {
 	// will avoid accidentally using a different runner for
 	// the tests if I change things later.
 	beam.RegisterRunner("testlocal", execute)
-	beam.RegisterFunction(dofn1)
-	beam.RegisterFunction(dofn1x2)
-	beam.RegisterFunction(dofn1x5)
-	beam.RegisterFunction(dofn2x1)
-	beam.RegisterFunction(dofn2x2KV)
-	beam.RegisterFunction(dofn2)
-	beam.RegisterFunction(dofnKV)
-	beam.RegisterFunction(dofnKV2)
-	beam.RegisterFunction(dofnGBK)
-	beam.RegisterFunction(dofnGBK2)
-	beam.RegisterType(reflect.TypeOf((*int64Check)(nil)))
-	beam.RegisterType(reflect.TypeOf((*stringCheck)(nil)))
-
-	beam.RegisterType(reflect.TypeOf((*testRow)(nil)))
-	beam.RegisterFunction(dofnKV3)
-	beam.RegisterFunction(dofnGBK3)
-
-	beam.RegisterFunction(dofn1Counter)
-	beam.RegisterFunction(dofnSink)
+	register.Function2x0(dofn1)
+	register.Function3x0(dofn1x2)
+	register.Function6x0(dofn1x5)
+	register.Function3x0(dofn2x1)
+	register.Function4x0(dofn2x2KV)
+	register.Function2x0(dofn2)
+	register.Function2x0(dofnKV)
+	register.Function2x0(dofnKV2)
+	register.Function3x0(dofnGBK)
+	register.Function3x0(dofnGBK2)
+	register.DoFn2x0[int64, func(int64)]((*int64Check)(nil))
+	register.DoFn2x0[string, func(string)]((*stringCheck)(nil))
+	register.Function2x0(dofnKV3)
+	register.Function3x0(dofnGBK3)
+	register.Function3x0(dofn1Counter)
+	register.Function2x0(dofnSink)
 }
 
 func dofn1(imp []byte, emit func(int64)) {
@@ -225,9 +223,20 @@ func dofn1Counter(ctx context.Context, _ []byte, emit func(int64)) {
 	beam.NewCounter(ns, "count").Inc(ctx, 1)
 }
 
+var (
+	once sync.Once
+	s    *Server
+)
+
 func initRunner(t *testing.T) {
 	t.Helper()
 	if *jobopts.Endpoint == "" {
+		// once.Do(
+		// 	func() {
+		// 		s = NewServer(0)
+		// 		*jobopts.Endpoint = s.Endpoint()
+		// 		go s.Serve()
+		// 	})
 		s := NewServer(0)
 		*jobopts.Endpoint = s.Endpoint()
 		go s.Serve()
@@ -249,6 +258,9 @@ func initRunner(t *testing.T) {
 }
 
 func TestRunner_Pipelines(t *testing.T) {
+	defer func() {
+		logger.Println("test suite finished", t.Name())
+	}()
 	initRunner(t)
 	// TODO: Explicit DoFn Failure case.
 	t.Run("simple", func(t *testing.T) {
@@ -408,11 +420,25 @@ func TestRunner_Pipelines(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
-	t.Run("sideinput_iterable", func(t *testing.T) {
+	t.Run("sideinput_iterable_oneimpulse", func(t *testing.T) {
 		p, s := beam.NewPipelineWithRoot()
 		imp := beam.Impulse(s)
 		col1 := beam.ParDo(s, dofn1, imp)
 		sum := beam.ParDo(s, dofn2x1, imp, beam.SideInput{Input: col1})
+		beam.ParDo(s, &int64Check{
+			Name: "iter sideinput check",
+			Want: []int{6},
+		}, sum)
+		if _, err := executeWithT(context.Background(), t, p); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("sideinput_iterable_twoimpulse", func(t *testing.T) {
+		p, s := beam.NewPipelineWithRoot()
+		imp1 := beam.Impulse(s)
+		col1 := beam.ParDo(s, dofn1, imp1)
+		imp2 := beam.Impulse(s)
+		sum := beam.ParDo(s, dofn2x1, imp2, beam.SideInput{Input: col1})
 		beam.ParDo(s, &int64Check{
 			Name: "iter sideinput check",
 			Want: []int{6},

@@ -8,9 +8,49 @@
 * []byte avoidance -> To io.Reader/Writer streams
 * Composite Handling
   * Combiner Lifting
-  * SplittableDoFns
+  * Real SplittableDoFns (split requests, etc)
 * Error plumbing rather than log.Fatals or panics.
 * Ensure full cleanup.
+* Container support? -> Ability to run Xlangs & "docker mode".
+
+# Notes to myself: 2022-06-03
+
+OK, it's been a while, and I've promised to write a talk about this. 
+I need to work on the code a fair bit.
+In particular, I need to clean it up! I have ideas! A vision!
+A test runner that can be configured, possibly per pipeline, but
+importantly, per URN (if not per transform).
+
+Either way, I'll probably also want to delete the cribbed things from the
+direct runner.
+
+But I guess, to start, I need to do something about the flake when executing side inputs...
+
+~some time later~
+
+OK. The problem with the flaky side input execution had to do with how side inputs were
+being added in an incorrect order. Given that only Go has an ordering requirement, that
+means the layer that's sending data through is incorrect, and can cause a spurious block.
+
+OK. That's sufficient for the night.
+
+Running large batches with -count and -timeout is handy. 
+It's revealing there's a cleanup issue with the GRPC stuff that's leaving a number of dead
+grpc balancers. Need to see how it's closed.
+
+---- 
+
+The balancer goroutines are from the harness package, since we don't cancel the 
+context and close the connections after harness termination. So that's in the main
+beam execution.
+
+Otherwise, there was a race condition with creating & using some of the channels.
+Easy to fix.
+
+A whole bunch of logging changes, to clean things up. I want to make the debug 
+handling a bit more modal, so I don't need them for every test run. This will also
+let the logging for later development be easier too. Especially once we start
+doing additional configuration work.
 
 # Notes to myself: 2022-02-21
 

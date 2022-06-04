@@ -18,7 +18,6 @@ package internal
 import (
 	"bytes"
 	"hash/maphash"
-	"log"
 	"sort"
 	"sync"
 
@@ -182,13 +181,13 @@ func buildUrnToOpsMap(mUrn2Spec map[string]*pipepb.MonitoringInfoSpec) map[strin
 		fn, ok := l2func[key]
 		if !ok {
 			// Dev printout! Otherwise we should probably always ignore things we don't know.
-			log.Printf("unknown MonitoringSpec required Labels key[%v] for urn %v: %v", key, urn, sorted)
+			logger.Printf("unknown MonitoringSpec required Labels key[%v] for urn %v: %v", key, urn, sorted)
 			continue
 		}
 		fac, ok := typ2accumFac[spec.GetType()]
 		if !ok {
 			// Dev printout! Otherwise we should probably always ignore things we don't know.
-			log.Printf("unknown MonitoringSpec type for urn %v: %v", urn, spec.GetType())
+			logger.Printf("unknown MonitoringSpec type for urn %v: %v", urn, spec.GetType())
 			continue
 		}
 		ret[urn] = urnOps{

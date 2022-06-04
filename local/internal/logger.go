@@ -16,25 +16,48 @@
 package internal
 
 import (
-	"strings"
+	"log"
 )
 
-// trimRightTo trims the right of the string until the
-// seperator run is reached. If it isn't reached, returns
-// the original string.
-func trimRightTo(s string, sep rune) string {
-	var trimmed bool
-	out := strings.TrimRightFunc(s, func(r rune) bool {
-		if trimmed {
-			return false
-		}
-		if r == sep {
-			trimmed = true
-		}
-		return true
-	})
-	if !trimmed {
-		return s
+// The logger for the local runner.
+var logger = &runnerLog{
+	//log.New(os.Stderr, "[local] ", log.Ldate|log.Ltime|log.Lmicroseconds|log.Lshortfile),
+}
+
+type runnerLog struct {
+	logger *log.Logger
+}
+
+func (r *runnerLog) Printf(format string, v ...any) {
+	if r.logger == nil {
+		return
 	}
-	return out
+	r.logger.Printf(format, v...)
+}
+
+func (r *runnerLog) Println(v ...any) {
+	if r.logger == nil {
+		return
+	}
+	r.logger.Println(v...)
+}
+
+func (r *runnerLog) Print(v ...any) {
+	if r.logger == nil {
+		return
+	}
+	r.logger.Print(v...)
+}
+
+func (r *runnerLog) Fatalf(format string, v ...any) {
+	if r.logger == nil {
+		return
+	}
+	r.logger.Fatalf(format, v...)
+}
+func (r *runnerLog) Fatal(v ...any) {
+	if r.logger == nil {
+		return
+	}
+	r.logger.Fatal(v...)
 }

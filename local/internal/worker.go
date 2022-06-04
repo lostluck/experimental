@@ -98,11 +98,12 @@ func (wk *worker) String() string {
 
 // Stop the GRPC server.
 func (wk *worker) Stop() {
+	logger.Printf("stopping %v", wk)
 	close(wk.InstReqs)
 	close(wk.DataReqs)
-	logger.Printf("stopping %v", wk)
 	wk.server.Stop()
 	wk.lis.Close()
+	logger.Printf("stopped %v", wk)
 }
 
 func (wk *worker) nextInst() string {
@@ -123,6 +124,7 @@ func (wk *worker) Logging(stream fnpb.BeamFnLogging_LoggingServer) error {
 			return nil
 		}
 		if err != nil {
+			logger.Printf("logging stream.Recv error: %v", err)
 			return err
 		}
 		for _, l := range in.GetLogEntries() {
@@ -139,6 +141,7 @@ func (wk *worker) Control(ctrl fnpb.BeamFnControl_ControlServer) error {
 		for {
 			resp, err := ctrl.Recv()
 			if err == io.EOF {
+				logger.Printf("ctrl.Recv finished marking done")
 				done <- true // means stream is finished
 				return
 			}
@@ -146,6 +149,7 @@ func (wk *worker) Control(ctrl fnpb.BeamFnControl_ControlServer) error {
 				switch status.Code(err) {
 				case codes.Canceled: // Might ignore this all the time instead.
 					logger.Printf("ctrl.Recv Canceled: %v", err)
+					done <- true // means stream is finished
 					return
 				default:
 					logger.Fatalf("ctrl.Recv error: %v", err)
@@ -170,6 +174,8 @@ func (wk *worker) Control(ctrl fnpb.BeamFnControl_ControlServer) error {
 	for req := range wk.InstReqs {
 		ctrl.Send(req)
 	}
+	logger.Printf("ctrl.Send finished waiting on done")
+	logger.Printf("Control Done %v", <-done)
 	return nil
 }
 
@@ -203,6 +209,7 @@ func (wk *worker) Data(data fnpb.BeamFnData_DataServer) error {
 					b.DataReceived[tID] = output
 				}
 				if d.GetIsLast() {
+					logger.Printf("XXX done waiting on data from %v", b.InstID)
 					b.DataWait.Done()
 				}
 			}
@@ -211,6 +218,7 @@ func (wk *worker) Data(data fnpb.BeamFnData_DataServer) error {
 	}()
 
 	for req := range wk.DataReqs {
+		logger.Printf("XXX data.Send for %v", req.GetData()[0].GetInstructionId())
 		if err := data.Send(req); err != nil {
 			logger.Printf("data.Send error: %v", err)
 		}

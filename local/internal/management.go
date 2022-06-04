@@ -37,6 +37,9 @@ func (s *Server) Prepare(ctx context.Context, req *jobpb.PrepareJobRequest) (*jo
 		pipeline: req.GetPipeline(),
 		jobName:  req.GetJobName(),
 		options:  req.GetPipelineOptions(),
+
+		msgChan:   make(chan string, 100),
+		stateChan: make(chan jobpb.JobState_Enum),
 	}
 	if err := isSupported(job.pipeline.GetRequirements()); err != nil {
 		logger.Printf("unable to run job %v: %v", req.GetJobName(), err)
@@ -78,6 +81,7 @@ func (s *Server) GetMessageStream(req *jobpb.JobMessagesRequest, stream jobpb.Jo
 				Response: &jobpb.JobMessagesResponse_MessageResponse{
 					MessageResponse: &jobpb.JobMessage{
 						MessageText: msg,
+						Importance:  jobpb.JobMessage_JOB_MESSAGE_BASIC,
 					},
 				},
 			})
@@ -94,7 +98,7 @@ func (s *Server) GetMessageStream(req *jobpb.JobMessagesRequest, stream jobpb.Jo
 				},
 			})
 			switch state {
-			case jobpb.JobState_CANCELLED, jobpb.JobState_DONE, jobpb.JobState_DRAINED, jobpb.JobState_FAILED:
+			case jobpb.JobState_CANCELLED, jobpb.JobState_DONE, jobpb.JobState_DRAINED, jobpb.JobState_FAILED, jobpb.JobState_UPDATED:
 				// Reached terminal state.
 				return nil
 			}

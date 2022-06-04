@@ -70,9 +70,6 @@ func (j *job) String() string {
 // It's analoguous to the manager side process for a distributed pipeline.
 // It will begin "workers"
 func (j *job) run(ctx context.Context) {
-	j.msgChan = make(chan string, 100)
-	j.stateChan = make(chan jobpb.JobState_Enum)
-
 	j.stateChan <- jobpb.JobState_STOPPED
 	j.msgChan <- "starting " + j.String()
 	j.stateChan <- jobpb.JobState_STARTING

@@ -18,6 +18,7 @@ package internal
 import (
 	"bytes"
 	"io"
+	"sort"
 	"sync"
 
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/graph/coder"
@@ -121,32 +122,6 @@ func executePipeline(wk *worker, j *job) {
 		close(processed)
 	}()
 
-	// Shamelessly derived from the direct runner's processing.
-	type linkID struct {
-		global string // Transform
-		local  string // local input/output id
-	}
-	inputs := make(map[string][]linkID) // TransformID -> []linkID (outputs they consume from the parent)
-	succ := make(map[string][]linkID)   // TransformID -> []linkID (successors inputs they generate for their children)
-
-	// Each PCollection only has one parent, determined by transform outputs.
-	// And since we only know pcollections, we need to map from pcol to parent transforms
-	// so we can derive the transform successors map.
-	pcolParents := make(map[string]linkID)
-	for id, t := range ts {
-		for o, out := range t.GetOutputs() {
-			pcolParents[out] = linkID{id, o}
-		}
-	}
-
-	for id, t := range ts {
-		for i, in := range t.GetInputs() {
-			from := pcolParents[in]
-			succ[from.global] = append(succ[from.global], linkID{id, i})
-			inputs[id] = append(inputs[id], from)
-		}
-	}
-
 	// TODO - Recurse down composite transforms.
 	// But lets just ignore composites for now. Leaves only.
 	// We only need composites to do "smart" things with
@@ -159,6 +134,42 @@ func executePipeline(wk *worker, j *job) {
 		}
 	}
 	topo := pipelinex.TopologicalSort(ts, roots)
+
+	// Shamelessly derived from the direct runner's processing.
+	type linkID struct {
+		global string // Transform
+		local  string // local input/output id
+		pcol   string // What PCol, is This?
+	}
+	inputs := make(map[string][]linkID) // TransformID -> []linkID (outputs they consume from the parent)
+	succ := make(map[string][]linkID)   // TransformID -> []linkID (successors inputs they generate for their children)
+
+	// Each PCollection only has one parent, determined by transform outputs.
+	// And since we only know pcollections, we need to map from pcol to parent transforms
+	// so we can derive the transform successors map.
+	pcolParents := make(map[string]linkID)
+
+	// We iterate in the transform's topological order for determinism.
+	for _, id := range topo {
+		t := ts[id]
+		for o, out := range t.GetOutputs() {
+			pcolParents[out] = linkID{id, o, out}
+		}
+	}
+
+	for _, id := range topo {
+		t := ts[id]
+		ins := t.GetInputs()
+		ks := maps.Keys(ins)
+		// Sort the inputs by local key id for determinism.
+		sort.Strings(ks)
+		for _, local := range ks {
+			in := ins[local]
+			from := pcolParents[in]
+			succ[from.global] = append(succ[from.global], linkID{id, local, in})
+			inputs[id] = append(inputs[id], from)
+		}
+	}
 
 	logger.Printf("TOPO:\n%+v", topo)
 	logger.Printf("SUCCESSORS:\n%+v", succ)
@@ -237,7 +248,7 @@ func executePipeline(wk *worker, j *job) {
 						pb := parents[local]
 						src := pcolParents[global]
 						key := src.global + "_" + src.local
-						logger.Printf("urnSideInputIterable key? %v", key)
+						logger.Printf("urnSideInputIterable key? %v, %v", key, local)
 						data, ok := pb.DataReceived[key]
 						if !ok {
 							ks := maps.Keys(pb.DataReceived)
@@ -318,6 +329,7 @@ func executePipeline(wk *worker, j *job) {
 
 					DataReceived: make(map[string][][]byte),
 				}
+				logger.Printf("XXX Going to wait on data for %v: count %v - %v", instID, len(t.GetOutputs()), t.GetOutputs())
 				b.DataWait.Add(len(t.GetOutputs()))
 				for _, ch := range succ[tid] {
 					m, ok := prevs[ch.global]
@@ -339,7 +351,6 @@ func executePipeline(wk *worker, j *job) {
 	// We're done with the pipeline!
 	close(toProcess)
 	b := <-processed // Drain the final bundle.
-
 	logger.Printf("pipeline done! Final Bundle: %v", b.InstID)
 }
 
@@ -621,6 +632,7 @@ func (b *bundle) ProcessOn(wk *worker) {
 	// Send the data one at a time, rather than batching.
 	// TODO: Batch Data.
 	for i, d := range b.InputData {
+		logger.Printf("XXX adding data to channel for %v", b.InstID)
 		wk.DataReqs <- &fnpb.Elements{
 			Data: []*fnpb.Elements_Data{
 				{
@@ -633,6 +645,7 @@ func (b *bundle) ProcessOn(wk *worker) {
 		}
 	}
 
+	logger.Printf("XXX waiting on data from %v", b.InstID)
 	b.DataWait.Wait() // Wait until data is done.
 
 	// logger.Printf("ProcessBundle %v done! Resp: %v", b.InstID, prototext.Format(<-b.Resp))
