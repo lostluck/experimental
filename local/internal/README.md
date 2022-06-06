@@ -1,6 +1,7 @@
 # TODOs - no particular order.
 
 * Multimap Side Inputs
+* Windowing in GBKs
 * Windowing in Side Inputs / Projection
   * Fix Side Input order processing issue.
 * Triggers / TestStream
@@ -9,6 +10,8 @@
 * Composite Handling
   * Combiner Lifting
   * Real SplittableDoFns (split requests, etc)
+    * Different split kinds (channel, residual, separation harness test)
+    * Process Continuations & Bundle Rescheduling
 * Error plumbing rather than log.Fatals or panics.
 * Container support? -> Ability to run Xlangs & "docker mode".
 
