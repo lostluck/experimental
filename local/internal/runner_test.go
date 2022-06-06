@@ -20,7 +20,6 @@ import (
 	"fmt"
 	"os"
 	"sort"
-	"sync"
 	"testing"
 
 	"github.com/apache/beam/sdks/v2/go/pkg/beam"
@@ -64,6 +63,8 @@ func init() {
 	register.Function3x0(dofnGBK3)
 	register.Function3x0(dofn1Counter)
 	register.Function2x0(dofnSink)
+
+	register.Function2x1(combineIntSum)
 }
 
 func dofn1(imp []byte, emit func(int64)) {
@@ -113,9 +114,7 @@ func dofn2x2KV(imp []byte, iter func(*string, *int64) bool, emitK func(string), 
 }
 
 // int64Check validates that within a single bundle,
-// we received the expected int64 values.
-// Returns ints, but they are unused, because we haven't
-// handled ParDo0's yet.
+// we received the expected int64 values & sends them downstream.
 type int64Check struct {
 	Name string
 	Want []int
@@ -135,10 +134,9 @@ func (fn *int64Check) FinishBundle(_ func(int64)) error {
 	return nil
 }
 
-// int64Check validates that within a single bundle,
-// we received the expected int64 values.
-// Returns ints, but they are unused, because we haven't
-// handled ParDo0's yet.
+// stringCheck validates that within a single bundle,
+// we received the expected string values.
+// Re-emits them downstream.
 type stringCheck struct {
 	Name string
 	Want []string
@@ -223,6 +221,10 @@ func dofn1Counter(ctx context.Context, _ []byte, emit func(int64)) {
 	beam.NewCounter(ns, "count").Inc(ctx, 1)
 }
 
+func combineIntSum(a, b int64) int64 {
+	return a + b
+}
+
 func initRunner(t *testing.T) {
 	t.Helper()
 	if *jobopts.Endpoint == "" {
@@ -248,208 +250,225 @@ func initRunner(t *testing.T) {
 
 func TestRunner_Pipelines(t *testing.T) {
 	initRunner(t)
-	// TODO: Explicit DoFn Failure case.
-	t.Run("simple", func(t *testing.T) {
-		p, s := beam.NewPipelineWithRoot()
-		imp := beam.Impulse(s)
-		col := beam.ParDo(s, dofn1, imp)
-		beam.ParDo(s, &int64Check{
-			Name: "simple",
-			Want: []int{1, 2, 3},
-		}, col)
 
-		if _, err := executeWithT(context.Background(), t, p); err != nil {
-			t.Fatal(err)
-		}
-	})
-	t.Run("sequence", func(t *testing.T) {
-		p, s := beam.NewPipelineWithRoot()
-		imp := beam.Impulse(s)
-		beam.Seq(s, imp, dofn1, dofn2, dofn2, dofn2, &int64Check{Name: "sequence", Want: []int{4, 5, 6}})
-		if _, err := executeWithT(context.Background(), t, p); err != nil {
-			t.Fatal(err)
-		}
-	})
-	t.Run("gbk", func(t *testing.T) {
-		p, s := beam.NewPipelineWithRoot()
-		imp := beam.Impulse(s)
-		col := beam.ParDo(s, dofnKV, imp)
-		gbk := beam.GroupByKey(s, col)
-		beam.Seq(s, gbk, dofnGBK, &int64Check{Name: "gbk", Want: []int{9, 12}})
-		if _, err := executeWithT(context.Background(), t, p); err != nil {
-			t.Fatal(err)
-		}
-	})
-	t.Run("gbk2", func(t *testing.T) {
-		p, s := beam.NewPipelineWithRoot()
-		imp := beam.Impulse(s)
-		col := beam.ParDo(s, dofnKV2, imp)
-		gbk := beam.GroupByKey(s, col)
-		beam.Seq(s, gbk, dofnGBK2, &stringCheck{Name: "gbk2", Want: []string{"aaa", "bbb"}})
-		if _, err := executeWithT(context.Background(), t, p); err != nil {
-			t.Fatal(err)
-		}
-	})
-	t.Run("gbk3", func(t *testing.T) {
-		p, s := beam.NewPipelineWithRoot()
-		imp := beam.Impulse(s)
-		col := beam.ParDo(s, dofnKV3, imp)
-		gbk := beam.GroupByKey(s, col)
-		beam.Seq(s, gbk, dofnGBK3, &stringCheck{Name: "gbk3", Want: []string{"{a 1}: {a 1}"}})
-		if _, err := executeWithT(context.Background(), t, p); err != nil {
-			t.Fatal(err)
-		}
-	})
-	t.Run("sink_nooutputs", func(t *testing.T) {
-		p, s := beam.NewPipelineWithRoot()
-		imp := beam.Impulse(s)
-		beam.ParDo0(s, dofnSink, imp)
-		pr, err := executeWithT(context.Background(), t, p)
-		if err != nil {
-			t.Fatal(err)
-		}
-		qr := pr.Metrics().Query(func(sr metrics.SingleResult) bool {
-			return sr.Name() == "sunk"
+	tests := []struct {
+		name     string
+		pipeline func(s beam.Scope)
+		metrics  func(t *testing.T, pr beam.PipelineResult)
+	}{
+		{
+			name: "simple",
+			pipeline: func(s beam.Scope) {
+				imp := beam.Impulse(s)
+				col := beam.ParDo(s, dofn1, imp)
+				beam.ParDo(s, &int64Check{
+					Name: "simple",
+					Want: []int{1, 2, 3},
+				}, col)
+			},
+		}, {
+			name: "sequence",
+			pipeline: func(s beam.Scope) {
+				imp := beam.Impulse(s)
+				beam.Seq(s, imp, dofn1, dofn2, dofn2, dofn2, &int64Check{Name: "sequence", Want: []int{4, 5, 6}})
+			},
+		}, {
+			name: "gbk",
+			pipeline: func(s beam.Scope) {
+				imp := beam.Impulse(s)
+				col := beam.ParDo(s, dofnKV, imp)
+				gbk := beam.GroupByKey(s, col)
+				beam.Seq(s, gbk, dofnGBK, &int64Check{Name: "gbk", Want: []int{9, 12}})
+			},
+		}, {
+			name: "gbk2",
+			pipeline: func(s beam.Scope) {
+				imp := beam.Impulse(s)
+				col := beam.ParDo(s, dofnKV2, imp)
+				gbk := beam.GroupByKey(s, col)
+				beam.Seq(s, gbk, dofnGBK2, &stringCheck{Name: "gbk2", Want: []string{"aaa", "bbb"}})
+			},
+		}, {
+			name: "gbk3",
+			pipeline: func(s beam.Scope) {
+				imp := beam.Impulse(s)
+				col := beam.ParDo(s, dofnKV3, imp)
+				gbk := beam.GroupByKey(s, col)
+				beam.Seq(s, gbk, dofnGBK3, &stringCheck{Name: "gbk3", Want: []string{"{a 1}: {a 1}"}})
+			},
+		}, {
+			name: "sink_nooutputs",
+			pipeline: func(s beam.Scope) {
+				imp := beam.Impulse(s)
+				beam.ParDo0(s, dofnSink, imp)
+			},
+			metrics: func(t *testing.T, pr beam.PipelineResult) {
+				qr := pr.Metrics().Query(func(sr metrics.SingleResult) bool {
+					return sr.Name() == "sunk"
+				})
+				if got, want := qr.Counters()[0].Committed, int64(73); got != want {
+					t.Errorf("pr.Metrics.Query(Name = \"sunk\")).Committed = %v, want %v", got, want)
+				}
+			},
+		}, {
+			name: "fork_impulse",
+			pipeline: func(s beam.Scope) {
+				imp := beam.Impulse(s)
+				col1 := beam.ParDo(s, dofn1, imp)
+				col2 := beam.ParDo(s, dofn1, imp)
+				beam.ParDo(s, &int64Check{
+					Name: "fork check1",
+					Want: []int{1, 2, 3},
+				}, col1)
+				beam.ParDo(s, &int64Check{
+					Name: "fork check2",
+					Want: []int{1, 2, 3},
+				}, col2)
+			},
+		}, {
+			name: "fork_postDoFn",
+			pipeline: func(s beam.Scope) {
+				imp := beam.Impulse(s)
+				col := beam.ParDo(s, dofn1, imp)
+				beam.ParDo(s, &int64Check{
+					Name: "fork check1",
+					Want: []int{1, 2, 3},
+				}, col)
+				beam.ParDo(s, &int64Check{
+					Name: "fork check2",
+					Want: []int{1, 2, 3},
+				}, col)
+			},
+		}, {
+			name: "fork_multipleOutputs1",
+			pipeline: func(s beam.Scope) {
+				imp := beam.Impulse(s)
+				col1, col2, col3, col4, col5 := beam.ParDo5(s, dofn1x5, imp)
+				beam.ParDo(s, &int64Check{
+					Name: "col1",
+					Want: []int{1, 6},
+				}, col1)
+				beam.ParDo(s, &int64Check{
+					Name: "col2",
+					Want: []int{2, 7},
+				}, col2)
+				beam.ParDo(s, &int64Check{
+					Name: "col3",
+					Want: []int{3, 8},
+				}, col3)
+				beam.ParDo(s, &int64Check{
+					Name: "col4",
+					Want: []int{4, 9},
+				}, col4)
+				beam.ParDo(s, &int64Check{
+					Name: "col5",
+					Want: []int{5, 10},
+				}, col5)
+			},
+		}, {
+			name: "fork_multipleOutputs2",
+			pipeline: func(s beam.Scope) {
+				imp := beam.Impulse(s)
+				col1, col2, col3, col4, col5 := beam.ParDo5(s, dofn1x5, imp)
+				beam.ParDo(s, &int64Check{
+					Name: "col1",
+					Want: []int{1, 6},
+				}, col1)
+				beam.ParDo(s, &int64Check{
+					Name: "col2",
+					Want: []int{2, 7},
+				}, col2)
+				beam.ParDo(s, &int64Check{
+					Name: "col3",
+					Want: []int{3, 8},
+				}, col3)
+				beam.ParDo(s, &int64Check{
+					Name: "col4",
+					Want: []int{4, 9},
+				}, col4)
+				beam.ParDo(s, &int64Check{
+					Name: "col5",
+					Want: []int{5, 10},
+				}, col5)
+			},
+		}, {
+			name: "flatten",
+			pipeline: func(s beam.Scope) {
+				imp := beam.Impulse(s)
+				col1 := beam.ParDo(s, dofn1, imp)
+				col2 := beam.ParDo(s, dofn1, imp)
+				flat := beam.Flatten(s, col1, col2)
+				beam.ParDo(s, &int64Check{
+					Name: "flatten check",
+					Want: []int{1, 1, 2, 2, 3, 3},
+				}, flat)
+			},
+		}, {
+			name: "sideinput_iterable_oneimpulse",
+			pipeline: func(s beam.Scope) {
+				imp := beam.Impulse(s)
+				col1 := beam.ParDo(s, dofn1, imp)
+				sum := beam.ParDo(s, dofn2x1, imp, beam.SideInput{Input: col1})
+				beam.ParDo(s, &int64Check{
+					Name: "iter sideinput check",
+					Want: []int{6},
+				}, sum)
+			},
+		}, {
+			name: "sideinput_iterable_twoimpulse",
+			pipeline: func(s beam.Scope) {
+				imp1 := beam.Impulse(s)
+				col1 := beam.ParDo(s, dofn1, imp1)
+				imp2 := beam.Impulse(s)
+				sum := beam.ParDo(s, dofn2x1, imp2, beam.SideInput{Input: col1})
+				beam.ParDo(s, &int64Check{
+					Name: "iter sideinput check",
+					Want: []int{6},
+				}, sum)
+			},
+		}, {
+			name: "sideinput_iterableKV",
+			pipeline: func(s beam.Scope) {
+				imp := beam.Impulse(s)
+				col1 := beam.ParDo(s, dofnKV, imp)
+				keys, sum := beam.ParDo2(s, dofn2x2KV, imp, beam.SideInput{Input: col1})
+				beam.ParDo(s, &stringCheck{
+					Name: "iterKV sideinput check K",
+					Want: []string{"a", "a", "a", "b", "b", "b"},
+				}, keys)
+				beam.ParDo(s, &int64Check{
+					Name: "iterKV sideinput check V",
+					Want: []int{21},
+				}, sum)
+			},
+		}, {
+			name: "combine_unlifted",
+			pipeline: func(s beam.Scope) {
+				imp := beam.Impulse(s)
+				in := beam.ParDo(s, dofn1, imp)
+				sum := beam.Combine(s, combineIntSum, in)
+				beam.ParDo(s, &int64Check{
+					Name: "simple",
+					Want: []int{6},
+				}, sum)
+			},
+		},
+	}
+	// TODO: Explicit DoFn Failure case.
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			p, s := beam.NewPipelineWithRoot()
+			test.pipeline(s)
+			pr, err := executeWithT(context.Background(), t, p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.metrics != nil {
+				test.metrics(t, pr)
+			}
 		})
-		if got, want := qr.Counters()[0].Committed, int64(73); got != want {
-			t.Errorf("pr.Metrics.Query(Name = \"sunk\")).Committed = %v, want %v", got, want)
-		}
-	})
-	t.Run("fork_impulse", func(t *testing.T) {
-		p, s := beam.NewPipelineWithRoot()
-		imp := beam.Impulse(s)
-		col1 := beam.ParDo(s, dofn1, imp)
-		col2 := beam.ParDo(s, dofn1, imp)
-		beam.ParDo(s, &int64Check{
-			Name: "fork check1",
-			Want: []int{1, 2, 3},
-		}, col1)
-		beam.ParDo(s, &int64Check{
-			Name: "fork check2",
-			Want: []int{1, 2, 3},
-		}, col2)
-		if _, err := executeWithT(context.Background(), t, p); err != nil {
-			t.Fatal(err)
-		}
-	})
-	t.Run("fork_postDoFn", func(t *testing.T) {
-		p, s := beam.NewPipelineWithRoot()
-		imp := beam.Impulse(s)
-		col := beam.ParDo(s, dofn1, imp)
-		beam.ParDo(s, &int64Check{
-			Name: "fork check1",
-			Want: []int{1, 2, 3},
-		}, col)
-		beam.ParDo(s, &int64Check{
-			Name: "fork check2",
-			Want: []int{1, 2, 3},
-		}, col)
-		if _, err := executeWithT(context.Background(), t, p); err != nil {
-			t.Fatal(err)
-		}
-	})
-	t.Run("fork_multipleOutputs1", func(t *testing.T) {
-		p, s := beam.NewPipelineWithRoot()
-		imp := beam.Impulse(s)
-		col1, col2 := beam.ParDo2(s, dofn1x2, imp)
-		beam.ParDo(s, &int64Check{
-			Name: "col1",
-			Want: []int{1, 2, 3},
-		}, col1)
-		beam.ParDo(s, &int64Check{
-			Name: "col2",
-			Want: []int{4, 5, 6},
-		}, col2)
-		if _, err := executeWithT(context.Background(), t, p); err != nil {
-			t.Fatal(err)
-		}
-	})
-	t.Run("fork_multipleOutputs2", func(t *testing.T) {
-		p, s := beam.NewPipelineWithRoot()
-		imp := beam.Impulse(s)
-		col1, col2, col3, col4, col5 := beam.ParDo5(s, dofn1x5, imp)
-		beam.ParDo(s, &int64Check{
-			Name: "col1",
-			Want: []int{1, 6},
-		}, col1)
-		beam.ParDo(s, &int64Check{
-			Name: "col2",
-			Want: []int{2, 7},
-		}, col2)
-		beam.ParDo(s, &int64Check{
-			Name: "col3",
-			Want: []int{3, 8},
-		}, col3)
-		beam.ParDo(s, &int64Check{
-			Name: "col4",
-			Want: []int{4, 9},
-		}, col4)
-		beam.ParDo(s, &int64Check{
-			Name: "col5",
-			Want: []int{5, 10},
-		}, col5)
-		if _, err := executeWithT(context.Background(), t, p); err != nil {
-			t.Fatal(err)
-		}
-	})
-	t.Run("flatten", func(t *testing.T) {
-		p, s := beam.NewPipelineWithRoot()
-		imp := beam.Impulse(s)
-		col1 := beam.ParDo(s, dofn1, imp)
-		col2 := beam.ParDo(s, dofn1, imp)
-		flat := beam.Flatten(s, col1, col2)
-		beam.ParDo(s, &int64Check{
-			Name: "flatten check",
-			Want: []int{1, 1, 2, 2, 3, 3},
-		}, flat)
-		if _, err := executeWithT(context.Background(), t, p); err != nil {
-			t.Fatal(err)
-		}
-	})
-	t.Run("sideinput_iterable_oneimpulse", func(t *testing.T) {
-		p, s := beam.NewPipelineWithRoot()
-		imp := beam.Impulse(s)
-		col1 := beam.ParDo(s, dofn1, imp)
-		sum := beam.ParDo(s, dofn2x1, imp, beam.SideInput{Input: col1})
-		beam.ParDo(s, &int64Check{
-			Name: "iter sideinput check",
-			Want: []int{6},
-		}, sum)
-		if _, err := executeWithT(context.Background(), t, p); err != nil {
-			t.Fatal(err)
-		}
-	})
-	t.Run("sideinput_iterable_twoimpulse", func(t *testing.T) {
-		p, s := beam.NewPipelineWithRoot()
-		imp1 := beam.Impulse(s)
-		col1 := beam.ParDo(s, dofn1, imp1)
-		imp2 := beam.Impulse(s)
-		sum := beam.ParDo(s, dofn2x1, imp2, beam.SideInput{Input: col1})
-		beam.ParDo(s, &int64Check{
-			Name: "iter sideinput check",
-			Want: []int{6},
-		}, sum)
-		if _, err := executeWithT(context.Background(), t, p); err != nil {
-			t.Fatal(err)
-		}
-	})
-	t.Run("sideinput_iterableKV", func(t *testing.T) {
-		p, s := beam.NewPipelineWithRoot()
-		imp := beam.Impulse(s)
-		col1 := beam.ParDo(s, dofnKV, imp)
-		keys, sum := beam.ParDo2(s, dofn2x2KV, imp, beam.SideInput{Input: col1})
-		beam.ParDo(s, &stringCheck{
-			Name: "iterKV sideinput check K",
-			Want: []string{"a", "a", "a", "b", "b", "b"},
-		}, keys)
-		beam.ParDo(s, &int64Check{
-			Name: "iterKV sideinput check V",
-			Want: []int{21},
-		}, sum)
-		if _, err := executeWithT(context.Background(), t, p); err != nil {
-			t.Fatal(err)
-		}
-	})
+	}
 }
 
 func TestRunner_Metrics(t *testing.T) {
