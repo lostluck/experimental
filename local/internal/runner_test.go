@@ -32,6 +32,10 @@ import (
 	"github.com/google/go-cmp/cmp"
 )
 
+func init() {
+	SetMaxV(-1) // Disable logging for now.
+}
+
 // execute will startup the server, and this will be maintained for the life of
 // all the tests.
 func execute(ctx context.Context, p *beam.Pipeline) (beam.PipelineResult, error) {

@@ -21,15 +21,15 @@ import (
 	"sync/atomic"
 )
 
-// The logger for the local runner.
+// The logger for this runner.
 var logger = &runnerLog{
-	disabled: -1,
+	disabled: 1,
 	logger:   log.New(os.Stderr, "[local] ", log.Ldate|log.Ltime|log.Lmicroseconds|log.Lshortfile),
 }
 
 type runnerLog struct {
 	disabled int32 // if > level, disable log output.
-	logger   *log.Logger
+	logger   logIface
 }
 
 // SetMaxV sets the maximum V log level that will be printed.
@@ -38,15 +38,15 @@ func SetMaxV(level int32) {
 }
 
 type logIface interface {
-	Logf(format string, v ...any)
-	Log(v ...any)
+	Printf(format string, v ...any)
+	Println(v ...any)
 	Fatalf(format string, v ...any)
 }
 
 type noopLogger struct{}
 
-func (noopLogger) Logf(format string, v ...any)   {}
-func (noopLogger) Log(v ...any)                   {}
+func (noopLogger) Printf(format string, v ...any) {}
+func (noopLogger) Println(v ...any)               {}
 func (noopLogger) Fatalf(format string, v ...any) {}
 
 // V indicates the level of the log.
@@ -58,9 +58,9 @@ func (noopLogger) Fatalf(format string, v ...any) {}
 //  1 -> Job Specific
 //  2 -> Bundle Specific, Unimplemented features
 //  3 -> Element Specific, Fine Grain Debug
-func V(level int32) logIface {
+func V(level int32) *runnerLog {
 	if level > atomic.LoadInt32(&logger.disabled) {
-		return noopLogger{}
+		return nil
 	}
 	return logger
 }
