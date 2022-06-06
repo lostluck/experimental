@@ -223,20 +223,9 @@ func dofn1Counter(ctx context.Context, _ []byte, emit func(int64)) {
 	beam.NewCounter(ns, "count").Inc(ctx, 1)
 }
 
-var (
-	once sync.Once
-	s    *Server
-)
-
 func initRunner(t *testing.T) {
 	t.Helper()
 	if *jobopts.Endpoint == "" {
-		// once.Do(
-		// 	func() {
-		// 		s = NewServer(0)
-		// 		*jobopts.Endpoint = s.Endpoint()
-		// 		go s.Serve()
-		// 	})
 		s := NewServer(0)
 		*jobopts.Endpoint = s.Endpoint()
 		go s.Serve()
@@ -482,7 +471,7 @@ func TestRunner_Metrics(t *testing.T) {
 	})
 }
 
-// TODO: PCollection metrics tests, in particular for elemnt counts, in multi transform pipelines
+// TODO: PCollection metrics tests, in particular for element counts, in multi transform pipelines
 // There's a doublding bug since we re-use the same pcollection IDs for the source & sink, and
 // don't do any re-writing.
 
