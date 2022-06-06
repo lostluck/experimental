@@ -2,16 +2,29 @@
 
 * Multimap Side Inputs
 * Windowing in Side Inputs / Projection
+  * Fix Side Input order processing issue.
 * Triggers / TestStream
-* Logger cleanup
 * pullDecoder refactor
 * []byte avoidance -> To io.Reader/Writer streams
 * Composite Handling
   * Combiner Lifting
   * Real SplittableDoFns (split requests, etc)
 * Error plumbing rather than log.Fatals or panics.
-* Ensure full cleanup.
 * Container support? -> Ability to run Xlangs & "docker mode".
+
+# Notes to myself: 2022-06-05
+
+Logger has been cleaned up to do a bit of VLogging. Not amazing, but will
+let me follow the sequence of events more easily when something goes wrong.
+
+I have a few changes to make to the SDK to ensure a tidy cleanup of goroutines.
+Likely won't make any difference in any performance sense, but it'll make me
+happier at least. 
+Oh and switching loopback execution to no longer be graceful, does the test.
+
+That along with additional De-noising of SDK side execution logs, and splitting
+the launcher logs from the Runner logs will make for a better experience.
+
 
 # Notes to myself: 2022-06-03
 

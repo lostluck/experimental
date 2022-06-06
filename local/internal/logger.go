@@ -23,7 +23,7 @@ import (
 
 // The logger for the local runner.
 var logger = &runnerLog{
-	disabled: 1,
+	disabled: -1,
 	logger:   log.New(os.Stderr, "[local] ", log.Ldate|log.Ltime|log.Lmicroseconds|log.Lshortfile),
 }
 
@@ -34,11 +34,20 @@ type runnerLog struct {
 
 // SetMaxV sets the maximum V log level that will be printed.
 func SetMaxV(level int32) {
-	if level < 0 {
-		level = 0
-	}
 	atomic.StoreInt32(&logger.disabled, level)
 }
+
+type logIface interface {
+	Logf(format string, v ...any)
+	Log(v ...any)
+	Fatalf(format string, v ...any)
+}
+
+type noopLogger struct{}
+
+func (noopLogger) Logf(format string, v ...any)   {}
+func (noopLogger) Log(v ...any)                   {}
+func (noopLogger) Fatalf(format string, v ...any) {}
 
 // V indicates the level of the log.
 //
@@ -49,9 +58,9 @@ func SetMaxV(level int32) {
 //  1 -> Job Specific
 //  2 -> Bundle Specific, Unimplemented features
 //  3 -> Element Specific, Fine Grain Debug
-func V(level int32) *runnerLog {
+func V(level int32) logIface {
 	if level > atomic.LoadInt32(&logger.disabled) {
-		return nil
+		return noopLogger{}
 	}
 	return logger
 }
