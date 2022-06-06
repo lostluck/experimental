@@ -75,7 +75,7 @@ func newWorker(id string) *worker {
 
 		bundles: make(map[string]*bundle),
 	}
-	logger.Printf("Serving Worker components on %v\n", wk.Endpoint())
+	V(0).Logf("Serving Worker components on %v\n", wk.Endpoint())
 	fnpb.RegisterBeamFnControlServer(wk.server, wk)
 	fnpb.RegisterBeamFnDataServer(wk.server, wk)
 	fnpb.RegisterBeamFnLoggingServer(wk.server, wk)
@@ -98,12 +98,12 @@ func (wk *worker) String() string {
 
 // Stop the GRPC server.
 func (wk *worker) Stop() {
-	logger.Printf("stopping %v", wk)
+	V(1).Logf("stopping %v", wk)
 	close(wk.InstReqs)
 	close(wk.DataReqs)
 	wk.server.Stop()
 	wk.lis.Close()
-	logger.Printf("stopped %v", wk)
+	V(1).Logf("stopped %v", wk)
 }
 
 func (wk *worker) nextInst() string {
@@ -124,12 +124,12 @@ func (wk *worker) Logging(stream fnpb.BeamFnLogging_LoggingServer) error {
 			return nil
 		}
 		if err != nil {
-			logger.Printf("logging stream.Recv error: %v", err)
+			V(2).Logf("logging stream.Recv error: %v", err)
 			return err
 		}
 		for _, l := range in.GetLogEntries() {
 			if l.Severity > minsev {
-				logger.Printf("%v [%v]: %v", l.GetSeverity(), path.Base(l.GetLogLocation()), l.GetMessage())
+				V(0).Logf("%v [%v]: %v", l.GetSeverity(), path.Base(l.GetLogLocation()), l.GetMessage())
 			}
 		}
 	}
@@ -141,31 +141,30 @@ func (wk *worker) Control(ctrl fnpb.BeamFnControl_ControlServer) error {
 		for {
 			resp, err := ctrl.Recv()
 			if err == io.EOF {
-				logger.Printf("ctrl.Recv finished marking done")
+				V(3).Logf("ctrl.Recv finished marking done")
 				done <- true // means stream is finished
 				return
 			}
 			if err != nil {
 				switch status.Code(err) {
 				case codes.Canceled: // Might ignore this all the time instead.
-					logger.Printf("ctrl.Recv Canceled: %v", err)
+					V(3).Logf("ctrl.Recv Canceled: %v", err)
 					done <- true // means stream is finished
 					return
 				default:
-					logger.Fatalf("ctrl.Recv error: %v", err)
+					V(0).Fatalf("ctrl.Recv error: %v", err)
 				}
 			}
 
 			wk.mu.Lock()
 			if b, ok := wk.bundles[resp.GetInstructionId()]; ok {
 				// TODO. Better pipeline error handling.
-				// No retries. likely ever.
 				if resp.Error != "" {
-					logger.Fatal(resp.Error)
+					V(0).Fatalf("ctrl.Recv pipeline error: %v", resp.Error)
 				}
 				b.Resp <- resp.GetProcessBundle()
 			} else {
-				logger.Printf("ctrl.Recv: %v", resp)
+				V(3).Logf("ctrl.Recv: %v", resp)
 			}
 			wk.mu.Unlock()
 		}
@@ -174,8 +173,8 @@ func (wk *worker) Control(ctrl fnpb.BeamFnControl_ControlServer) error {
 	for req := range wk.InstReqs {
 		ctrl.Send(req)
 	}
-	logger.Printf("ctrl.Send finished waiting on done")
-	logger.Printf("Control Done %v", <-done)
+	V(2).Logf("ctrl.Send finished waiting on done")
+	V(2).Logf("Control Done %v", <-done)
 	return nil
 }
 
@@ -189,10 +188,10 @@ func (wk *worker) Data(data fnpb.BeamFnData_DataServer) error {
 			if err != nil {
 				switch status.Code(err) {
 				case codes.Canceled:
-					logger.Printf("data.Recv Canceled: %v", err)
+					V(3).Logf("data.Recv Canceled: %v", err)
 					return
 				default:
-					logger.Fatalf("data.Recv error: %v", err)
+					V(0).Fatalf("data.Recv error: %v", err)
 				}
 			}
 			wk.mu.Lock()
@@ -200,7 +199,7 @@ func (wk *worker) Data(data fnpb.BeamFnData_DataServer) error {
 				tID := d.GetTransformId()
 				b, ok := wk.bundles[d.GetInstructionId()]
 				if !ok {
-					logger.Printf("data.Recv for unknown bundle: %v", resp)
+					V(3).Logf("data.Recv for unknown bundle: %v", resp)
 					continue
 				}
 				if len(d.GetData()) > 0 {
@@ -209,7 +208,7 @@ func (wk *worker) Data(data fnpb.BeamFnData_DataServer) error {
 					b.DataReceived[tID] = output
 				}
 				if d.GetIsLast() {
-					logger.Printf("XXX done waiting on data from %v", b.InstID)
+					V(3).Logf("XXX done waiting on data from %v", b.InstID)
 					b.DataWait.Done()
 				}
 			}
@@ -218,9 +217,9 @@ func (wk *worker) Data(data fnpb.BeamFnData_DataServer) error {
 	}()
 
 	for req := range wk.DataReqs {
-		logger.Printf("XXX data.Send for %v", req.GetData()[0].GetInstructionId())
+		V(3).Logf("XXX data.Send for %v", req.GetData()[0].GetInstructionId())
 		if err := data.Send(req); err != nil {
-			logger.Printf("data.Send error: %v", err)
+			V(3).Logf("data.Send error: %v", err)
 		}
 	}
 	return nil
@@ -240,10 +239,10 @@ func (wk *worker) State(state fnpb.BeamFnState_StateServer) error {
 			if err != nil {
 				switch status.Code(err) {
 				case codes.Canceled:
-					logger.Printf("state.Recv Canceled: %v", err)
+					V(3).Logf("state.Recv Canceled: %v", err)
 					return
 				default:
-					logger.Fatalf("state.Recv error: %v", err)
+					V(0).Fatalf("state.Recv error: %v", err)
 				}
 			}
 			switch resp.GetRequest().(type) {
@@ -276,8 +275,8 @@ func (wk *worker) State(state fnpb.BeamFnState_StateServer) error {
 	}()
 	for resp := range responses {
 		if err := state.Send(resp); err != nil {
-			logger.Printf("state.Send error: %v", err)
+			V(3).Logf("state.Send error: %v", err)
 		}
 	}
-	return nil //fmt.Errorf("BAD STATE")
+	return nil
 }

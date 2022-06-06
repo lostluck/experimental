@@ -39,7 +39,7 @@ func execute(ctx context.Context, p *beam.Pipeline) (beam.PipelineResult, error)
 }
 
 func executeWithT(ctx context.Context, t *testing.T, p *beam.Pipeline) (beam.PipelineResult, error) {
-	logger.Println("startingTest - ", t.Name())
+	V(0).Log("startingTest - ", t.Name())
 	return execute(ctx, p)
 }
 
@@ -258,9 +258,6 @@ func initRunner(t *testing.T) {
 }
 
 func TestRunner_Pipelines(t *testing.T) {
-	defer func() {
-		logger.Println("test suite finished", t.Name())
-	}()
 	initRunner(t)
 	// TODO: Explicit DoFn Failure case.
 	t.Run("simple", func(t *testing.T) {

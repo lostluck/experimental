@@ -34,7 +34,7 @@ func (s *Server) ReverseArtifactRetrievalService(stream jobpb.ArtifactStagingSer
 	envs := job.pipeline.GetComponents().GetEnvironments()
 	for _, env := range envs {
 		for _, dep := range env.GetDependencies() {
-			logger.Println("start GetArtifact:", dep.GetTypeUrn(), string(dep.GetTypePayload()))
+			V(2).Log("start GetArtifact:", dep.GetTypeUrn(), string(dep.GetTypePayload()))
 			stream.Send(&jobpb.ArtifactRequestWrapper{
 				Request: &jobpb.ArtifactRequestWrapper_GetArtifact{
 					GetArtifact: &jobpb.GetArtifactRequest{
@@ -52,7 +52,7 @@ func (s *Server) ReverseArtifactRetrievalService(stream jobpb.ArtifactStagingSer
 					return err
 				}
 				if in.IsLast {
-					logger.Println("finished GetArtifact:", dep.GetTypeUrn(), string(dep.GetTypePayload()), "received bytes:", count)
+					V(2).Log("finished GetArtifact:", dep.GetTypeUrn(), string(dep.GetTypePayload()), "received bytes:", count)
 					break
 				}
 				// Here's where we go through each environment's artifacts.
@@ -61,7 +61,7 @@ func (s *Server) ReverseArtifactRetrievalService(stream jobpb.ArtifactStagingSer
 				case *jobpb.ArtifactResponseWrapper_GetArtifactResponse:
 					count += len(req.GetArtifactResponse.GetData())
 				case *jobpb.ArtifactResponseWrapper_ResolveArtifactResponse:
-					logger.Fatal("UnexpectedResolveArtifactResponse to GetArtifact")
+					V(0).Fatalf("Unexpected ResolveArtifactResponse to GetArtifact: %v", in.GetResponse())
 				}
 
 			}

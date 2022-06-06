@@ -42,7 +42,7 @@ func (s *Server) Prepare(ctx context.Context, req *jobpb.PrepareJobRequest) (*jo
 		stateChan: make(chan jobpb.JobState_Enum),
 	}
 	if err := isSupported(job.pipeline.GetRequirements()); err != nil {
-		logger.Printf("unable to run job %v: %v", req.GetJobName(), err)
+		V(0).Logf("unable to run job %v: %v", req.GetJobName(), err)
 		return nil, err
 	}
 	s.jobs[job.key] = job

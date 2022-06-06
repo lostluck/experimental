@@ -171,9 +171,9 @@ func executePipeline(wk *worker, j *job) {
 		}
 	}
 
-	logger.Printf("TOPO:\n%+v", topo)
-	logger.Printf("SUCCESSORS:\n%+v", succ)
-	logger.Printf("INPUTS:\n%+v", inputs)
+	V(2).Logf("TOPO:\n%+v", topo)
+	V(2).Logf("SUCCESSORS:\n%+v", succ)
+	V(2).Logf("INPUTS:\n%+v", inputs)
 
 	// prevs is a map from current transform ID to a map from local ids to bundles instead.
 	prevs := map[string]map[string]*bundle{}
@@ -183,7 +183,7 @@ func executePipeline(wk *worker, j *job) {
 		<-processed
 		parents := prevs[tid]
 		delete(prevs, tid) // Garbage collect the data.
-		logger.Printf("making bundle for %v", tid)
+		V(2).Logf("making bundle for %v", tid)
 
 		t := ts[tid]
 		// Much hack.
@@ -215,8 +215,8 @@ func executePipeline(wk *worker, j *job) {
 				dataParentID := in.global + "_" + in.local
 				parentID := in.global
 
-				logger.Print(tid, " sources ", dataParentID, " ", parentID)
-				logger.Print(tid, " inputs ", inputs[tid], " ", len(parents))
+				V(2).Log(tid, " sources ", dataParentID, " ", parentID)
+				V(2).Log(tid, " inputs ", inputs[tid], " ", len(parents))
 
 				coders := map[string]*pipepb.Coder{}
 				transforms := map[string]*pipepb.PTransform{
@@ -225,7 +225,7 @@ func executePipeline(wk *worker, j *job) {
 
 				pardo := &pipepb.ParDoPayload{}
 				if err := (proto.UnmarshalOptions{}).Unmarshal(t.GetSpec().GetPayload(), pardo); err != nil {
-					logger.Fatalf("unable to decode ParDoPayload for transform[%v]", tid)
+					V(1).Fatalf("unable to decode ParDoPayload for transform[%v]", tid)
 				}
 
 				sis := pardo.GetSideInputs()
@@ -248,7 +248,7 @@ func executePipeline(wk *worker, j *job) {
 						pb := parents[local]
 						src := pcolParents[global]
 						key := src.global + "_" + src.local
-						logger.Printf("urnSideInputIterable key? %v, %v", key, local)
+						V(2).Logf("urnSideInputIterable key? %v, %v", key, local)
 						data, ok := pb.DataReceived[key]
 						if !ok {
 							ks := maps.Keys(pb.DataReceived)
@@ -304,7 +304,7 @@ func executePipeline(wk *worker, j *job) {
 					},
 				}
 
-				logger.Printf("registering %v with %v:", desc.GetId(), instID) // , prototext.Format(desc))
+				V(2).Logf("registering %v with %v:", desc.GetId(), instID) // , prototext.Format(desc))
 
 				wk.InstReqs <- &fnpb.InstructionRequest{
 					InstructionId: instID,
@@ -329,7 +329,7 @@ func executePipeline(wk *worker, j *job) {
 
 					DataReceived: make(map[string][][]byte),
 				}
-				logger.Printf("XXX Going to wait on data for %v: count %v - %v", instID, len(t.GetOutputs()), t.GetOutputs())
+				V(3).Logf("XXX Going to wait on data for %v: count %v - %v", instID, len(t.GetOutputs()), t.GetOutputs())
 				b.DataWait.Add(len(t.GetOutputs()))
 				for _, ch := range succ[tid] {
 					m, ok := prevs[ch.global]
@@ -351,7 +351,7 @@ func executePipeline(wk *worker, j *job) {
 	// We're done with the pipeline!
 	close(toProcess)
 	b := <-processed // Drain the final bundle.
-	logger.Printf("pipeline done! Final Bundle: %v", b.InstID)
+	V(1).Logf("pipeline done! Final Bundle: %v", b.InstID)
 }
 
 func sourceIDs(parent *bundle) (string, string) {
@@ -617,7 +617,7 @@ func (b *bundle) ProcessOn(wk *worker) {
 	wk.bundles[b.InstID] = b
 	wk.mu.Unlock()
 
-	logger.Printf("processing %v %v on %v", b.InstID, b.BundID, wk)
+	V(2).Logf("processing %v %v on %v", b.InstID, b.BundID, wk)
 
 	// Tell the SDK to start processing the bundle.
 	wk.InstReqs <- &fnpb.InstructionRequest{
@@ -632,7 +632,7 @@ func (b *bundle) ProcessOn(wk *worker) {
 	// Send the data one at a time, rather than batching.
 	// TODO: Batch Data.
 	for i, d := range b.InputData {
-		logger.Printf("XXX adding data to channel for %v", b.InstID)
+		V(3).Logf("XXX adding data to channel for %v", b.InstID)
 		wk.DataReqs <- &fnpb.Elements{
 			Data: []*fnpb.Elements_Data{
 				{
@@ -645,7 +645,7 @@ func (b *bundle) ProcessOn(wk *worker) {
 		}
 	}
 
-	logger.Printf("XXX waiting on data from %v", b.InstID)
+	V(3).Logf("XXX waiting on data from %v", b.InstID)
 	b.DataWait.Wait() // Wait until data is done.
 
 	// logger.Printf("ProcessBundle %v done! Resp: %v", b.InstID, prototext.Format(<-b.Resp))

@@ -49,7 +49,7 @@ func NewServer(port int) *Server {
 		lis:  lis,
 		jobs: make(map[string]*job),
 	}
-	logger.Printf("Serving JobManagement on %v\n", s.Endpoint())
+	V(0).Logf("Serving JobManagement on %v", s.Endpoint())
 	var opts []grpc.ServerOption
 	s.server = grpc.NewServer(opts...)
 	jobpb.RegisterJobServiceServer(s.server, s)

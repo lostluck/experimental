@@ -180,14 +180,12 @@ func buildUrnToOpsMap(mUrn2Spec map[string]*pipepb.MonitoringInfoSpec) map[strin
 		key := hasher.Sum64()
 		fn, ok := l2func[key]
 		if !ok {
-			// Dev printout! Otherwise we should probably always ignore things we don't know.
-			logger.Printf("unknown MonitoringSpec required Labels key[%v] for urn %v: %v", key, urn, sorted)
+			V(2).Logf("unknown MonitoringSpec required Labels key[%v] for urn %v: %v", key, urn, sorted)
 			continue
 		}
 		fac, ok := typ2accumFac[spec.GetType()]
 		if !ok {
-			// Dev printout! Otherwise we should probably always ignore things we don't know.
-			logger.Printf("unknown MonitoringSpec type for urn %v: %v", urn, spec.GetType())
+			V(2).Logf("unknown MonitoringSpec type for urn %v: %v", urn, spec.GetType())
 			continue
 		}
 		ret[urn] = urnOps{
@@ -458,7 +456,7 @@ func (m *metricsStore) contributeMetrics(payloads *fnpb.ProcessBundleResponse) {
 		urn := mon.GetUrn()
 		ops, ok := mUrn2Ops[urn]
 		if !ok {
-			logger.Printf("unknown metrics urn: %v", urn)
+			V(2).Logf("unknown metrics urn: %v", urn)
 			continue
 		}
 		key := ops.keyFn(urn, mon.GetLabels())

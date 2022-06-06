@@ -110,10 +110,10 @@ func (j *job) runEnvironment(ctx context.Context, env string, wk *worker) {
 	case "beam:env:external:v1":
 		ep := &pipepb.ExternalPayload{}
 		if err := (proto.UnmarshalOptions{}).Unmarshal(e.GetPayload(), ep); err != nil {
-			logger.Printf("unmarshalling environment payload %v: %v", wk.ID, err)
+			V(1).Logf("unmarshalling environment payload %v: %v", wk.ID, err)
 		}
 		externalEnvironment(ctx, ep, wk)
-		logger.Printf("%v for %v stopped", wk, j)
+		V(1).Logf("%v for %v stopped", wk, j)
 	default:
 		logger.Fatalf("environment %v with urn %v unimplemented", env, e.GetUrn())
 	}
@@ -143,7 +143,7 @@ func externalEnvironment(ctx context.Context, ep *pipepb.ExternalPayload, wk *wo
 	// Job processing happens here, but orchestrated by other goroutines?
 	select {
 	case <-ctx.Done():
-		logger.Printf("context canceled! stopping workers")
+		V(1).Logf("context canceled! stopping workers")
 	}
 
 	// Previous context cancelled so we need a new one.

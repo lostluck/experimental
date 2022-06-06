@@ -17,47 +17,65 @@ package internal
 
 import (
 	"log"
+	"os"
+	"sync/atomic"
 )
 
 // The logger for the local runner.
 var logger = &runnerLog{
-	//log.New(os.Stderr, "[local] ", log.Ldate|log.Ltime|log.Lmicroseconds|log.Lshortfile),
+	disabled: 1,
+	logger:   log.New(os.Stderr, "[local] ", log.Ldate|log.Ltime|log.Lmicroseconds|log.Lshortfile),
 }
 
 type runnerLog struct {
-	logger *log.Logger
+	disabled int32 // if > level, disable log output.
+	logger   *log.Logger
 }
 
-func (r *runnerLog) Printf(format string, v ...any) {
-	if r.logger == nil {
+// SetMaxV sets the maximum V log level that will be printed.
+func SetMaxV(level int32) {
+	if level < 0 {
+		level = 0
+	}
+	atomic.StoreInt32(&logger.disabled, level)
+}
+
+// V indicates the level of the log.
+//
+// Higher levels indicate finer granularity of detail.
+//
+// As a rule of thumb.
+//  0 -> Should always be printed
+//  1 -> Job Specific
+//  2 -> Bundle Specific, Unimplemented features
+//  3 -> Element Specific, Fine Grain Debug
+func V(level int32) *runnerLog {
+	if level > atomic.LoadInt32(&logger.disabled) {
+		return nil
+	}
+	return logger
+}
+
+// Logf calls l.Output to print to the logger. Arguments are handled in the manner of fmt.Println.
+func (r *runnerLog) Logf(format string, v ...any) {
+	if r == nil {
 		return
 	}
 	r.logger.Printf(format, v...)
 }
 
-func (r *runnerLog) Println(v ...any) {
-	if r.logger == nil {
+// Log calls l.Output to print to the logger. Arguments are handled in the manner of fmt.Log.
+func (r *runnerLog) Log(v ...any) {
+	if r == nil {
 		return
 	}
 	r.logger.Println(v...)
 }
 
-func (r *runnerLog) Print(v ...any) {
-	if r.logger == nil {
-		return
-	}
-	r.logger.Print(v...)
-}
-
+// Fatalf is equivalent to l.Logf() followed by a call to os.Exit(1)
 func (r *runnerLog) Fatalf(format string, v ...any) {
-	if r.logger == nil {
+	if r == nil {
 		return
 	}
 	r.logger.Fatalf(format, v...)
-}
-func (r *runnerLog) Fatal(v ...any) {
-	if r.logger == nil {
-		return
-	}
-	r.logger.Fatal(v...)
 }
