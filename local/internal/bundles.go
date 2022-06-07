@@ -18,14 +18,12 @@ package internal
 import (
 	"bytes"
 	"io"
-	"sort"
 	"sync"
 
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/graph/coder"
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/graph/mtime"
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/graph/window"
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/runtime/exec"
-	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/runtime/pipelinex"
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/typex"
 	fnpb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/fnexecution_v1"
 	pipepb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/pipeline_v1"
@@ -72,6 +70,8 @@ var (
 
 	// SDK transforms.
 	urnTransformParDo = ptUrn(pipepb.StandardPTransforms_PAR_DO)
+	// DoFn Urns
+	urnGoDoFn = "beam:go:transform:dofn:v1" // Only used for Go DoFn.
 
 	// Runner transforms.
 	urnTransformImpulse = ptUrn(pipepb.StandardPTransforms_IMPULSE)
@@ -98,6 +98,11 @@ func executePipeline(wk *worker, j *job) {
 	// First: default "impulse" bundle. "executed" by the runner.
 	// Second: Derive bundle for a DoFn for the environment.
 
+	// TODO, configure the preprocessor from pipeline options.
+	// Maybe change these returns to a single struct for convenience and further
+	// annotation?
+	topo, succ, inputs, pcolParents := (&preprocessor{}).preProcessGraph(ts)
+
 	// We're going to do something fun with channels for this,
 	// and do a "Generator" pattern to get the bundles we need
 	// to process.
@@ -121,59 +126,6 @@ func executePipeline(wk *worker, j *job) {
 		}
 		close(processed)
 	}()
-
-	// TODO - Recurse down composite transforms.
-	// But lets just ignore composites for now. Leaves only.
-	// We only need composites to do "smart" things with
-	// combiners and SDFs.
-	// What the heck are roots for? We may never know.
-	var roots []string
-	for tid, t := range ts {
-		if len(t.GetSubtransforms()) == 0 {
-			roots = append(roots, tid)
-		}
-	}
-	topo := pipelinex.TopologicalSort(ts, roots)
-
-	// Shamelessly derived from the direct runner's processing.
-	type linkID struct {
-		global string // Transform
-		local  string // local input/output id
-		pcol   string // What PCol, is This?
-	}
-	inputs := make(map[string][]linkID) // TransformID -> []linkID (outputs they consume from the parent)
-	succ := make(map[string][]linkID)   // TransformID -> []linkID (successors inputs they generate for their children)
-
-	// Each PCollection only has one parent, determined by transform outputs.
-	// And since we only know pcollections, we need to map from pcol to parent transforms
-	// so we can derive the transform successors map.
-	pcolParents := make(map[string]linkID)
-
-	// We iterate in the transform's topological order for determinism.
-	for _, id := range topo {
-		t := ts[id]
-		for o, out := range t.GetOutputs() {
-			pcolParents[out] = linkID{id, o, out}
-		}
-	}
-
-	for _, id := range topo {
-		t := ts[id]
-		ins := t.GetInputs()
-		ks := maps.Keys(ins)
-		// Sort the inputs by local key id for determinism.
-		sort.Strings(ks)
-		for _, local := range ks {
-			in := ins[local]
-			from := pcolParents[in]
-			succ[from.global] = append(succ[from.global], linkID{id, local, in})
-			inputs[id] = append(inputs[id], from)
-		}
-	}
-
-	V(2).Logf("TOPO:\n%+v", topo)
-	V(2).Logf("SUCCESSORS:\n%+v", succ)
-	V(2).Logf("INPUTS:\n%+v", inputs)
 
 	// prevs is a map from current transform ID to a map from local ids to bundles instead.
 	prevs := map[string]map[string]*bundle{}

@@ -15,6 +15,26 @@
 * Error plumbing rather than log.Fatals or panics.
 * Container support? -> Ability to run Xlangs & "docker mode".
 
+
+# Notes to myself: 2022-06-06
+
+I forgot that composites are the special urns. Otherwise all I'm ever dealing with is
+Go DoFns at the leaf level. It's Go DoFns at the bottom, unless it's a runner transform.
+
+That means that I need to do better at the graph pre-processing. 
+
+One of the nice things about the design of the Pipeline Proto is that the leaves are generally
+what any runner can execute. However, processing the composites and their urns let one do 
+more clever things if necessary, such as combiner lifting, or even "splittable" dofns.
+
+Either way, that's something that can be pulled out. But I do want to "unify" the handling
+of Combiner handling, and SDF handling so that these could be configured on a per transform basis
+per pipeline, as well as defining a default behavior set.
+
+eg. Don't lift combines on unbounded pcollections, but do lift bounded pcollections transforms.
+
+For now, shard that portion out to it's own file, so it can also eventually be unit tested. This will lay the groundwork to giving this runner the desired configurability.
+
 # Notes to myself: 2022-06-05
 
 Logger has been cleaned up to do a bit of VLogging. Not amazing, but will
