@@ -14,7 +14,38 @@
     * Process Continuations & Bundle Rescheduling
 * Error plumbing rather than log.Fatals or panics.
 * Container support? -> Ability to run Xlangs & "docker mode".
+* Stager Refactor
+  * One PTransform : One Stage
+  * Fusion Stager
 
+# Notes to myself: 2022-11-30
+
+Finally have time to get back to this.
+
+Aside from the TODO list above, I need a better factoring, in particular in how to get things to be
+modular. If it's not done early, we run into the same problems the other runners have, with "one way"
+to run and execute things.
+
+I need to add something that will split things into stages ahead of time.
+Currently we walk the pipeline and produce bundles straight off of that.
+This is OK, but prevents the desired modularity. 
+I'd like to have the current mode of "every transform's a stage", and a rudimentary fusing mode.
+This is probably trickier than it sounds, since we'd want to be able to do certain bits of common work between the two of them.
+
+The other idea recently be to have the configurations for these in YAML, and be loaded/validated at startup time.
+This would allow simpler configuration in the pipeline options.
+It would need to be sort of recursive, since there could be specific configuration for each.
+It would be delightful to get some kind of powerset thing going with the combination of configuration options.
+I just need to keep the mutually exclusive options straight.
+
+Nominially, it's all back to a "handler" set up, with some self awareness. 
+Eg a single handler could know "both" ways of expanding and staging things. Like lifted vs unlifted combines.
+Then a single configuration file, which could have several named configurations has different "modes" that
+could be tested under. Something that replicates Flink's behavior, or Dataflow's, etc.
+
+The name is then all it takes to have the runner execute with those characteristics.
+
+Characteristics isn't a bad name for the details of these variations actually....
 
 # Notes to myself: 2022-06-06
 
