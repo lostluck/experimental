@@ -115,11 +115,24 @@ func (r *HandlerRegistry) LoadFromYaml(in []byte) error {
 				continue
 			}
 
-			// validate that handler config so we can give a good error message now.
+			// Validate that handler config so we can give a good error message now.
+			// We re-encode, then decode, since then we don't need to re-implement
+			// the existing Known fields. Sadly, this doens't persist through 
+			// yaml.Node fields.
+			hb, err := yaml.Marshal(hyn)
+			if err != nil {
+				panic(fmt.Sprintf("error re-encoding characteristic for variant %v handler %v: %v", v, hk, err))
+			}
+			buf := bytes.NewBuffer(hb)
+			dec := yaml.NewDecoder(buf)
+			dec.KnownFields(true)
+			if err != nil {
+				panic(fmt.Sprintf("error re-encoding characteristic for variant %v handler %v: %v", v, hk, err))
+			}
 			rt := md.Characteristic()
 			rtv := reflect.New(rt)
-			if err := hyn.Decode(rtv.Interface()); err != nil {
-				return fmt.Errorf("error decoding characteristic for variant %v handler %v: %w", v, hk, err)
+			if err := dec.Decode(rtv.Interface()); err != nil {
+				return fmt.Errorf("error decoding characteristic strictly for variant %v handler %v: %v", v, hk, err)
 			}
 
 		}

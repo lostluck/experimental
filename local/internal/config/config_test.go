@@ -193,7 +193,7 @@ dataflow:
 dataflow:
   combine:
     lift: no
-	lower: foo
+    lower: foo
 `
 		err := reg.LoadFromYaml([]byte(config))
 		if err == nil {
@@ -219,10 +219,3 @@ dataflow:
 		}
 	})
 }
-
-// TODO as features and test cases.
-// Get a list of all variations in the config.
-// Get a list of all handlers used in a given variation.
-// Get a list of all handlers used Eby all variations.
-// Return an error if a handler is used in a variation isn't registered.
-// Return an error if the configured handler doesn't have that field (set known fields to be enabled)
