@@ -47,12 +47,19 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// variants is the struct configs are decoded into.
 type variants struct {
-	Version  int
-	Variants map[string]*variant `yaml:",inline"`
+	Version      int
+	HandlerOrder []string
+	Default      string              // reserved for laer
+	Variants     map[string]*variant `yaml:",inline"`
 }
 
-type variant map[string]yaml.Node
+// variant holds an individual variant's handlers, and any common fields.
+type variant struct {
+	HandlerOrder []string
+	Handlers     map[string]yaml.Node `yaml:",inline"`
+}
 
 type HandlerRegistry struct {
 	variations map[string]*variant
@@ -106,7 +113,7 @@ func (r *HandlerRegistry) LoadFromYaml(in []byte) error {
 	err := &unknownHandlersErr{}
 	handlers := map[string]struct{}{}
 	for v, hs := range r.variations {
-		for hk, hyn := range *hs {
+		for hk, hyn := range hs.Handlers {
 			handlers[hk] = struct{}{}
 
 			md, ok := r.metadata[hk]
@@ -117,7 +124,7 @@ func (r *HandlerRegistry) LoadFromYaml(in []byte) error {
 
 			// Validate that handler config so we can give a good error message now.
 			// We re-encode, then decode, since then we don't need to re-implement
-			// the existing Known fields. Sadly, this doens't persist through 
+			// the existing Known fields. Sadly, this doens't persist through
 			// yaml.Node fields.
 			hb, err := yaml.Marshal(hyn)
 			if err != nil {
@@ -196,7 +203,7 @@ func (r *HandlerRegistry) GetVariant(name string) *Variant {
 	if !ok {
 		return nil
 	}
-	return &Variant{parent: r, name: name, handlers: *vs}
+	return &Variant{parent: r, name: name, handlers: vs.Handlers}
 }
 
 type Variant struct {
