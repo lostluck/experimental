@@ -442,7 +442,7 @@ func TestRunner_Pipelines(t *testing.T) {
 				}, sum)
 			},
 		}, {
-			name: "combine_unlifted",
+			name: "combine",
 			pipeline: func(s beam.Scope) {
 				imp := beam.Impulse(s)
 				in := beam.ParDo(s, dofn1, imp)
