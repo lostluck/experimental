@@ -25,6 +25,7 @@ import (
 	jobpb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/jobmanagement_v1"
 	pipepb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/pipeline_v1"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/structpb"
 )
@@ -120,7 +121,7 @@ func (j *job) runEnvironment(ctx context.Context, env string, wk *worker) {
 }
 
 func externalEnvironment(ctx context.Context, ep *pipepb.ExternalPayload, wk *worker) {
-	conn, err := grpc.Dial(ep.GetEndpoint().GetUrl(), grpc.WithInsecure())
+	conn, err := grpc.Dial(ep.GetEndpoint().GetUrl(), grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		logger.Fatalf("unable to dial sdk worker %v: %v", ep.GetEndpoint().GetUrl(), err)
 	}

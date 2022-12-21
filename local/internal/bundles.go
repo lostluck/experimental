@@ -421,9 +421,7 @@ func runnerTransform(t *pipepb.PTransform, tid string, processed chan *bundle, p
 		var data [][]byte
 		for _, pb := range parents {
 			for _, ds := range pb.DataReceived {
-				for _, d := range ds {
-					data = append(data, d)
-				}
+				data = append(data, ds...)
 			}
 		}
 		b := &bundle{
