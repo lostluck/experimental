@@ -18,6 +18,23 @@
   * One PTransform : One Stage
   * Fusion Stager
 
+# Notes to myself: 2022-12-21
+
+After three weeks of interrupts, not much has happened, but I did get the configuration code done
+so handlers can declare what their base characteristics are and have everything properly parsed and validated.
+
+Now I have to use it.
+
+But I can't do that without changing how we generate bundles. IIRC, it currently does a single iteration through
+the pipeline and produces and handles each of the bundle descriptor/transforms/stages immeadiately. This isn't
+so useful in the long term. Really this needs to be done ahead of time. Further, the handlers themselves need
+to "know" how to deal with their various transform URNs. 
+
+So it should flow like this:
+  Pipeline passed into the transform Handlers to produce individual transforms.
+  Individual transforms are passed to the fuser handler to produce fused stages (currently a no-op)
+  Fused stages are sent to worker(s) for processing.
+
 # Notes to myself: 2022-11-30
 
 Finally have time to get back to this.
