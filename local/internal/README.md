@@ -35,6 +35,31 @@ So it should flow like this:
   Individual transforms are passed to the fuser handler to produce fused stages (currently a no-op)
   Fused stages are sent to worker(s) for processing.
 
+-----
+
+Part 2:
+Originally intended to do SDF, but got pulled into a lifted combiner or not instead. 
+Turns out composites involve creating synthetic coders, pcollections & transforms, which complicates things.
+So to simplify, I'm now cloning the set of components from the original pipeline and mutating those as needed.
+The bugs I iterated on were largely about making sure all the places were updated properly, so they'd have
+the new components.
+
+Other bits were not using the parameters to the component helper function I wrote, leading to strange SDK side
+bugs. There are definitely some improvements to be made to some of the SDK side error messages, around drop keys 
+and so on, WRT combiners. The errors don't make it obvious what's wrong. eg. Passing KVs to beam.Combine should
+have a clearer error message, directing the user to beam.CombinePerKey instead of it's current mess.
+
+I forgot that the code was already doing everything in advance, mostly, and topologically sorting the outputs.
+That makes some things much simpler for any later fusion handlers.
+
+SDFs have the same composite handling that the Combiner Lift needs, but can also trigger splits. 
+The first implementation doesn't need to do dynamic splits, but we should be getting the initial splits clearly.
+Dynamic splits would require cleaning up the datahandling properly and getting progress updates.
+
+The plus side was that there is plenty of debugging output to figure out what's going on. Huzzah!
+But unforutately I am not yet able to move these things to their own package.
+Mega package it is for not.
+
 # Notes to myself: 2022-11-30
 
 Finally have time to get back to this.
