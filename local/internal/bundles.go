@@ -110,11 +110,25 @@ func executePipeline(wk *worker, j *job) {
 	// TODO, configure the preprocessor from pipeline options.
 	// Maybe change these returns to a single struct for convenience and further
 	// annotation?
-	topo, succ, inputs, pcolParents := (&preprocessor{
-		compositeHandlers: map[string]transformHandler{
-			"beam:transform:combine_per_key:v1": Combine(CombineCharacteristic{EnableLifting: true}),
-		},
-	}).preProcessGraph(comps)
+
+	handlers := []any{
+		Combine(CombineCharacteristic{EnableLifting: true}),
+	}
+
+	prepro := &preprocessor{
+		compositeHandlers: map[string]transformHandler{},
+	}
+
+	for _, h := range handlers {
+		if th, ok := h.(transformHandler); ok {
+			for _, urn := range th.TransformUrns() {
+				prepro.compositeHandlers[urn] = th
+			}
+		}
+
+	}
+
+	topo, succ, inputs, pcolParents := prepro.preProcessGraph(comps)
 	ts := comps.GetTransforms()
 
 	// We're going to do something fun with channels for this,

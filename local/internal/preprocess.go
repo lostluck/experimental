@@ -41,6 +41,8 @@ type preprocessor struct {
 }
 
 type transformHandler interface {
+	// TransformUrns returns the Beam URNs that this handler deals with for preprocessing.
+	TransformUrns() []string
 	// HandleTransform takes a PTransform proto and returns a set of new Components, and a list of
 	// transformIDs leaves to remove and ignore from graph processing.
 	HandleTransform(tid string, t *pipepb.PTransform, comps *pipepb.Components) (*pipepb.Components, []string)
@@ -59,11 +61,6 @@ type transformHandler interface {
 // This is where Combines can become lifted (if it makes sense, or is configured), and
 // similar behaviors.
 func (p *preprocessor) preProcessGraph(comps *pipepb.Components) (topological []string, successors, inputs map[string][]linkID, pcolParents map[string]linkID) {
-	// TODO - Recurse down composite transforms.
-	// But lets just ignore composites for now. Leaves only.
-	// We only need composites to do "smart" things with
-	// combiners and SDFs.
-
 	ts := comps.GetTransforms()
 
 	// TODO move this out of this part of the pre-processor?
@@ -114,6 +111,13 @@ func (p *preprocessor) preProcessGraph(comps *pipepb.Components) (topological []
 		}
 		for nid, n := range subs.GetPcollections() {
 			comps.GetPcollections()[nid] = n
+		}
+		// It's unlikely for these to change, but better to handle them now, to save a headache later.
+		for wid, w := range subs.GetWindowingStrategies() {
+			comps.GetWindowingStrategies()[wid] = w
+		}
+		for envid, env := range subs.GetEnvironments() {
+			comps.GetEnvironments()[envid] = env
 		}
 	}
 
