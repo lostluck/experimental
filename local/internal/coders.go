@@ -41,10 +41,10 @@ func isLeafCoder(c *pipepb.Coder) bool {
 	return ok
 }
 
-func makeWindowedValueCoder(t *pipepb.PTransform, pID string, pipeline *pipepb.Pipeline, coders map[string]*pipepb.Coder) (string, string) {
-	col := pipeline.GetComponents().GetPcollections()[pID]
-	cID := lpUnknownCoders(col.GetCoderId(), coders, pipeline.GetComponents().GetCoders())
-	wcID := pipeline.GetComponents().GetWindowingStrategies()[col.GetWindowingStrategyId()].GetWindowCoderId()
+func makeWindowedValueCoder(t *pipepb.PTransform, pID string, comps *pipepb.Components, coders map[string]*pipepb.Coder) (string, string) {
+	col := comps.GetPcollections()[pID]
+	cID := lpUnknownCoders(col.GetCoderId(), coders, comps.GetCoders())
+	wcID := comps.GetWindowingStrategies()[col.GetWindowingStrategyId()].GetWindowCoderId()
 
 	// The runner needs to be defensive, and tell the SDK to Length Prefix
 	// any coders that it doesn't understand.
@@ -143,15 +143,14 @@ func reconcileCoders(coders, base map[string]*pipepb.Coder) {
 	}
 }
 
-func kvcoder(pipeline *pipepb.Pipeline, tid string) *pipepb.Coder {
-	comp := pipeline.GetComponents()
-	t := comp.GetTransforms()[tid]
+func kvcoder(comps *pipepb.Components, tid string) *pipepb.Coder {
+	t := comps.GetTransforms()[tid]
 	var inputPColID string
 	for _, pcolID := range t.GetInputs() {
 		inputPColID = pcolID
 	}
-	pcol := comp.GetPcollections()[inputPColID]
-	return comp.GetCoders()[pcol.GetCoderId()]
+	pcol := comps.GetPcollections()[inputPColID]
+	return comps.GetCoders()[pcol.GetCoderId()]
 }
 
 // pullDecoder return a function that will extract the bytes

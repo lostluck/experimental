@@ -17,6 +17,7 @@ package internal
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"sync"
 
@@ -60,16 +61,24 @@ func ptUrn(v pipepb.StandardPTransforms_Primitives) string {
 	return proto.GetExtension(prims.ByNumber(protoreflect.EnumNumber(v)).Options(), pipepb.E_BeamUrn).(string)
 }
 
+func cmbtUrn(v pipepb.StandardPTransforms_CombineComponents) string {
+	return proto.GetExtension(cmbcomps.ByNumber(protoreflect.EnumNumber(v)).Options(), pipepb.E_BeamUrn).(string)
+}
+
 func siUrn(v pipepb.StandardSideInputTypes_Enum) string {
 	return proto.GetExtension(sids.ByNumber(protoreflect.EnumNumber(v)).Options(), pipepb.E_BeamUrn).(string)
 }
 
 var (
-	prims = (pipepb.StandardPTransforms_Primitives)(0).Descriptor().Values()
-	sids  = (pipepb.StandardSideInputTypes_Enum)(0).Descriptor().Values()
+	prims    = (pipepb.StandardPTransforms_Primitives)(0).Descriptor().Values()
+	cmbcomps = (pipepb.StandardPTransforms_CombineComponents)(0).Descriptor().Values()
+	sids     = (pipepb.StandardSideInputTypes_Enum)(0).Descriptor().Values()
 
 	// SDK transforms.
-	urnTransformParDo = ptUrn(pipepb.StandardPTransforms_PAR_DO)
+	urnTransformParDo      = ptUrn(pipepb.StandardPTransforms_PAR_DO)
+	urnTransformPreCombine = cmbtUrn(pipepb.StandardPTransforms_COMBINE_PER_KEY_PRECOMBINE)
+	urnTransformMerge      = cmbtUrn(pipepb.StandardPTransforms_COMBINE_PER_KEY_MERGE_ACCUMULATORS)
+	urnTransformExtract    = cmbtUrn(pipepb.StandardPTransforms_COMBINE_PER_KEY_EXTRACT_OUTPUTS)
 	// DoFn Urns
 	urnGoDoFn = "beam:go:transform:dofn:v1" // Only used for Go DoFn.
 
@@ -85,7 +94,7 @@ var (
 
 func executePipeline(wk *worker, j *job) {
 	pipeline := j.pipeline
-	ts := pipeline.GetComponents().GetTransforms()
+	comps := proto.Clone(pipeline.GetComponents()).(*pipepb.Components)
 
 	// Basically need to figure out the "plan" at this point.
 	// Long term: Take RootTransforms & TOPO sort them. (technically not necessary, but paranoid)
@@ -101,7 +110,12 @@ func executePipeline(wk *worker, j *job) {
 	// TODO, configure the preprocessor from pipeline options.
 	// Maybe change these returns to a single struct for convenience and further
 	// annotation?
-	topo, succ, inputs, pcolParents := (&preprocessor{}).preProcessGraph(ts)
+	topo, succ, inputs, pcolParents := (&preprocessor{
+		compositeHandlers: map[string]transformHandler{
+			"beam:transform:combine_per_key:v1": Combine(CombineCharacteristic{EnableLifting: true}),
+		},
+	}).preProcessGraph(comps)
+	ts := comps.GetTransforms()
 
 	// We're going to do something fun with channels for this,
 	// and do a "Generator" pattern to get the bundles we need
@@ -145,7 +159,7 @@ func executePipeline(wk *worker, j *job) {
 		switch t.GetEnvironmentId() {
 		case "": // Runner Transforms
 			// Runner transforms are processed immeadiately.
-			b := runnerTransform(t, tid, processed, parents, pipeline)
+			b := runnerTransform(t, tid, processed, parents, comps)
 			for _, ch := range succ[tid] {
 				m, ok := prevs[ch.global]
 				if !ok {
@@ -159,7 +173,7 @@ func executePipeline(wk *worker, j *job) {
 			// Great! this is for this environment. // Broken abstraction.
 			urn := t.GetSpec().GetUrn()
 			switch urn {
-			case urnTransformParDo:
+			case urnTransformParDo, urnTransformPreCombine, urnTransformMerge, urnTransformExtract:
 				// and design the consuming bundle.
 				instID, bundID := wk.nextInst(), wk.nextBund()
 
@@ -175,18 +189,22 @@ func executePipeline(wk *worker, j *job) {
 					tid: t, // The Transform to Execute!
 				}
 
-				pardo := &pipepb.ParDoPayload{}
-				if err := (proto.UnmarshalOptions{}).Unmarshal(t.GetSpec().GetPayload(), pardo); err != nil {
-					V(1).Fatalf("unable to decode ParDoPayload for transform[%v]", tid)
-				}
+				var sis map[string]*pipepb.SideInput
 
-				sis := pardo.GetSideInputs()
+				if urn == urnTransformParDo {
+					pardo := &pipepb.ParDoPayload{}
+					if err := (proto.UnmarshalOptions{}).Unmarshal(t.GetSpec().GetPayload(), pardo); err != nil {
+						V(1).Fatalf("unable to decode ParDoPayload for transform[%v]", tid)
+					}
+
+					sis = pardo.GetSideInputs()
+				}
 				iterSides := make(map[string][]byte)
 
 				var parent *bundle
 				// Get WindowedValue Coders for the transform's input and output PCollections.
 				for local, global := range t.GetInputs() {
-					inPID, wInCid := makeWindowedValueCoder(t, global, pipeline, coders)
+					inPID, wInCid := makeWindowedValueCoder(t, global, comps, coders)
 					si, ok := sis[local]
 					// this is the main input!
 					if !ok {
@@ -207,7 +225,7 @@ func executePipeline(wk *worker, j *job) {
 							logger.Fatalf("%v not a DataReceived key, have %v", key, ks)
 						}
 						col := pipeline.GetComponents().GetPcollections()[global]
-						cID := lpUnknownCoders(col.GetCoderId(), coders, pipeline.GetComponents().GetCoders())
+						cID := lpUnknownCoders(col.GetCoderId(), coders, comps.GetCoders())
 						ec := coders[cID]
 						ed := pullDecoder(ec, coders)
 
@@ -238,18 +256,18 @@ func executePipeline(wk *worker, j *job) {
 				// But this also means replacing the ID for the input in the bundle.
 				// inPIDSrc := inPID + "_src"
 				for local, global := range t.GetOutputs() {
-					outPID, wOutCid := makeWindowedValueCoder(t, global, pipeline, coders)
+					outPID, wOutCid := makeWindowedValueCoder(t, global, comps, coders)
 					sinkID := tid + "_" + local
 					transforms[sinkID] = sinkTransform(sinkID, portFor(wOutCid, wk), outPID)
 				}
 
-				reconcileCoders(coders, pipeline.GetComponents().GetCoders())
+				reconcileCoders(coders, comps.GetCoders())
 
 				desc := &fnpb.ProcessBundleDescriptor{
 					Id:                  bundID,
 					Transforms:          transforms,
-					WindowingStrategies: pipeline.GetComponents().GetWindowingStrategies(),
-					Pcollections:        pipeline.GetComponents().GetPcollections(),
+					WindowingStrategies: comps.GetWindowingStrategies(),
+					Pcollections:        comps.GetPcollections(),
 					Coders:              coders,
 					StateApiServiceDescriptor: &pipepb.ApiServiceDescriptor{
 						Url: wk.Endpoint(),
@@ -267,6 +285,10 @@ func executePipeline(wk *worker, j *job) {
 							},
 						},
 					},
+				}
+
+				if parent == nil || parent.DataReceived[dataParentID] == nil {
+					panic(fmt.Sprintf("corruption detected: t: %v bundID %q parentID %q, parent %v, dataParentID %q", prototext.Format(t), bundID, parentID, parent, dataParentID))
 				}
 
 				b := &bundle{
@@ -357,7 +379,7 @@ func portFor(wInCid string, wk *worker) []byte {
 	return sourcePortBytes
 }
 
-func runnerTransform(t *pipepb.PTransform, tid string, processed chan *bundle, parents map[string]*bundle, pipeline *pipepb.Pipeline) *bundle {
+func runnerTransform(t *pipepb.PTransform, tid string, processed chan *bundle, parents map[string]*bundle, comps *pipepb.Components) *bundle {
 	urn := t.GetSpec().GetUrn()
 	switch urn {
 	case urnTransformImpulse:
@@ -389,16 +411,16 @@ func runnerTransform(t *pipepb.PTransform, tid string, processed chan *bundle, p
 		// TODO Needs to be real output name from the proto.
 		fakeTid := tid + "_i0" // The ID from which the consumer will read from.
 
-		ws := windowingStrategy(pipeline, tid)
-		kvc := kvcoder(pipeline, tid)
+		ws := windowingStrategy(comps, tid)
+		kvc := kvcoder(comps, tid)
 
 		// TODO, support other window coders.
 		wc := exec.MakeWindowDecoder(coder.NewGlobalWindow())
 		// TODO assert this is a KV. It's probably fine, but we should fail anyway.
 		coders := map[string]*pipepb.Coder{}
-		kcID := lpUnknownCoders(kvc.GetComponentCoderIds()[0], coders, pipeline.GetComponents().GetCoders())
-		ecID := lpUnknownCoders(kvc.GetComponentCoderIds()[1], coders, pipeline.GetComponents().GetCoders())
-		reconcileCoders(coders, pipeline.GetComponents().GetCoders())
+		kcID := lpUnknownCoders(kvc.GetComponentCoderIds()[0], coders, comps.GetCoders())
+		ecID := lpUnknownCoders(kvc.GetComponentCoderIds()[1], coders, comps.GetCoders())
+		reconcileCoders(coders, comps.GetCoders())
 
 		kc := coders[kcID]
 		ec := coders[ecID]
@@ -441,15 +463,14 @@ func runnerTransform(t *pipepb.PTransform, tid string, processed chan *bundle, p
 }
 
 // Gets the windowing strategy for the given transform ID.
-func windowingStrategy(pipeline *pipepb.Pipeline, tid string) *pipepb.WindowingStrategy {
-	comp := pipeline.GetComponents()
-	t := comp.GetTransforms()[tid]
+func windowingStrategy(comps *pipepb.Components, tid string) *pipepb.WindowingStrategy {
+	t := comps.GetTransforms()[tid]
 	var inputPColID string
 	for _, pcolID := range t.GetInputs() {
 		inputPColID = pcolID
 	}
-	pcol := comp.GetPcollections()[inputPColID]
-	return comp.GetWindowingStrategies()[pcol.GetWindowingStrategyId()]
+	pcol := comps.GetPcollections()[inputPColID]
+	return comps.GetWindowingStrategies()[pcol.GetWindowingStrategyId()]
 }
 
 func gbkBytes(ws *pipepb.WindowingStrategy, wc exec.WindowDecoder, kc, vc *pipepb.Coder, toAggregate [][]byte, coders map[string]*pipepb.Coder) []byte {

@@ -37,6 +37,13 @@ type linkID struct {
 // graph, such as special handling for lifted combiners or
 // other configuration.
 type preprocessor struct {
+	compositeHandlers map[string]transformHandler
+}
+
+type transformHandler interface {
+	// HandleTransform takes a PTransform proto and returns a set of new Components, and a list of
+	// transformIDs leaves to remove and ignore from graph processing.
+	HandleTransform(tid string, t *pipepb.PTransform, comps *pipepb.Components) (*pipepb.Components, []string)
 }
 
 // preProcessGraph takes the graph and preprocesses for consumption in bundles.
@@ -51,21 +58,62 @@ type preprocessor struct {
 //
 // This is where Combines can become lifted (if it makes sense, or is configured), and
 // similar behaviors.
-func (*preprocessor) preProcessGraph(ts map[string]*pipepb.PTransform) (topological []string, successors, inputs map[string][]linkID, pcolParents map[string]linkID) {
+func (p *preprocessor) preProcessGraph(comps *pipepb.Components) (topological []string, successors, inputs map[string][]linkID, pcolParents map[string]linkID) {
 	// TODO - Recurse down composite transforms.
 	// But lets just ignore composites for now. Leaves only.
 	// We only need composites to do "smart" things with
 	// combiners and SDFs.
+
+	ts := comps.GetTransforms()
+
+	// TODO move this out of this part of the pre-processor?
 	leaves := map[string]struct{}{}
+	ignore := map[string]struct{}{}
 	for tid, t := range ts {
+		if _, ok := ignore[tid]; ok {
+			continue
+		}
 		// Iterating through all the transforms to extract the leaves.
 		if len(t.GetSubtransforms()) == 0 {
 			leaves[tid] = struct{}{}
-		} else {
-			spec := t.GetSpec()
-			if spec != nil {
-				V(0).Logf("composite transform: %v has urn %v", t.GetUniqueName(), spec.GetUrn())
-			}
+			continue
+		}
+
+		spec := t.GetSpec()
+		if spec == nil {
+			V(0).Logf("composite transform %v is missing a spec urn", t.GetUniqueName())
+			continue
+		}
+
+		// Composite Transforms basically means needing to remove the "leaves" from the
+		// handling set, and producing the new sub component transforms. The top level
+		// composite should have enough information to produce the new sub transforms.
+		// In particular, the inputs and outputs need to all be connected and matched up
+		// so the topological sort still works out.
+		h := p.compositeHandlers[spec.GetUrn()]
+		if h == nil {
+			V(0).Logf("composite transform %v has unknown composite urn %v", t.GetUniqueName(), spec.GetUrn())
+			continue
+		}
+
+		subs, toRemove := h.HandleTransform(tid, t, comps)
+
+		// Clear out unnecessary leaves from this composite for topological sort handling.
+		for _, key := range toRemove {
+			ignore[key] = struct{}{}
+			delete(leaves, key)
+		}
+
+		// ts should be a clone, so we should be able to add new transforms into the map.
+		for tid, t := range subs.GetTransforms() {
+			leaves[tid] = struct{}{}
+			ts[tid] = t
+		}
+		for cid, c := range subs.GetCoders() {
+			comps.GetCoders()[cid] = c
+		}
+		for nid, n := range subs.GetPcollections() {
+			comps.GetPcollections()[nid] = n
 		}
 	}
 

@@ -24,6 +24,8 @@ import (
 
 	"github.com/apache/beam/sdks/v2/go/pkg/beam"
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/metrics"
+	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/sdf"
+	"github.com/apache/beam/sdks/v2/go/pkg/beam/io/rtrackers/offsetrange"
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/options/jobopts"
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/register"
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/runners/universal"
@@ -48,6 +50,7 @@ func init() {
 	// the tests if I change things later.
 	beam.RegisterRunner("testlocal", execute)
 	register.Function2x0(dofn1)
+	register.Function2x0(dofn1kv)
 	register.Function3x0(dofn1x2)
 	register.Function6x0(dofn1x5)
 	register.Function3x0(dofn2x1)
@@ -65,12 +68,22 @@ func init() {
 	register.Function2x0(dofnSink)
 
 	register.Function2x1(combineIntSum)
+
+	register.DoFn3x1[*sdf.LockRTracker, SourceConfig, func(int64), error]((*intRangeFn)(nil))
+	register.Emitter1[int64]()
+	register.Emitter2[int64, int64]()
 }
 
 func dofn1(imp []byte, emit func(int64)) {
 	emit(1)
 	emit(2)
 	emit(3)
+}
+
+func dofn1kv(imp []byte, emit func(int64, int64)) {
+	emit(0, 1)
+	emit(0, 2)
+	emit(0, 3)
 }
 
 func dofn1x2(imp []byte, emitA func(int64), emitB func(int64)) {
@@ -223,6 +236,57 @@ func dofn1Counter(ctx context.Context, _ []byte, emit func(int64)) {
 
 func combineIntSum(a, b int64) int64 {
 	return a + b
+}
+
+// SourceConfig is a struct containing all the configuration options for a
+// synthetic source. It should be created via a SourceConfigBuilder, not by
+// directly initializing it (the fields are public to allow encoding).
+type SourceConfig struct {
+	NumElements   int64 `json:"num_records" beam:"num_records"`
+	InitialSplits int64 `json:"initial_splits" beam:"initial_splits"`
+}
+
+// intRangeFn is a splittable DoFn for counting from 1 to N.
+type intRangeFn struct{}
+
+// CreateInitialRestriction creates an offset range restriction representing
+// the number of elements to emit.
+func (fn *intRangeFn) CreateInitialRestriction(config SourceConfig) offsetrange.Restriction {
+	return offsetrange.Restriction{
+		Start: 0,
+		End:   int64(config.NumElements),
+	}
+}
+
+// SplitRestriction splits restrictions equally according to the number of
+// initial splits specified in SourceConfig. Each restriction output by this
+// method will contain at least one element, so the number of splits will not
+// exceed the number of elements.
+func (fn *intRangeFn) SplitRestriction(config SourceConfig, rest offsetrange.Restriction) (splits []offsetrange.Restriction) {
+	return rest.EvenSplits(int64(config.InitialSplits))
+}
+
+// RestrictionSize outputs the size of the restriction as the number of elements
+// that restriction will output.
+func (fn *intRangeFn) RestrictionSize(_ SourceConfig, rest offsetrange.Restriction) float64 {
+	return rest.Size()
+}
+
+// CreateTracker just creates an offset range restriction tracker for the
+// restriction.
+func (fn *intRangeFn) CreateTracker(rest offsetrange.Restriction) *sdf.LockRTracker {
+	return sdf.NewLockRTracker(offsetrange.NewTracker(rest))
+}
+
+// ProcessElement creates a number of random elements based on the restriction
+// tracker received. Each element is a random byte slice key and value, in the
+// form of KV<[]byte, []byte>.
+func (fn *intRangeFn) ProcessElement(rt *sdf.LockRTracker, config SourceConfig, emit func(int64)) error {
+	for i := rt.GetRestriction().(offsetrange.Restriction).Start; rt.TryClaim(i); i++ {
+		// Add 1 since the restrictions are from [0 ,N), but we want [1, N]
+		emit(i + 1)
+	}
+	return nil
 }
 
 func initRunner(t *testing.T) {
@@ -442,15 +506,37 @@ func TestRunner_Pipelines(t *testing.T) {
 				}, sum)
 			},
 		}, {
-			name: "combine",
+			name: "combine_perkey",
+			pipeline: func(s beam.Scope) {
+				imp := beam.Impulse(s)
+				in := beam.ParDo(s, dofn1kv, imp)
+				keyedsum := beam.CombinePerKey(s, combineIntSum, in)
+				sum := beam.DropKey(s, keyedsum)
+				beam.ParDo(s, &int64Check{
+					Name: "combine",
+					Want: []int{6},
+				}, sum)
+			},
+		}, {
+			name: "combine_global",
 			pipeline: func(s beam.Scope) {
 				imp := beam.Impulse(s)
 				in := beam.ParDo(s, dofn1, imp)
 				sum := beam.Combine(s, combineIntSum, in)
 				beam.ParDo(s, &int64Check{
-					Name: "simple",
+					Name: "combine",
 					Want: []int{6},
 				}, sum)
+			},
+		}, {
+			name: "sdf_single_split",
+			pipeline: func(s beam.Scope) {
+				configs := beam.Create(s, SourceConfig{NumElements: 10, InitialSplits: 1})
+				in := beam.ParDo(s, &intRangeFn{}, configs)
+				beam.ParDo(s, &int64Check{
+					Name: "sdf_single",
+					Want: []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10},
+				}, in)
 			},
 		},
 	}
