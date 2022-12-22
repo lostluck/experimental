@@ -28,11 +28,11 @@ type generalMetadata struct {
 	characteristic reflect.Type
 }
 
-func (m generalMetadata) URN() string {
+func (m generalMetadata) ConfigURN() string {
 	return m.urn
 }
 
-func (m generalMetadata) Characteristic() reflect.Type {
+func (m generalMetadata) ConfigCharacteristic() reflect.Type {
 	return m.characteristic
 }
 

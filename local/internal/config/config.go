@@ -83,18 +83,18 @@ func NewHandlerwRegistry() *HandlerRegistry {
 // Characteristic types must have useful zero values, representing the
 // default configuration for the handler.
 type HandlerMetadata interface {
-	// URN represents the urn for the handle.
-	URN() string
+	// ConfigURN represents the urn for the handle.
+	ConfigURN() string
 
-	// Characteristic returns the type of the detailed configuration for the handler.
+	// ConfigCharacteristic returns the type of the detailed configuration for the handler.
 	// A characteristic type must have a useful zero value that defines the default behavior.
-	Characteristic() reflect.Type
+	ConfigCharacteristic() reflect.Type
 }
 
 // RegisterHandlers is about registering the metadata for handler configurations.
 func (r *HandlerRegistry) RegisterHandlers(mds ...HandlerMetadata) {
 	for _, md := range mds {
-		r.metadata[md.URN()] = md
+		r.metadata[md.ConfigURN()] = md
 	}
 }
 
@@ -136,7 +136,7 @@ func (r *HandlerRegistry) LoadFromYaml(in []byte) error {
 			if err != nil {
 				panic(fmt.Sprintf("error re-encoding characteristic for variant %v handler %v: %v", v, hk, err))
 			}
-			rt := md.Characteristic()
+			rt := md.ConfigCharacteristic()
 			rtv := reflect.New(rt)
 			if err := dec.Decode(rtv.Interface()); err != nil {
 				return fmt.Errorf("error decoding characteristic strictly for variant %v handler %v: %v", v, hk, err)
@@ -226,7 +226,7 @@ func (v *Variant) GetCharacteristics(handler string) any {
 	if !ok {
 		return nil
 	}
-	rt := md.Characteristic()
+	rt := md.ConfigCharacteristic()
 
 	// Get a pointer to the concrete value.
 	rtv := reflect.New(rt)
