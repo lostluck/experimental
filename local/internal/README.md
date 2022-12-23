@@ -8,8 +8,9 @@
 * pullDecoder refactor
 * []byte avoidance -> To io.Reader/Writer streams
 * Composite Handling
-  * Combiner Lifting
+  * ~~Combiner Lifting~~
   * Real SplittableDoFns (split requests, etc)
+    * ~~Initial Splits~~
     * Different split kinds (channel, residual, separation harness test)
     * Process Continuations & Bundle Rescheduling
 * Error plumbing rather than log.Fatals or panics.
@@ -17,6 +18,50 @@
 * Stager Refactor
   * One PTransform : One Stage
   * Fusion Stager
+
+# Notes to myself: 2022-12-24
+
+It's the day before Christmas and all through the house
+lostluck was was stirring, tapping away and using a mouse.
+
+Anyway...
+
+The Runner can now to a batch SDF with initial splits!
+At least, once a small inconsistency is resolved in the SDK.
+Extracting the main eleemnt in the main process element split doesn't
+work with the current Single Transform approach, because the SDK doesn't
+cover for wrapping main element from the fullvalue on decode, when it's
+not a KV. This causes a type error.
+
+Basically, this is one of the reasons direct runners are bad. Things like
+this sneak in, even though each transform is well defined. The patch for
+the Go SDK to resolve this is small however, so that's fine.
+
+But with this in, we add a separation harness test, and force a clean up
+of the data layer of this runner. Or more likely, clean up some of the
+processing at execution time, moving and refactoring some of the data
+handling logic. Only ParDos can have side inputs, so it makes sense to
+move that handling into a ParDo specific handler.
+
+I think nearly every other transform (most SDF parts, all combine parts)
+only do a single striaght map in, map out transform, which would simplify the
+bundle logic. I don't love needing to list every URN with SDK handling like
+that explicitly.
+
+Technically what we have there is the no-op fuser. This is fine for now.
+We do want that to be used. It's the topological loop. Right now that's
+directly a `[]string`, so it's limited to a single transform at a time.
+But now might be the time to fix that abstraction, before fixing the
+rest of the handling. It would be good to isolate a transform 
+concatenating loop, that builds up from the handled transforms from the given
+proposed bundle descriptors, and connecting them together with the
+Datasource and Datasink transforms. 
+
+The main sticking point there would be changing the bundle/parents logic.
+Right now they're very coupled, and it's quite subtle. I don't have a
+good idea on that. It needs to be coupled with the fuser approach, since
+the fused transforms will have to handle where side inputs go and that
+the topological sort remains sound.
 
 # Notes to myself: 2022-12-21
 
