@@ -165,11 +165,11 @@ func (h *combine) HandleTransform(tid string, t *pipepb.PTransform, comps *pipep
 
 	tform := func(name, urn, in, out, env string) *pipepb.PTransform {
 		return &pipepb.PTransform{
+			UniqueName: name,
 			Spec: &pipepb.FunctionSpec{
 				Urn:     urn,
 				Payload: cmbPayload,
 			},
-			UniqueName: name,
 			Inputs: map[string]string{
 				"i0": in,
 			},
@@ -201,6 +201,8 @@ func (h *combine) HandleTransform(tid string, t *pipepb.PTransform, comps *pipep
 	V(2).Logf("new components from combine %v\n%v", tid, prototext.Format(newComps))
 
 	// Now we return everything!
-	// TODO do we need to recurse the subtransforms for a complete list?
+	// TODO recurse through sub transforms to remove?
+	// We don't need to remove the composite, since we don't add it in
+	// when we return the new transforms, so it's not in the topology.
 	return newComps, t.GetSubtransforms()
 }
