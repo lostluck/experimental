@@ -65,6 +65,10 @@ func cmbtUrn(v pipepb.StandardPTransforms_CombineComponents) string {
 	return proto.GetExtension(cmbcomps.ByNumber(protoreflect.EnumNumber(v)).Options(), pipepb.E_BeamUrn).(string)
 }
 
+func sdfUrn(v pipepb.StandardPTransforms_SplittableParDoComponents) string {
+	return proto.GetExtension(sdfcomps.ByNumber(protoreflect.EnumNumber(v)).Options(), pipepb.E_BeamUrn).(string)
+}
+
 func siUrn(v pipepb.StandardSideInputTypes_Enum) string {
 	return proto.GetExtension(sids.ByNumber(protoreflect.EnumNumber(v)).Options(), pipepb.E_BeamUrn).(string)
 }
@@ -72,13 +76,20 @@ func siUrn(v pipepb.StandardSideInputTypes_Enum) string {
 var (
 	prims    = (pipepb.StandardPTransforms_Primitives)(0).Descriptor().Values()
 	cmbcomps = (pipepb.StandardPTransforms_CombineComponents)(0).Descriptor().Values()
-	sids     = (pipepb.StandardSideInputTypes_Enum)(0).Descriptor().Values()
+	sdfcomps = (pipepb.StandardPTransforms_SplittableParDoComponents)(0).Descriptor().Values()
+
+	sids = (pipepb.StandardSideInputTypes_Enum)(0).Descriptor().Values()
 
 	// SDK transforms.
-	urnTransformParDo      = ptUrn(pipepb.StandardPTransforms_PAR_DO)
-	urnTransformPreCombine = cmbtUrn(pipepb.StandardPTransforms_COMBINE_PER_KEY_PRECOMBINE)
-	urnTransformMerge      = cmbtUrn(pipepb.StandardPTransforms_COMBINE_PER_KEY_MERGE_ACCUMULATORS)
-	urnTransformExtract    = cmbtUrn(pipepb.StandardPTransforms_COMBINE_PER_KEY_EXTRACT_OUTPUTS)
+	urnTransformParDo                = ptUrn(pipepb.StandardPTransforms_PAR_DO)
+	urnTransformPreCombine           = cmbtUrn(pipepb.StandardPTransforms_COMBINE_PER_KEY_PRECOMBINE)
+	urnTransformMerge                = cmbtUrn(pipepb.StandardPTransforms_COMBINE_PER_KEY_MERGE_ACCUMULATORS)
+	urnTransformExtract              = cmbtUrn(pipepb.StandardPTransforms_COMBINE_PER_KEY_EXTRACT_OUTPUTS)
+	urnTransformPairWithRestriction  = sdfUrn(pipepb.StandardPTransforms_PAIR_WITH_RESTRICTION)
+	urnTransformSplitAndSize         = sdfUrn(pipepb.StandardPTransforms_SPLIT_AND_SIZE_RESTRICTIONS)
+	urnTransformProcessSizedElements = sdfUrn(pipepb.StandardPTransforms_PROCESS_SIZED_ELEMENTS_AND_RESTRICTIONS)
+	urnTransformTruncate             = sdfUrn(pipepb.StandardPTransforms_TRUNCATE_SIZED_RESTRICTION)
+
 	// DoFn Urns
 	urnGoDoFn = "beam:go:transform:dofn:v1" // Only used for Go DoFn.
 
@@ -113,16 +124,17 @@ func executePipeline(wk *worker, j *job) {
 
 	handlers := []any{
 		Combine(CombineCharacteristic{EnableLifting: true}),
+		ParDo(ParDoCharacteristic{DisableSDF: true}),
 	}
 
 	prepro := &preprocessor{
-		compositeHandlers: map[string]transformHandler{},
+		transformHandlers: map[string]transformHandler{},
 	}
 
 	for _, h := range handlers {
 		if th, ok := h.(transformHandler); ok {
 			for _, urn := range th.TransformUrns() {
-				prepro.compositeHandlers[urn] = th
+				prepro.transformHandlers[urn] = th
 			}
 		}
 
@@ -187,7 +199,9 @@ func executePipeline(wk *worker, j *job) {
 			// Great! this is for this environment. // Broken abstraction.
 			urn := t.GetSpec().GetUrn()
 			switch urn {
-			case urnTransformParDo, urnTransformPreCombine, urnTransformMerge, urnTransformExtract:
+			case urnTransformParDo,
+				urnTransformPreCombine, urnTransformMerge, urnTransformExtract,
+				urnTransformPairWithRestriction, urnTransformSplitAndSize, urnTransformProcessSizedElements, urnTransformTruncate:
 				// and design the consuming bundle.
 				instID, bundID := wk.nextInst(), wk.nextBund()
 

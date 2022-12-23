@@ -37,7 +37,7 @@ type linkID struct {
 // graph, such as special handling for lifted combiners or
 // other configuration.
 type preprocessor struct {
-	compositeHandlers map[string]transformHandler
+	transformHandlers map[string]transformHandler
 }
 
 type transformHandler interface {
@@ -70,15 +70,10 @@ func (p *preprocessor) preProcessGraph(comps *pipepb.Components) (topological []
 		if _, ok := ignore[tid]; ok {
 			continue
 		}
-		// Iterating through all the transforms to extract the leaves.
-		if len(t.GetSubtransforms()) == 0 {
-			leaves[tid] = struct{}{}
-			continue
-		}
 
 		spec := t.GetSpec()
 		if spec == nil {
-			V(0).Logf("composite transform %v is missing a spec urn", t.GetUniqueName())
+			V(0).Logf("transform %v %v is missing a spec", tid, t.GetUniqueName())
 			continue
 		}
 
@@ -87,9 +82,15 @@ func (p *preprocessor) preProcessGraph(comps *pipepb.Components) (topological []
 		// composite should have enough information to produce the new sub transforms.
 		// In particular, the inputs and outputs need to all be connected and matched up
 		// so the topological sort still works out.
-		h := p.compositeHandlers[spec.GetUrn()]
+		h := p.transformHandlers[spec.GetUrn()]
 		if h == nil {
-			V(0).Logf("composite transform %v has unknown composite urn %v", t.GetUniqueName(), spec.GetUrn())
+
+			// If there's an unknown urn, and it's not composite, simply add it to the leaves.
+			if len(t.GetSubtransforms()) == 0 {
+				leaves[tid] = struct{}{}
+			} else {
+				V(0).Logf("composite transform %v has unknown urn %v", t.GetUniqueName(), spec.GetUrn())
+			}
 			continue
 		}
 
