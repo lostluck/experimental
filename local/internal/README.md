@@ -19,6 +19,40 @@
   * One PTransform : One Stage
   * Fusion Stager
 
+# Notes to myself: 2022-12-26
+
+I think to clean up execution, the loop needs to be unaware that the
+runner is special. It needs to treat it as just another worker with the
+environment id "".
+
+This implies that we would have the "environments" be responsible for multiplexing
+requests onto actual worker, even though the manager will only have a single FnAPI
+server for the various services. This would permit a distinction between the multi
+processing SDKs like Go and Java, and the single/sibling processing SDKs like Python.
+
+This set up also allows for correct/individual handling for each environment to cooperate
+with the capabilities of the SDKs, rather than the runner deciding this ahead of time.
+
+Some of the complexity is reduced for the preprocessor style handling, since Combines
+or SDF composites are understood by SDKs iff the SDK sends the appropriate explicit signals.
+And handling features like Stable input, is still functionally runner side.
+
+Multilanguage conflicts with this model though, since Beam allows for a single bundle
+executing across multiple environments. But that could also be a separate optimization,
+with the layer that does fusing being aware of environments and handling the environmental
+fusion correctly.
+
+The runner only transforms will only be installed into the "runner" worker, but flattens
+can electively be handled SDK side, so that would be something to be configurable.
+
+------
+
+For handling streaming, it will be OK to start off with the current batch set up for data.
+This runner is for testing completeness not optimal processing. We can processess each
+bundle one at a time, rather than having all transforms execute simultaneously, or at least
+pipelined. It all comes down to data management and pipelining, with how we ensure things
+coordinate around windowing and aggregations.
+
 # Notes to myself: 2022-12-24
 
 It's the day before Christmas and all through the house
