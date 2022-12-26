@@ -49,13 +49,15 @@ func (*pardo) ConfigCharacteristic() reflect.Type {
 	return reflect.TypeOf((*ParDoCharacteristic)(nil)).Elem()
 }
 
-func (*pardo) TransformUrns() []string {
-	return []string{"beam:transform:pardo:v1"}
+var _ transformPreparer = (*pardo)(nil)
+
+func (*pardo) PrepareUrns() []string {
+	return []string{urnTransformParDo}
 }
 
-// HandleTransform handles special processing with respect to ParDos, since their handling is dependant on supported features
+// PrepareTransform handles special processing with respect to ParDos, since their handling is dependant on supported features
 // and requirements.
-func (h *pardo) HandleTransform(tid string, t *pipepb.PTransform, comps *pipepb.Components) (*pipepb.Components, []string) {
+func (h *pardo) PrepareTransform(tid string, t *pipepb.PTransform, comps *pipepb.Components) (*pipepb.Components, []string) {
 
 	// ParDos are a pain in the butt.
 	// Combines, by comparison, are dramatically simpler.

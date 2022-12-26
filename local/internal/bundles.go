@@ -61,6 +61,10 @@ func ptUrn(v pipepb.StandardPTransforms_Primitives) string {
 	return proto.GetExtension(prims.ByNumber(protoreflect.EnumNumber(v)).Options(), pipepb.E_BeamUrn).(string)
 }
 
+func ctUrn(v pipepb.StandardPTransforms_Composites) string {
+	return proto.GetExtension(cmps.ByNumber(protoreflect.EnumNumber(v)).Options(), pipepb.E_BeamUrn).(string)
+}
+
 func cmbtUrn(v pipepb.StandardPTransforms_CombineComponents) string {
 	return proto.GetExtension(cmbcomps.ByNumber(protoreflect.EnumNumber(v)).Options(), pipepb.E_BeamUrn).(string)
 }
@@ -75,6 +79,7 @@ func siUrn(v pipepb.StandardSideInputTypes_Enum) string {
 
 var (
 	prims    = (pipepb.StandardPTransforms_Primitives)(0).Descriptor().Values()
+	cmps     = (pipepb.StandardPTransforms_Composites)(0).Descriptor().Values()
 	cmbcomps = (pipepb.StandardPTransforms_CombineComponents)(0).Descriptor().Values()
 	sdfcomps = (pipepb.StandardPTransforms_SplittableParDoComponents)(0).Descriptor().Values()
 
@@ -82,6 +87,7 @@ var (
 
 	// SDK transforms.
 	urnTransformParDo                = ptUrn(pipepb.StandardPTransforms_PAR_DO)
+	urnTransformCombinePerKey        = ctUrn(pipepb.StandardPTransforms_COMBINE_PER_KEY)
 	urnTransformPreCombine           = cmbtUrn(pipepb.StandardPTransforms_COMBINE_PER_KEY_PRECOMBINE)
 	urnTransformMerge                = cmbtUrn(pipepb.StandardPTransforms_COMBINE_PER_KEY_MERGE_ACCUMULATORS)
 	urnTransformExtract              = cmbtUrn(pipepb.StandardPTransforms_COMBINE_PER_KEY_EXTRACT_OUTPUTS)
@@ -128,13 +134,13 @@ func executePipeline(wk *worker, j *job) {
 	}
 
 	prepro := &preprocessor{
-		transformHandlers: map[string]transformHandler{},
+		transformPreparers: map[string]transformPreparer{},
 	}
 
 	for _, h := range handlers {
-		if th, ok := h.(transformHandler); ok {
-			for _, urn := range th.TransformUrns() {
-				prepro.transformHandlers[urn] = th
+		if th, ok := h.(transformPreparer); ok {
+			for _, urn := range th.PrepareUrns() {
+				prepro.transformPreparers[urn] = th
 			}
 		}
 

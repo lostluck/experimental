@@ -37,15 +37,15 @@ type linkID struct {
 // graph, such as special handling for lifted combiners or
 // other configuration.
 type preprocessor struct {
-	transformHandlers map[string]transformHandler
+	transformPreparers map[string]transformPreparer
 }
 
-type transformHandler interface {
-	// TransformUrns returns the Beam URNs that this handler deals with for preprocessing.
-	TransformUrns() []string
-	// HandleTransform takes a PTransform proto and returns a set of new Components, and a list of
+type transformPreparer interface {
+	// PrepareUrns returns the Beam URNs that this handler deals with for preprocessing.
+	PrepareUrns() []string
+	// PrepareTransform takes a PTransform proto and returns a set of new Components, and a list of
 	// transformIDs leaves to remove and ignore from graph processing.
-	HandleTransform(tid string, t *pipepb.PTransform, comps *pipepb.Components) (*pipepb.Components, []string)
+	PrepareTransform(tid string, t *pipepb.PTransform, comps *pipepb.Components) (*pipepb.Components, []string)
 }
 
 // preProcessGraph takes the graph and preprocesses for consumption in bundles.
@@ -82,7 +82,7 @@ func (p *preprocessor) preProcessGraph(comps *pipepb.Components) (topological []
 		// composite should have enough information to produce the new sub transforms.
 		// In particular, the inputs and outputs need to all be connected and matched up
 		// so the topological sort still works out.
-		h := p.transformHandlers[spec.GetUrn()]
+		h := p.transformPreparers[spec.GetUrn()]
 		if h == nil {
 
 			// If there's an unknown urn, and it's not composite, simply add it to the leaves.
@@ -94,7 +94,7 @@ func (p *preprocessor) preProcessGraph(comps *pipepb.Components) (topological []
 			continue
 		}
 
-		subs, toRemove := h.HandleTransform(tid, t, comps)
+		subs, toRemove := h.PrepareTransform(tid, t, comps)
 
 		// Clear out unnecessary leaves from this composite for topological sort handling.
 		for _, key := range toRemove {

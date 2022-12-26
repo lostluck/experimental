@@ -51,12 +51,14 @@ func (*combine) ConfigCharacteristic() reflect.Type {
 	return reflect.TypeOf((*CombineCharacteristic)(nil)).Elem()
 }
 
-func (*combine) TransformUrns() []string {
-	return []string{"beam:transform:combine_per_key:v1"}
+var _ transformPreparer = (*combine)(nil)
+
+func (*combine) PrepareUrns() []string {
+	return []string{urnTransformCombinePerKey}
 }
 
-// HandleTransform returns lifted combines and removes the leaves if enabled. Otherwise returns nothing.
-func (h *combine) HandleTransform(tid string, t *pipepb.PTransform, comps *pipepb.Components) (*pipepb.Components, []string) {
+// PrepareTransform returns lifted combines and removes the leaves if enabled. Otherwise returns nothing.
+func (h *combine) PrepareTransform(tid string, t *pipepb.PTransform, comps *pipepb.Components) (*pipepb.Components, []string) {
 	// If we aren't lifting, the "default impl" for combines should be sufficient.
 	if !h.config.EnableLifting {
 		return nil, nil
