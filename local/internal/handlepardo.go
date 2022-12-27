@@ -221,7 +221,7 @@ func (h *pardo) PrepareTransform(tid string, t *pipepb.PTransform, comps *pipepb
 	tforms := map[string]*pipepb.PTransform{
 		ePWRID:         tform(ePWRID, "beam:transform:sdf_pair_with_restriction:v1", pcolInID, nPWRID),
 		eSPLITnSIZEDID: tform(eSPLITnSIZEDID, "beam:transform:sdf_split_and_size_restrictions:v1", nPWRID, nSPLITnSIZEDID),
-		eProcessID: &pipepb.PTransform{
+		eProcessID: {
 			UniqueName: eProcessID,
 			Spec: &pipepb.FunctionSpec{
 				Urn:     "beam:transform:sdf_process_sized_element_and_restrictions:v1",
