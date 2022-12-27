@@ -114,9 +114,9 @@ func executePipeline(wk *worker, j *job) {
 	comps := proto.Clone(pipeline.GetComponents()).(*pipepb.Components)
 
 	// Basically need to figure out the "plan" at this point.
-	// Long term: Take RootTransforms & TOPO sort them. (technically not necessary, but paranoid)
-	//  - Recurse through composites from there: TOPO sort subtransforms
-	//  - Eventually we have our ordered list of transforms.
+	// Long term: Take RootTransforms & TOPO sort them. (technically not necessary, but paranoid) (DONE)
+	//  - Recurse through composites from there: TOPO sort subtransforms (DONE)
+	//  - Eventually we have our ordered list of transforms. (DONE)
 	//  - Then we can figure out how to fuse transforms into bundles
 	//    (producer-consumer & sibling fusion & environment awareness)
 	//
@@ -131,10 +131,15 @@ func executePipeline(wk *worker, j *job) {
 	handlers := []any{
 		Combine(CombineCharacteristic{EnableLifting: true}),
 		ParDo(ParDoCharacteristic{DisableSDF: true}),
+		Runner(RunnerCharacteristic{}),
 	}
 
 	prepro := &preprocessor{
 		transformPreparers: map[string]transformPreparer{},
+	}
+
+	proc := processor{
+		transformExecuters: map[string]transformExecuter{},
 	}
 
 	for _, h := range handlers {
@@ -143,7 +148,11 @@ func executePipeline(wk *worker, j *job) {
 				prepro.transformPreparers[urn] = th
 			}
 		}
-
+		if th, ok := h.(transformExecuter); ok {
+			for _, urn := range th.ExecuteUrns() {
+				proc.transformExecuters[urn] = th
+			}
+		}
 	}
 
 	topo, succ, inputs, pcolParents := prepro.preProcessGraph(comps)
@@ -184,182 +193,185 @@ func executePipeline(wk *worker, j *job) {
 		V(2).Logf("making bundle for %v", tid)
 
 		t := ts[tid]
-		// Much hack.
-		if t.GetSpec().GetUrn() == urnTransformFlatten {
-			t.EnvironmentId = ""
+		urn := t.GetSpec().GetUrn()
+		V(1).Logf("urn %v", urn)
+		exe := proc.transformExecuters[urn]
+
+		// Stopgap until everythinng's moved to handlers.
+		envID := t.GetEnvironmentId()
+		if exe != nil {
+			envID = exe.ExecuteWith(t)
 		}
-		switch t.GetEnvironmentId() {
+
+		var sendBundle func()
+		var b *bundle
+		switch envID {
 		case "": // Runner Transforms
+			b = exe.ExecuteTransform(tid, urn, parents, comps)
 			// Runner transforms are processed immeadiately.
-			b := runnerTransform(t, tid, processed, parents, comps)
-			for _, ch := range succ[tid] {
-				m, ok := prevs[ch.global]
-				if !ok {
-					m = make(map[string]*bundle)
-				}
-				m[ch.local] = b
-				prevs[ch.global] = m
+			sendBundle = func() {
+				go func() {
+					processed <- b
+				}()
 			}
-			continue
 		case wk.ID:
 			// Great! this is for this environment. // Broken abstraction.
-			urn := t.GetSpec().GetUrn()
-			switch urn {
-			case urnTransformParDo,
-				urnTransformPreCombine, urnTransformMerge, urnTransformExtract,
-				urnTransformPairWithRestriction, urnTransformSplitAndSize, urnTransformProcessSizedElements, urnTransformTruncate:
-				// and design the consuming bundle.
-				instID, bundID := wk.nextInst(), wk.nextBund()
-
-				in := inputs[tid][0]
-				dataParentID := in.global + "_" + in.local
-				parentID := in.global
-
-				V(2).Log(tid, " sources ", dataParentID, " ", parentID)
-				V(2).Log(tid, " inputs ", inputs[tid], " ", len(parents))
-
-				coders := map[string]*pipepb.Coder{}
-				transforms := map[string]*pipepb.PTransform{
-					tid: t, // The Transform to Execute!
-				}
-
-				var sis map[string]*pipepb.SideInput
-
-				if urn == urnTransformParDo {
-					pardo := &pipepb.ParDoPayload{}
-					if err := (proto.UnmarshalOptions{}).Unmarshal(t.GetSpec().GetPayload(), pardo); err != nil {
-						V(1).Fatalf("unable to decode ParDoPayload for transform[%v]", tid)
-					}
-
-					sis = pardo.GetSideInputs()
-				}
-				iterSides := make(map[string][]byte)
-
-				var parent *bundle
-				// Get WindowedValue Coders for the transform's input and output PCollections.
-				for local, global := range t.GetInputs() {
-					inPID, wInCid := makeWindowedValueCoder(t, global, comps, coders)
-					si, ok := sis[local]
-					// this is the main input!
-					if !ok {
-						parent = parents[local]
-						transforms[parentID] = sourceTransform(parentID, portFor(wInCid, wk), inPID)
-						continue
-					}
-					// TODO, do some kind of prep here?
-					switch si.GetAccessPattern().GetUrn() {
-					case urnSideInputIterable:
-						pb := parents[local]
-						src := pcolParents[global]
-						key := src.global + "_" + src.local
-						V(2).Logf("urnSideInputIterable key? %v, %v", key, local)
-						data, ok := pb.DataReceived[key]
-						if !ok {
-							ks := maps.Keys(pb.DataReceived)
-							logger.Fatalf("%v not a DataReceived key, have %v", key, ks)
-						}
-						col := pipeline.GetComponents().GetPcollections()[global]
-						cID := lpUnknownCoders(col.GetCoderId(), coders, comps.GetCoders())
-						ec := coders[cID]
-						ed := pullDecoder(ec, coders)
-
-						wc := exec.MakeWindowDecoder(coder.NewGlobalWindow())
-						inBuf := bytes.NewBuffer(data[0])
-						var outBuf bytes.Buffer
-						for {
-							// TODO window projection and segmentation of side inputs.
-							_, _, _, err := exec.DecodeWindowedValueHeader(wc, inBuf)
-							if err == io.EOF {
-								break
-							}
-							if err != nil {
-								logger.Fatalf("can't decode windowed value header with %v: %v", wc, err)
-							}
-							outBuf.Write(ed(inBuf))
-						}
-
-						iterSides[local] = outBuf.Bytes()
-					default:
-						logger.Fatalf("local input %v (global %v) for transform %v uses accesspattern %v", local, global, tid, si.GetAccessPattern().GetUrn())
-
-					}
-				}
-
-				// We need a new logical PCollection to represent the source
-				// so we can avoid double counting PCollection metrics later.
-				// But this also means replacing the ID for the input in the bundle.
-				// inPIDSrc := inPID + "_src"
-				for local, global := range t.GetOutputs() {
-					outPID, wOutCid := makeWindowedValueCoder(t, global, comps, coders)
-					sinkID := tid + "_" + local
-					transforms[sinkID] = sinkTransform(sinkID, portFor(wOutCid, wk), outPID)
-				}
-
-				reconcileCoders(coders, comps.GetCoders())
-
-				desc := &fnpb.ProcessBundleDescriptor{
-					Id:                  bundID,
-					Transforms:          transforms,
-					WindowingStrategies: comps.GetWindowingStrategies(),
-					Pcollections:        comps.GetPcollections(),
-					Coders:              coders,
-					StateApiServiceDescriptor: &pipepb.ApiServiceDescriptor{
-						Url: wk.Endpoint(),
-					},
-				}
-
-				V(2).Logf("registering %v with %v:", desc.GetId(), instID) // , prototext.Format(desc))
-
-				wk.InstReqs <- &fnpb.InstructionRequest{
-					InstructionId: instID,
-					Request: &fnpb.InstructionRequest_Register{
-						Register: &fnpb.RegisterRequest{
-							ProcessBundleDescriptor: []*fnpb.ProcessBundleDescriptor{
-								desc,
-							},
-						},
-					},
-				}
-
-				if parent == nil || parent.DataReceived[dataParentID] == nil {
-					panic(fmt.Sprintf("corruption detected: t: %v bundID %q parentID %q, parent %v, dataParentID %q", prototext.Format(t), bundID, parentID, parent, dataParentID))
-				}
-
-				b := &bundle{
-					BundID: bundID,
-
-					InputTransformID: parentID,
-					InputData:        parent.DataReceived[dataParentID],
-					IterableSideInputData: map[string]map[string][]byte{
-						tid: iterSides,
-					},
-					Resp: make(chan *fnpb.ProcessBundleResponse, 1),
-
-					DataReceived: make(map[string][][]byte),
-				}
-				V(3).Logf("XXX Going to wait on data for %v: count %v - %v", instID, len(t.GetOutputs()), t.GetOutputs())
-				b.DataWait.Add(len(t.GetOutputs()))
-				for _, ch := range succ[tid] {
-					m, ok := prevs[ch.global]
-					if !ok {
-						m = make(map[string]*bundle)
-					}
-					m[ch.local] = b
-					prevs[ch.global] = m
-				}
+			b = buildProcessBundle(wk, tid, t, comps, inputs, parents, pcolParents)
+			// FnAPI instructions need to be sent to the SDK.
+			sendBundle = func() {
 				toProcess <- b
-				continue
-			default:
-				logger.Fatalf("unimplemented worker transform[%v]: %v", urn, prototext.Format(t))
 			}
 		default:
 			logger.Fatalf("unknown environment[%v]", t.GetEnvironmentId())
 		}
+		for _, ch := range succ[tid] {
+			m, ok := prevs[ch.global]
+			if !ok {
+				m = make(map[string]*bundle)
+			}
+			m[ch.local] = b
+			prevs[ch.global] = m
+		}
+		sendBundle()
 	}
 	// We're done with the pipeline!
 	close(toProcess)
 	b := <-processed // Drain the final bundle.
 	V(1).Logf("pipeline done! Final Bundle: %v", b.InstID)
+}
+
+func buildProcessBundle(wk *worker, tid string, t *pipepb.PTransform, comps *pipepb.Components, inputs map[string][]linkID, parents map[string]*bundle, pcolParents map[string]linkID) *bundle {
+	instID, bundID := wk.nextInst(), wk.nextBund()
+
+	in := inputs[tid][0]
+	dataParentID := in.global + "_" + in.local
+	parentID := in.global
+
+	V(2).Log(tid, " sources ", dataParentID, " ", parentID)
+	V(2).Log(tid, " inputs ", inputs[tid], " ", len(parents))
+
+	coders := map[string]*pipepb.Coder{}
+	transforms := map[string]*pipepb.PTransform{
+		tid: t, // The Transform to Execute!
+	}
+
+	var sis map[string]*pipepb.SideInput
+
+	if t.GetSpec().GetUrn() == urnTransformParDo {
+		pardo := &pipepb.ParDoPayload{}
+		if err := (proto.UnmarshalOptions{}).Unmarshal(t.GetSpec().GetPayload(), pardo); err != nil {
+			V(1).Fatalf("unable to decode ParDoPayload for transform[%v]", tid)
+		}
+
+		sis = pardo.GetSideInputs()
+	}
+	iterSides := make(map[string][]byte)
+
+	var parent *bundle
+	// Get WindowedValue Coders for the transform's input and output PCollections.
+	for local, global := range t.GetInputs() {
+		inPID, wInCid := makeWindowedValueCoder(t, global, comps, coders)
+		si, ok := sis[local]
+		// this is the main input!
+		if !ok {
+			parent = parents[local]
+			transforms[parentID] = sourceTransform(parentID, portFor(wInCid, wk), inPID)
+			continue
+		}
+		// TODO, do some kind of prep here?
+		switch si.GetAccessPattern().GetUrn() {
+		case urnSideInputIterable:
+			pb := parents[local]
+			src := pcolParents[global]
+			key := src.global + "_" + src.local
+			V(2).Logf("urnSideInputIterable key? %v, %v", key, local)
+			data, ok := pb.DataReceived[key]
+			if !ok {
+				ks := maps.Keys(pb.DataReceived)
+				logger.Fatalf("%v not a DataReceived key, have %v", key, ks)
+			}
+			col := comps.GetPcollections()[global]
+			cID := lpUnknownCoders(col.GetCoderId(), coders, comps.GetCoders())
+			ec := coders[cID]
+			ed := pullDecoder(ec, coders)
+
+			wc := exec.MakeWindowDecoder(coder.NewGlobalWindow())
+			inBuf := bytes.NewBuffer(data[0])
+			var outBuf bytes.Buffer
+			for {
+				// TODO window projection and segmentation of side inputs.
+				_, _, _, err := exec.DecodeWindowedValueHeader(wc, inBuf)
+				if err == io.EOF {
+					break
+				}
+				if err != nil {
+					logger.Fatalf("can't decode windowed value header with %v: %v", wc, err)
+				}
+				outBuf.Write(ed(inBuf))
+			}
+
+			iterSides[local] = outBuf.Bytes()
+		default:
+			logger.Fatalf("local input %v (global %v) for transform %v uses accesspattern %v", local, global, tid, si.GetAccessPattern().GetUrn())
+
+		}
+	}
+
+	// We need a new logical PCollection to represent the source
+	// so we can avoid double counting PCollection metrics later.
+	// But this also means replacing the ID for the input in the bundle.
+	// inPIDSrc := inPID + "_src"
+	for local, global := range t.GetOutputs() {
+		outPID, wOutCid := makeWindowedValueCoder(t, global, comps, coders)
+		sinkID := tid + "_" + local
+		transforms[sinkID] = sinkTransform(sinkID, portFor(wOutCid, wk), outPID)
+	}
+
+	reconcileCoders(coders, comps.GetCoders())
+
+	desc := &fnpb.ProcessBundleDescriptor{
+		Id:                  bundID,
+		Transforms:          transforms,
+		WindowingStrategies: comps.GetWindowingStrategies(),
+		Pcollections:        comps.GetPcollections(),
+		Coders:              coders,
+		StateApiServiceDescriptor: &pipepb.ApiServiceDescriptor{
+			Url: wk.Endpoint(),
+		},
+	}
+
+	V(2).Logf("registering %v with %v:", desc.GetId(), instID)
+
+	wk.InstReqs <- &fnpb.InstructionRequest{
+		InstructionId: instID,
+		Request: &fnpb.InstructionRequest_Register{
+			Register: &fnpb.RegisterRequest{
+				ProcessBundleDescriptor: []*fnpb.ProcessBundleDescriptor{
+					desc,
+				},
+			},
+		},
+	}
+
+	if parent == nil || parent.DataReceived[dataParentID] == nil {
+		panic(fmt.Sprintf("corruption detected: t: %v bundID %q parentID %q, parent %v, dataParentID %q", prototext.Format(t), bundID, parentID, parent, dataParentID))
+	}
+
+	b := &bundle{
+		BundID: bundID,
+
+		InputTransformID: parentID,
+		InputData:        parent.DataReceived[dataParentID],
+		IterableSideInputData: map[string]map[string][]byte{
+			tid: iterSides,
+		},
+		Resp: make(chan *fnpb.ProcessBundleResponse, 1),
+
+		DataReceived: make(map[string][][]byte),
+	}
+	V(3).Logf("XXX Going to wait on data for %v: count %v - %v", instID, len(t.GetOutputs()), t.GetOutputs())
+	b.DataWait.Add(len(t.GetOutputs()))
+	return b
 }
 
 func sourceIDs(parent *bundle) (string, string) {
@@ -413,181 +425,14 @@ func portFor(wInCid string, wk *worker) []byte {
 	return sourcePortBytes
 }
 
-func runnerTransform(t *pipepb.PTransform, tid string, processed chan *bundle, parents map[string]*bundle, comps *pipepb.Components) *bundle {
-	urn := t.GetSpec().GetUrn()
-	switch urn {
-	case urnTransformImpulse:
-		// To avoid conflicts with these single transform
-		// bundles, we suffix the transform IDs.
-		// These will be subbed out by the pardo stage.
-
-		// TODO Needs to be the "real" output id for the transform.
-		fakeTid := tid + "_i0"
-		b := &bundle{
-			InputTransformID: fakeTid,
-			DataReceived: map[string][][]byte{
-				fakeTid: {impulseBytes()},
-			},
-		}
-		// Get back to the start of the bundle generation loop since the worker
-		// doesn't need to do anything for this.
-		go func() {
-			processed <- b
-		}()
-		return b
-	case urnTransformGBK:
-		var parent *bundle
-		// Extract the one parent.
-		for _, pb := range parents {
-			parent = pb
-		}
-		dataParentID, _ := sourceIDs(parent)
-		// TODO Needs to be real output name from the proto.
-		fakeTid := tid + "_i0" // The ID from which the consumer will read from.
-
-		ws := windowingStrategy(comps, tid)
-		kvc := kvcoder(comps, tid)
-
-		// TODO, support other window coders.
-		wc := exec.MakeWindowDecoder(coder.NewGlobalWindow())
-		// TODO assert this is a KV. It's probably fine, but we should fail anyway.
-		coders := map[string]*pipepb.Coder{}
-		kcID := lpUnknownCoders(kvc.GetComponentCoderIds()[0], coders, comps.GetCoders())
-		ecID := lpUnknownCoders(kvc.GetComponentCoderIds()[1], coders, comps.GetCoders())
-		reconcileCoders(coders, comps.GetCoders())
-
-		kc := coders[kcID]
-		ec := coders[ecID]
-
-		b := &bundle{
-			InputTransformID: fakeTid,
-			DataReceived: map[string][][]byte{
-				fakeTid: {gbkBytes(ws, wc, kc, ec, parent.DataReceived[dataParentID], coders)},
-			},
-		}
-		go func() {
-			processed <- b
-		}()
-		return b
-	case urnTransformFlatten:
-		// TODO Needs to be real output name from the proto.
-		fakeTid := tid + "_i0" // The ID from which the consumer will read from.
-		// Extract the data from the parents.
-		// TODO extract from the correct output.
-		var data [][]byte
-		for _, pb := range parents {
-			for _, ds := range pb.DataReceived {
-				data = append(data, ds...)
-			}
-		}
-		b := &bundle{
-			InputTransformID: fakeTid,
-			DataReceived: map[string][][]byte{
-				fakeTid: data,
-			},
-		}
-		go func() {
-			processed <- b
-		}()
-		return b
-	default:
-		logger.Fatalf("unimplemented runner transform[%v]", urn)
-	}
-	return nil
+type transformExecuter interface {
+	ExecuteUrns() []string
+	ExecuteWith(t *pipepb.PTransform) string
+	ExecuteTransform(tid, urn string, parents map[string]*bundle, comps *pipepb.Components) *bundle
 }
 
-// Gets the windowing strategy for the given transform ID.
-func windowingStrategy(comps *pipepb.Components, tid string) *pipepb.WindowingStrategy {
-	t := comps.GetTransforms()[tid]
-	var inputPColID string
-	for _, pcolID := range t.GetInputs() {
-		inputPColID = pcolID
-	}
-	pcol := comps.GetPcollections()[inputPColID]
-	return comps.GetWindowingStrategies()[pcol.GetWindowingStrategyId()]
-}
-
-func gbkBytes(ws *pipepb.WindowingStrategy, wc exec.WindowDecoder, kc, vc *pipepb.Coder, toAggregate [][]byte, coders map[string]*pipepb.Coder) []byte {
-	var outputTime func(typex.Window, mtime.Time) mtime.Time
-	switch ws.GetOutputTime() {
-	case pipepb.OutputTime_END_OF_WINDOW:
-		outputTime = func(w typex.Window, et mtime.Time) mtime.Time {
-			return w.MaxTimestamp()
-		}
-	default:
-		logger.Fatalf("unsupported OutputTime behavior: %v", ws.GetOutputTime())
-	}
-
-	type keyTime struct {
-		key    []byte
-		w      typex.Window
-		time   mtime.Time
-		values [][]byte
-	}
-	// Map windows to a map of keys to a map of keys to time.
-	// We ultimately emit the window, the key, the time, and the iterable of elements,
-	// all contained in the final value.
-	windows := map[typex.Window]map[string]keyTime{}
-
-	kd := pullDecoder(kc, coders)
-	vd := pullDecoder(vc, coders)
-
-	// Right, need to get the key coder, and the element coder.
-	// Cus I'll need to pull out anything the runner knows how to deal with.
-	// And repeat.
-	for _, data := range toAggregate {
-		// Parse out each element's data, and repeat.
-		buf := bytes.NewBuffer(data)
-		for {
-			ws, tm, _, err := exec.DecodeWindowedValueHeader(wc, buf)
-			if err == io.EOF {
-				break
-			}
-			if err != nil {
-				logger.Fatalf("can't decode windowed value header with %v: %v", wc, err)
-			}
-
-			keyByt := kd(buf)
-			key := string(keyByt)
-			value := vd(buf)
-			for _, w := range ws {
-				ft := outputTime(w, tm)
-				wk, ok := windows[w]
-				if !ok {
-					wk = make(map[string]keyTime)
-					windows[w] = wk
-				}
-				kt := wk[key]
-				kt.time = ft
-				kt.key = keyByt
-				kt.w = w
-				kt.values = append(kt.values, value)
-				wk[key] = kt
-			}
-		}
-	}
-
-	// Everything's aggregated!
-	// Time to turn things into a windowed KV<K, Iterable<V>>
-
-	var buf bytes.Buffer
-	for _, w := range windows {
-		for _, kt := range w {
-			exec.EncodeWindowedValueHeader(
-				exec.MakeWindowEncoder(coder.NewGlobalWindow()),
-				[]typex.Window{kt.w},
-				kt.time,
-				typex.NoFiringPane(),
-				&buf,
-			)
-			buf.Write(kt.key)
-			coder.EncodeInt32(int32(len(kt.values)), &buf)
-			for _, value := range kt.values {
-				buf.Write(value)
-			}
-		}
-	}
-	return buf.Bytes()
+type processor struct {
+	transformExecuters map[string]transformExecuter
 }
 
 // bundle represents an extant ProcessBundle instruction sent to an SDK worker.
@@ -655,6 +500,4 @@ func (b *bundle) ProcessOn(wk *worker) {
 
 	// logger.Printf("ProcessBundle %v done! Resp: %v", b.InstID, prototext.Format(<-b.Resp))
 	// logger.Printf("ProcessBundle %v output: %v", b.InstID, b.DataReceived)
-
-	// TODO figure out how to kick off the next Bundle with the data from here.
 }
