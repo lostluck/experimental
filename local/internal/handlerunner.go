@@ -25,6 +25,7 @@ import (
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/runtime/exec"
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/typex"
 	pipepb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/pipeline_v1"
+	"google.golang.org/protobuf/encoding/prototext"
 )
 
 // This file retains the logic for the pardo handler
@@ -70,12 +71,21 @@ func (h *runner) ExecuteWith(t *pipepb.PTransform) string {
 }
 
 // ExecTransform handles special processing with respect to runner specific transforms
-func (h *runner) ExecuteTransform(tid, urn string, parents map[string]*bundle, comps *pipepb.Components) *bundle {
+func (h *runner) ExecuteTransform(tid string, t *pipepb.PTransform, comps *pipepb.Components, parents map[string]*bundle) *bundle {
+	urn := t.GetSpec().GetUrn()
 	var data [][]byte
 	switch urn {
 	case urnTransformImpulse:
 		// These will be subbed out by the pardo stage.
 		data = append(data, impulseBytes())
+	case urnTransformFlatten:
+		// Extract the data from the parents.
+		// TODO extract from the correct output.
+		for _, pb := range parents {
+			for _, ds := range pb.DataReceived {
+				data = append(data, ds...)
+			}
+		}
 	case urnTransformGBK:
 		var parent *bundle
 		// Extract the one parent.
@@ -99,26 +109,26 @@ func (h *runner) ExecuteTransform(tid, urn string, parents map[string]*bundle, c
 		ec := coders[ecID]
 
 		data = append(data, gbkBytes(ws, wc, kc, ec, parent.DataReceived[dataParentID], coders))
-	case urnTransformFlatten:
-		// Extract the data from the parents.
-		// TODO extract from the correct output.
-		for _, pb := range parents {
-			for _, ds := range pb.DataReceived {
-				data = append(data, ds...)
-			}
-		}
 	default:
 		logger.Fatalf("unimplemented runner transform[%v]", urn)
 	}
 
 	// To avoid conflicts with these single transform
 	// bundles, we suffix the transform IDs.
-	// TODO Needs to be real output name from the proto.
-	fakeTid := tid + "_i0" // The ID from which the consumer will read from.
+	var localID string
+	for key, _ := range t.GetOutputs() {
+		localID = key
+	}
+
+	if localID == "" {
+		V(1).Fatalf("bad transform: %v", prototext.Format(t))
+	}
+
+	dataID := tid + "_" + localID // The ID from which the consumer will read from.
 	b := &bundle{
-		InputTransformID: fakeTid,
+		InputTransformID: dataID,
 		DataReceived: map[string][][]byte{
-			fakeTid: data,
+			dataID: data,
 		},
 	}
 	return b

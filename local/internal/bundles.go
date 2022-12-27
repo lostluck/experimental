@@ -207,7 +207,7 @@ func executePipeline(wk *worker, j *job) {
 		var b *bundle
 		switch envID {
 		case "": // Runner Transforms
-			b = exe.ExecuteTransform(tid, urn, parents, comps)
+			b = exe.ExecuteTransform(tid, t, comps, parents)
 			// Runner transforms are processed immeadiately.
 			sendBundle = func() {
 				go func() {
@@ -428,7 +428,7 @@ func portFor(wInCid string, wk *worker) []byte {
 type transformExecuter interface {
 	ExecuteUrns() []string
 	ExecuteWith(t *pipepb.PTransform) string
-	ExecuteTransform(tid, urn string, parents map[string]*bundle, comps *pipepb.Components) *bundle
+	ExecuteTransform(tid string, t *pipepb.PTransform, comps *pipepb.Components, parents map[string]*bundle) *bundle
 }
 
 type processor struct {
