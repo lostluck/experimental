@@ -53,6 +53,19 @@ bundle one at a time, rather than having all transforms execute simultaneously, 
 pipelined. It all comes down to data management and pipelining, with how we ensure things
 coordinate around windowing and aggregations.
 
+-----
+
+Did a little bit of cleanup on the part that executes a transform on a worker or in "the runner".
+Needs a little more before it's cleanly factored, which would simply let the environment
+implemenentations handle if it's in the worker, or over the FnAPI.
+
+We currently pro-actively send the bundle descriptor, but that's something we should be toggling
+via a configuration as well, for complete testing, with the SDK sending things over.
+Closer to runner handling, which is kind of unique, it'll likely be built and configured but in a
+way that avoids if statements.
+
+That's the next task. Committing to the configuration and allow variant testing to occur.
+
 # Notes to myself: 2022-12-24
 
 It's the day before Christmas and all through the house
