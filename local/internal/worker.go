@@ -16,6 +16,7 @@
 package internal
 
 import (
+	"bytes"
 	"fmt"
 	"net"
 	"sync"
@@ -254,13 +255,32 @@ func (wk *worker) State(state fnpb.BeamFnState_StateServer) error {
 				switch key.GetType().(type) {
 				case *fnpb.StateKey_IterableSideInput_:
 					ikey := key.GetIterableSideInput()
-
 					data := b.IterableSideInputData[ikey.GetTransformId()][ikey.GetSideInputId()]
 					responses <- &fnpb.StateResponse{
 						Id: resp.GetId(),
 						Response: &fnpb.StateResponse_Get{
 							Get: &fnpb.StateGetResponse{
 								Data: data,
+							},
+						},
+					}
+				case *fnpb.StateKey_MultimapSideInput_:
+					mmkey := key.GetMultimapSideInput()
+					dKey := string(mmkey.GetKey())
+					data := b.MultiMapSideInputData[mmkey.GetTransformId()][mmkey.GetSideInputId()][dKey]
+
+					// Encode the runner iterable (no length, just consecutive elements), and send it out.
+					// This is also where we can handle things like State Backed Iterables.
+					var buf bytes.Buffer
+					for _, value := range data {
+						buf.Write(value)
+					}
+
+					responses <- &fnpb.StateResponse{
+						Id: resp.GetId(),
+						Response: &fnpb.StateResponse_Get{
+							Get: &fnpb.StateGetResponse{
+								Data: buf.Bytes(),
 							},
 						},
 					}

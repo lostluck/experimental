@@ -30,6 +30,7 @@ import (
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/register"
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/runners/universal"
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/testing/ptest"
+	"github.com/apache/beam/sdks/v2/go/pkg/beam/transforms/filter"
 	"github.com/google/go-cmp/cmp"
 )
 
@@ -55,6 +56,12 @@ func init() {
 	register.Function6x0(dofn1x5)
 	register.Function3x0(dofn2x1)
 	register.Function4x0(dofn2x2KV)
+	register.Function4x0(dofnMultiMap)
+	register.Iter1[int64]()
+	register.Function4x0(dofn3x1)
+	register.Iter2[string, int64]()
+	register.Emitter1[string]()
+
 	register.Function2x0(dofn2)
 	register.Function2x0(dofnKV)
 	register.Function2x0(dofnKV2)
@@ -124,6 +131,27 @@ func dofn2x2KV(imp []byte, iter func(*string, *int64) bool, emitK func(string), 
 		emitK(k)
 	}
 	emitV(sum)
+}
+
+func dofnMultiMap(key string, lookup func(string) func(*int64) bool, emitK func(string), emitV func(int64)) {
+	var v, sum int64
+	iter := lookup(key)
+	for iter(&v) {
+		sum += v
+	}
+	emitK(key)
+	emitV(sum)
+}
+
+func dofn3x1(sum int64, iter1, iter2 func(*int64) bool, emit func(int64)) {
+	var v int64
+	for iter1(&v) {
+		sum += v
+	}
+	for iter2(&v) {
+		sum += v
+	}
+	emit(sum)
 }
 
 // int64Check validates that within a single bundle,
@@ -503,6 +531,51 @@ func TestRunner_Pipelines(t *testing.T) {
 				beam.ParDo(s, &int64Check{
 					Name: "iterKV sideinput check V",
 					Want: []int{21},
+				}, sum)
+			},
+		}, {
+			name: "sideinput_iterableKV",
+			pipeline: func(s beam.Scope) {
+				imp := beam.Impulse(s)
+				col1 := beam.ParDo(s, dofnKV, imp)
+				keys, sum := beam.ParDo2(s, dofn2x2KV, imp, beam.SideInput{Input: col1})
+				beam.ParDo(s, &stringCheck{
+					Name: "iterKV sideinput check K",
+					Want: []string{"a", "a", "a", "b", "b", "b"},
+				}, keys)
+				beam.ParDo(s, &int64Check{
+					Name: "iterKV sideinput check V",
+					Want: []int{21},
+				}, sum)
+			},
+		}, {
+			name: "sideinput_multimap",
+			pipeline: func(s beam.Scope) {
+				imp := beam.Impulse(s)
+				col1 := beam.ParDo(s, dofnKV, imp)
+				keys := filter.Distinct(s, beam.DropValue(s, col1))
+				ks, sum := beam.ParDo2(s, dofnMultiMap, keys, beam.SideInput{Input: col1})
+				beam.ParDo(s, &stringCheck{
+					Name: "multiMap sideinput check K",
+					Want: []string{"a", "b"},
+				}, ks)
+				beam.ParDo(s, &int64Check{
+					Name: "multiMap sideinput check V",
+					Want: []int{9, 12},
+				}, sum)
+			},
+		}, {
+			// Ensures topological sort is correct.
+			name: "sideinput_2iterable",
+			pipeline: func(s beam.Scope) {
+				imp := beam.Impulse(s)
+				col0 := beam.ParDo(s, dofn1, imp)
+				col1 := beam.ParDo(s, dofn1, imp)
+				col2 := beam.ParDo(s, dofn2, col1)
+				sum := beam.ParDo(s, dofn3x1, col0, beam.SideInput{Input: col1}, beam.SideInput{Input: col2})
+				beam.ParDo(s, &int64Check{
+					Name: "iter sideinput check",
+					Want: []int{16, 17, 18},
 				}, sum)
 			},
 		}, {

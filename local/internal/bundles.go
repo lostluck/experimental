@@ -34,6 +34,7 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
+// TODO move impulse code to handlerunner.go
 var (
 	impOnce  sync.Once
 	impBytes []byte
@@ -266,19 +267,22 @@ func buildProcessBundle(wk *worker, tid string, t *pipepb.PTransform, comps *pip
 		sis = pardo.GetSideInputs()
 	}
 	iterSides := make(map[string][]byte)
+	multiMapSides := make(map[string]map[string][][]byte)
 
 	var parent *bundle
 	// Get WindowedValue Coders for the transform's input and output PCollections.
 	for local, global := range t.GetInputs() {
 		inPID, wInCid := makeWindowedValueCoder(t, global, comps, coders)
 		si, ok := sis[local]
-		// this is the main input!
+
 		if !ok {
+			// this is the main input
 			parent = parents[local]
 			transforms[parentID] = sourceTransform(parentID, portFor(wInCid, wk), inPID)
 			continue
 		}
-		// TODO, do some kind of prep here?
+
+		// this is a side input
 		switch si.GetAccessPattern().GetUrn() {
 		case urnSideInputIterable:
 			pb := parents[local]
@@ -296,6 +300,7 @@ func buildProcessBundle(wk *worker, tid string, t *pipepb.PTransform, comps *pip
 			ed := pullDecoder(ec, coders)
 
 			wc := exec.MakeWindowDecoder(coder.NewGlobalWindow())
+			// TODO fix data iteration (there could be more than one data blob)
 			inBuf := bytes.NewBuffer(data[0])
 			var outBuf bytes.Buffer
 			for {
@@ -311,6 +316,62 @@ func buildProcessBundle(wk *worker, tid string, t *pipepb.PTransform, comps *pip
 			}
 
 			iterSides[local] = outBuf.Bytes()
+		case urnSideInputMultiMap:
+
+			pb := parents[local]
+			src := pcolParents[global]
+			key := src.global + "_" + src.local
+			V(2).Logf("urnSideInputMultiMap key? %v, %v", key, local)
+			data, ok := pb.DataReceived[key]
+			if !ok {
+				ks := maps.Keys(pb.DataReceived)
+				logger.Fatalf("%v not a DataReceived key, have %v", key, ks)
+			}
+			col := comps.GetPcollections()[global]
+
+			kvc := comps.GetCoders()[col.GetCoderId()]
+			if kvc.GetSpec().GetUrn() != "beam:coder:kv:v1" {
+				logger.Fatalf("multimap side inputs needs KV coder, got %v", kvc.GetSpec().GetUrn())
+			}
+			kcID := lpUnknownCoders(kvc.GetComponentCoderIds()[0], coders, comps.GetCoders())
+			vcID := lpUnknownCoders(kvc.GetComponentCoderIds()[1], coders, comps.GetCoders())
+
+			reconcileCoders(coders, comps.GetCoders())
+
+			kc := coders[kcID]
+			vc := coders[vcID]
+
+			kd := pullDecoder(kc, coders)
+			vd := pullDecoder(vc, coders)
+
+			// TODO, support other window coders.
+			wc := exec.MakeWindowDecoder(coder.NewGlobalWindow())
+			if len(data) != 1 {
+				logger.Fatalf("multimap side input had more than a single data blob, got %v", len(data))
+			}
+			inBuf := bytes.NewBuffer(data[0])
+
+			// We basically need to do the GBK thing here, but without making everything into
+			// a single byte slice at the end.
+			keyedData := map[string][][]byte{}
+
+			// This only does the grouping by keys, but not any sorting or recoding.
+			for {
+				// TODO window projection and segmentation of side inputs.
+				_, _, _, err := exec.DecodeWindowedValueHeader(wc, inBuf)
+				if err == io.EOF {
+					break
+				}
+				if err != nil {
+					logger.Fatalf("can't decode windowed value header with %v: %v", wc, err)
+				}
+
+				dkey := string(kd(inBuf))
+
+				vs := keyedData[dkey]
+				keyedData[dkey] = append(vs, vd(inBuf))
+			}
+			multiMapSides[local] = keyedData
 		default:
 			logger.Fatalf("local input %v (global %v) for transform %v uses accesspattern %v", local, global, tid, si.GetAccessPattern().GetUrn())
 
@@ -364,6 +425,9 @@ func buildProcessBundle(wk *worker, tid string, t *pipepb.PTransform, comps *pip
 		InputData:        parent.DataReceived[dataParentID],
 		IterableSideInputData: map[string]map[string][]byte{
 			tid: iterSides,
+		},
+		MultiMapSideInputData: map[string]map[string]map[string][][]byte{
+			tid: multiMapSides,
 		},
 		Resp: make(chan *fnpb.ProcessBundleResponse, 1),
 
@@ -444,8 +508,11 @@ type bundle struct {
 	InputTransformID string
 	InputData        [][]byte
 
+	// TODO change to a single map[tid] -> map[input] -> map[window] -> struct { Iter data, MultiMap data } instead of all maps.
 	// IterableSideInputData is a map from transformID, to inputID to data.
 	IterableSideInputData map[string]map[string][]byte
+	// MultiMapSideInputData is a map from transformID, to inputID, to data key, to data values.
+	MultiMapSideInputData map[string]map[string]map[string][][]byte
 
 	// DataReceived is where all the data received from the SDK is put
 	// separated by their TransformIDs.
