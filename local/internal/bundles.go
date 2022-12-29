@@ -34,30 +34,6 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
-// TODO move impulse code to handlerunner.go
-var (
-	impOnce  sync.Once
-	impBytes []byte
-)
-
-func impulseBytes() []byte {
-	impOnce.Do(func() {
-		var buf bytes.Buffer
-		byt, _ := exec.EncodeElement(exec.MakeElementEncoder(coder.NewBytes()), []byte("lostluck"))
-
-		exec.EncodeWindowedValueHeader(
-			exec.MakeWindowEncoder(coder.NewGlobalWindow()),
-			window.SingleGlobalWindow,
-			mtime.Now(),
-			typex.NoFiringPane(),
-			&buf,
-		)
-		buf.Write(byt)
-		impBytes = buf.Bytes()
-	})
-	return impBytes
-}
-
 func ptUrn(v pipepb.StandardPTransforms_Primitives) string {
 	return proto.GetExtension(prims.ByNumber(protoreflect.EnumNumber(v)).Options(), pipepb.E_BeamUrn).(string)
 }

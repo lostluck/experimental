@@ -19,9 +19,11 @@ import (
 	"bytes"
 	"io"
 	"reflect"
+	"sync"
 
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/graph/coder"
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/graph/mtime"
+	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/graph/window"
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/runtime/exec"
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/typex"
 	pipepb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/pipeline_v1"
@@ -132,6 +134,29 @@ func (h *runner) ExecuteTransform(tid string, t *pipepb.PTransform, comps *pipep
 		},
 	}
 	return b
+}
+
+var (
+	impOnce  sync.Once
+	impBytes []byte
+)
+
+func impulseBytes() []byte {
+	impOnce.Do(func() {
+		var buf bytes.Buffer
+		byt, _ := exec.EncodeElement(exec.MakeElementEncoder(coder.NewBytes()), []byte("lostluck"))
+
+		exec.EncodeWindowedValueHeader(
+			exec.MakeWindowEncoder(coder.NewGlobalWindow()),
+			window.SingleGlobalWindow,
+			mtime.Now(),
+			typex.NoFiringPane(),
+			&buf,
+		)
+		buf.Write(byt)
+		impBytes = buf.Bytes()
+	})
+	return impBytes
 }
 
 // windowingStrategy sources the transform's windowing strategy from a single parallel input.
