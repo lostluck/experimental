@@ -1,6 +1,5 @@
 # TODOs - no particular order.
 
-* Multimap Side Inputs
 * Windowing in GBKs
 * Windowing in Side Inputs / Projection
   * Fix Side Input order processing issue.
@@ -8,9 +7,7 @@
 * pullDecoder refactor
 * []byte avoidance -> To io.Reader/Writer streams
 * Composite Handling
-  * ~~Combiner Lifting~~
   * Real SplittableDoFns (split requests, etc)
-    * ~~Initial Splits~~
     * Different split kinds (channel, residual, separation harness test)
     * Process Continuations & Bundle Rescheduling
 * Error plumbing rather than log.Fatals or panics.
@@ -18,6 +15,40 @@
 * Stager Refactor
   * One PTransform : One Stage
   * Fusion Stager
+
+# Notes to myself: 2022-12-29
+
+Nerd sniped myself into adding MultiMap side input support, so that's in. This reminded me
+that I largely punted on any Windowing handling so far. That affects GBKs and Side Inputs.
+
+Also, in implementing things, I learned that the protocol also has a way to extract all
+keys from a multimap side input. Hot dang.
+
+There were also some things to move and cleanup that I missed in the initial handler
+migration.
+
+I think at this point the main things that the direct runner do that aren't yet supported is
+handling windowing to some degree. We certainly have it beat on serialization.  But this
+runner doesn't yet handle dynamic splitting, process continuations, and sending multiple bundles,
+to an SDK simultanously, which are certainly the trickier parts to resolve.
+I want dynamic splitting, and continuations for the testing benefit for the SDK, the latter especially
+for users. Multiple bundles does also satisfy a SDK testing concern.
+
+General State API handling is simple and straight forward, since we already force a single bundle with the given keyed state.
+Timers remain a mystery, and are handled through the datalayer.
+
+Then of course, there's Cross Language, which largely just means using/building containers, and handling
+the environments that way.
+
+So the right ordering is probably:
+  * Add windowing.
+  * Add process continuations + watermark handling.
+  * Add triggers.
+
+----
+
+Reading back through my notes. Windowing was something I intended to do back in February too, and then
+it got lost in the Too Busy Shuffle of 2022. Better get on it then.
 
 # Notes to myself: 2022-12-26
 
