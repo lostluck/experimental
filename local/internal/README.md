@@ -1,18 +1,21 @@
 # TODOs - no particular order.
 
-* Fix Datalayer provision and lookup to allow for multiple bundles.
-* Triggers / TestStream
-* pullDecoder refactor
-* []byte avoidance -> To io.Reader/Writer streams
-* Composite Handling
-  * Real SplittableDoFns (split requests, etc)
-    * Different split kinds (channel, residual, separation harness test)
-    * Process Continuations & Bundle Rescheduling
-* Error plumbing rather than log.Fatals or panics.
-* Container support? -> Ability to run Xlangs & "docker mode".
-* Stager Refactor
-  * One PTransform : One Stage
-  * Fusion Stager
+* Beam Model Changes
+  * Fix Datalayer provision and lookup to allow for multiple bundles.
+    * Needs to be watermark aware to allow window closing & trigger handling.
+    * TestStream
+  * Remainder of state handling.
+  * Composite Handling
+    * Real SplittableDoFns (split requests, etc)
+      * Different split kinds (channel, residual, separation harness test)
+      * Process Continuations & Bundle Rescheduling
+  * Stager Refactor
+    * One PTransform : One Stage
+    * Fusion Stager
+* Perf or Infra changes (need to profile first)
+  * pullDecoder refactor 
+  * []byte avoidance -> To io.Reader/Writer streams
+  * Error plumbing rather than log.Fatals or panics.
 
 # Notes to myself: 2022-12-30
 
@@ -27,6 +30,20 @@ Right now bundles retain their output data independantly, which has a problem wh
 are multiple bundles contributed data to the PCollection. So we need to fix up the data
 layer to abstract that out. Basically we should just key these things on the global Pcollection
 ID. This would probably simplify all the mess I have around data coming in and exiting
+
+-----
+
+That data layer needs to be where the watermark awarness handling needs to go, since technically
+that's how windows get closed and packaged for later.
+
+Triggers are also very much tied to that layer as a result. IIRC it's possible to treat these
+with windowed handling.
+
+How does that look? We get the window headers & timestamps for all the elements.
+The timestamps help us estimate the watermark position, unless we have real estimates from the SDK.
+We need to map from the data output to the globalID. But we only have the 
+instructionID (AKA which bundle it's coming from), and the transformID of
+the datasink for that output. The bundle struct needs to have that mapping. 
 
 # Notes to myself: 2022-12-29
 
