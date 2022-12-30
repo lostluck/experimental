@@ -25,7 +25,6 @@ import (
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/runtime/exec"
 	fnpb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/fnexecution_v1"
 	pipepb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/pipeline_v1"
-	"golang.org/x/exp/maps"
 	"google.golang.org/protobuf/encoding/prototext"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -168,7 +167,6 @@ func executePipeline(wk *worker, j *job) {
 
 		t := ts[tid]
 		urn := t.GetSpec().GetUrn()
-		V(1).Logf("urn %v", urn)
 		exe := proc.transformExecuters[urn]
 
 		// Stopgap until everythinng's moved to handlers.
@@ -261,31 +259,29 @@ func buildProcessBundle(wk *worker, tid string, t *pipepb.PTransform, comps *pip
 			pb := parents[local]
 			src := pcolParents[global]
 			key := src.global + "_" + src.local
-			V(2).Logf("urnSideInputIterable key? %v, %v", key, local)
-			data, ok := pb.DataReceived[key]
-			if !ok {
-				ks := maps.Keys(pb.DataReceived)
-				logger.Fatalf("%v not a DataReceived key, have %v", key, ks)
-			}
+			V(2).Logf("urnSideInputIterable key? src %v, key %v, local %v, global %v", src, key, local, global)
 			col := comps.GetPcollections()[global]
 			cID := lpUnknownCoders(col.GetCoderId(), coders, comps.GetCoders())
 			ec := coders[cID]
 			ed := pullDecoder(ec, coders)
 
 			wc := exec.MakeWindowDecoder(coder.NewGlobalWindow())
-			// TODO fix data iteration (there could be more than one data blob)
-			inBuf := bytes.NewBuffer(data[0])
 			var outBuf bytes.Buffer
-			for {
-				// TODO window projection and segmentation of side inputs.
-				_, _, _, err := exec.DecodeWindowedValueHeader(wc, inBuf)
-				if err == io.EOF {
-					break
+			// May be of zero length, but that's OK. Side inputs can be empty.
+			data := pb.DataReceived[key]
+			for _, datum := range data {
+				inBuf := bytes.NewBuffer(datum)
+				for {
+					// TODO window projection and segmentation of side inputs.
+					_, _, _, err := exec.DecodeWindowedValueHeader(wc, inBuf)
+					if err == io.EOF {
+						break
+					}
+					if err != nil {
+						logger.Fatalf("can't decode windowed value header with %v: %v", wc, err)
+					}
+					outBuf.Write(ed(inBuf))
 				}
-				if err != nil {
-					logger.Fatalf("can't decode windowed value header with %v: %v", wc, err)
-				}
-				outBuf.Write(ed(inBuf))
 			}
 
 			iterSides[local] = outBuf.Bytes()
@@ -295,11 +291,6 @@ func buildProcessBundle(wk *worker, tid string, t *pipepb.PTransform, comps *pip
 			src := pcolParents[global]
 			key := src.global + "_" + src.local
 			V(2).Logf("urnSideInputMultiMap key? %v, %v", key, local)
-			data, ok := pb.DataReceived[key]
-			if !ok {
-				ks := maps.Keys(pb.DataReceived)
-				logger.Fatalf("%v not a DataReceived key, have %v", key, ks)
-			}
 			col := comps.GetPcollections()[global]
 
 			kvc := comps.GetCoders()[col.GetCoderId()]
@@ -319,30 +310,31 @@ func buildProcessBundle(wk *worker, tid string, t *pipepb.PTransform, comps *pip
 
 			// TODO, support other window coders.
 			wc := exec.MakeWindowDecoder(coder.NewGlobalWindow())
-			if len(data) != 1 {
-				logger.Fatalf("multimap side input had more than a single data blob, got %v", len(data))
-			}
-			inBuf := bytes.NewBuffer(data[0])
 
 			// We basically need to do the GBK thing here, but without making everything into
 			// a single byte slice at the end.
 			keyedData := map[string][][]byte{}
 
-			// This only does the grouping by keys, but not any sorting or recoding.
-			for {
-				// TODO window projection and segmentation of side inputs.
-				_, _, _, err := exec.DecodeWindowedValueHeader(wc, inBuf)
-				if err == io.EOF {
-					break
-				}
-				if err != nil {
-					logger.Fatalf("can't decode windowed value header with %v: %v", wc, err)
-				}
+			// May be of zero length, but that's OK. Side inputs can be empty.
+			data := pb.DataReceived[key]
+			for _, datum := range data {
+				inBuf := bytes.NewBuffer(datum)
+				// This only does the grouping by keys, but not any sorting or recoding.
+				for {
+					// TODO window projection and segmentation of side inputs.
+					_, _, _, err := exec.DecodeWindowedValueHeader(wc, inBuf)
+					if err == io.EOF {
+						break
+					}
+					if err != nil {
+						logger.Fatalf("can't decode windowed value header with %v: %v", wc, err)
+					}
 
-				dkey := string(kd(inBuf))
+					dkey := string(kd(inBuf))
 
-				vs := keyedData[dkey]
-				keyedData[dkey] = append(vs, vd(inBuf))
+					vs := keyedData[dkey]
+					keyedData[dkey] = append(vs, vd(inBuf))
+				}
 			}
 			multiMapSides[local] = keyedData
 		default:

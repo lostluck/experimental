@@ -73,7 +73,8 @@ func (p *preprocessor) preProcessGraph(comps *pipepb.Components) (topological []
 
 		spec := t.GetSpec()
 		if spec == nil {
-			V(0).Logf("transform %v %v is missing a spec", tid, t.GetUniqueName())
+			// Most composites don't have specs.
+			V(2).Logf("transform %v %v is missing a spec", tid, t.GetUniqueName())
 			continue
 		}
 

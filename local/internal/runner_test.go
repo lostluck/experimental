@@ -31,6 +31,7 @@ import (
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/runners/universal"
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/testing/ptest"
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/transforms/filter"
+	"github.com/apache/beam/sdks/v2/go/test/integration/primitives"
 	"github.com/google/go-cmp/cmp"
 )
 
@@ -611,9 +612,19 @@ func TestRunner_Pipelines(t *testing.T) {
 					Want: []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10},
 				}, in)
 			},
+		}, {
+			name:     "WindowSums_GBK",
+			pipeline: primitives.WindowSums_GBK,
+		}, {
+			name:     "WindowSums_Lifted",
+			pipeline: primitives.WindowSums_Lifted,
+			// }, {
+			// 	name:     "WindowedSideInputs",
+			// 	pipeline: primitives.ValidateWindowedSideInputs,
 		},
 	}
 	// TODO: Explicit DoFn Failure case.
+	// TODO: Session windows, where some are not merged.
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -650,7 +661,7 @@ func TestRunner_Metrics(t *testing.T) {
 }
 
 // TODO: PCollection metrics tests, in particular for element counts, in multi transform pipelines
-// There's a doublding bug since we re-use the same pcollection IDs for the source & sink, and
+// There's a doubling bug since we re-use the same pcollection IDs for the source & sink, and
 // don't do any re-writing.
 
 func TestMain(m *testing.M) {

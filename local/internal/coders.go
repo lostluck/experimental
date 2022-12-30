@@ -21,19 +21,23 @@ import (
 	"io"
 
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/graph/coder"
+	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/runtime/exec"
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/util/ioutilx"
 	pipepb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/pipeline_v1"
+	"google.golang.org/protobuf/encoding/prototext"
 )
 
 // leafCoders lists coder urns the runner knows how to manipulate.
 // In particular, ones that won't be a problem to parse.
 var leafCoders = map[string]struct{}{
-	"beam:coder:bytes:v1":         {},
-	"beam:coder:string_utf8:v1":   {},
-	"beam:coder:length_prefix:v1": {},
-	"beam:coder:varint:v1":        {},
-	"beam:coder:double:v1":        {},
-	"beam:coder:bool:v1":          {},
+	"beam:coder:bytes:v1":           {},
+	"beam:coder:string_utf8:v1":     {},
+	"beam:coder:length_prefix:v1":   {},
+	"beam:coder:varint:v1":          {},
+	"beam:coder:double:v1":          {},
+	"beam:coder:bool:v1":            {},
+	"beam:coder:global_window:v1":   {},
+	"beam:coder:interval_window:v1": {},
 }
 
 func isLeafCoder(c *pipepb.Coder) bool {
@@ -62,6 +66,20 @@ func makeWindowedValueCoder(t *pipepb.PTransform, pID string, comps *pipepb.Comp
 	// Populate the coders to send with the new windowed value coder.
 	coders[wvcID] = wInC
 	return pID, wvcID
+}
+
+// makeWindowCoders makes the coder pair but behavior is ultimately determined by the strategy's windowFn.
+func makeWindowCoders(wc *pipepb.Coder) (exec.WindowDecoder, exec.WindowEncoder) {
+	var cwc *coder.WindowCoder
+	switch wc.GetSpec().GetUrn() {
+	case "beam:coder:global_window:v1":
+		cwc = coder.NewGlobalWindow()
+	case "beam:coder:interval_window:v1":
+		cwc = coder.NewIntervalWindow()
+	default:
+		V(0).Fatalf("makeWindowCoders, unknown urn: %v", prototext.Format(wc))
+	}
+	return exec.MakeWindowDecoder(cwc), exec.MakeWindowEncoder(cwc)
 }
 
 // lpUnknownCoders takes a coder, and populates coders with any new coders

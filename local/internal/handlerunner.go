@@ -19,6 +19,7 @@ import (
 	"bytes"
 	"io"
 	"reflect"
+	"sort"
 	"sync"
 
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/graph/coder"
@@ -28,6 +29,7 @@ import (
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/typex"
 	pipepb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/pipeline_v1"
 	"google.golang.org/protobuf/encoding/prototext"
+	"google.golang.org/protobuf/proto"
 )
 
 // This file retains the logic for the pardo handler
@@ -99,14 +101,15 @@ func (h *runner) ExecuteTransform(tid string, t *pipepb.PTransform, comps *pipep
 		ws := windowingStrategy(comps, tid)
 		kvc := kvcoder(comps, tid)
 
-		// TODO, support other window coders.
-		wc := exec.MakeWindowDecoder(coder.NewGlobalWindow())
-		// TODO assert this is a KV. It's probably fine, but we should fail anyway.
 		coders := map[string]*pipepb.Coder{}
+
+		// TODO assert this is a KV. It's probably fine, but we should fail anyway.
+		wcID := lpUnknownCoders(ws.GetWindowCoderId(), coders, comps.GetCoders())
 		kcID := lpUnknownCoders(kvc.GetComponentCoderIds()[0], coders, comps.GetCoders())
 		ecID := lpUnknownCoders(kvc.GetComponentCoderIds()[1], coders, comps.GetCoders())
 		reconcileCoders(coders, comps.GetCoders())
 
+		wc := coders[wcID]
 		kc := coders[kcID]
 		ec := coders[ecID]
 
@@ -171,7 +174,7 @@ func windowingStrategy(comps *pipepb.Components, tid string) *pipepb.WindowingSt
 }
 
 // gbkBytes re-encodes gbk inputs in a gbk result.
-func gbkBytes(ws *pipepb.WindowingStrategy, wc exec.WindowDecoder, kc, vc *pipepb.Coder, toAggregate [][]byte, coders map[string]*pipepb.Coder) []byte {
+func gbkBytes(ws *pipepb.WindowingStrategy, wc, kc, vc *pipepb.Coder, toAggregate [][]byte, coders map[string]*pipepb.Coder) []byte {
 	var outputTime func(typex.Window, mtime.Time) mtime.Time
 	switch ws.GetOutputTime() {
 	case pipepb.OutputTime_END_OF_WINDOW:
@@ -179,8 +182,10 @@ func gbkBytes(ws *pipepb.WindowingStrategy, wc exec.WindowDecoder, kc, vc *pipep
 			return w.MaxTimestamp()
 		}
 	default:
+		// TODO need to correct session logic if output time is different.
 		logger.Fatalf("unsupported OutputTime behavior: %v", ws.GetOutputTime())
 	}
+	wDec, wEnc := makeWindowCoders(wc)
 
 	type keyTime struct {
 		key    []byte
@@ -203,7 +208,7 @@ func gbkBytes(ws *pipepb.WindowingStrategy, wc exec.WindowDecoder, kc, vc *pipep
 		// Parse out each element's data, and repeat.
 		buf := bytes.NewBuffer(data)
 		for {
-			ws, tm, _, err := exec.DecodeWindowedValueHeader(wc, buf)
+			ws, tm, _, err := exec.DecodeWindowedValueHeader(wDec, buf)
 			if err == io.EOF {
 				break
 			}
@@ -231,6 +236,50 @@ func gbkBytes(ws *pipepb.WindowingStrategy, wc exec.WindowDecoder, kc, vc *pipep
 		}
 	}
 
+	// If the strategy is session windows, then we need to get all the windows, sort them
+	// and see which ones need to be merged together.
+	if ws.GetWindowFn().GetUrn() == "beam:window_fn:session_windows:v1" {
+		session := &pipepb.SessionWindowsPayload{}
+		if err := (proto.UnmarshalOptions{}).Unmarshal(ws.GetWindowFn().GetPayload(), session); err != nil {
+			panic("unable to decode SessionWindowsPayload")
+		}
+		gapSize := mtime.Time(session.GetGapSize().AsDuration())
+
+		ordered := make([]window.IntervalWindow, 0, len(windows))
+		for k := range windows {
+			ordered = append(ordered, k.(window.IntervalWindow))
+		}
+		// Use a decreasing sort (latest to earliest) so we can correct
+		// the output timestamp to the new end of window immeadiately.
+		// TODO need to correct this if output time is different.
+		sort.Slice(ordered, func(i, j int) bool {
+			return ordered[i].MaxTimestamp() > ordered[j].MaxTimestamp()
+		})
+
+		cur := ordered[0]
+		sessionData := windows[cur]
+		for _, iw := range ordered[1:] {
+			// If they overlap, then we merge the data.
+			if iw.End+gapSize < cur.Start {
+				// Start a new session.
+				windows[cur] = sessionData
+				cur = iw
+				sessionData = windows[iw]
+				continue
+			}
+			// Extend the session
+			cur.Start = iw.Start
+			toMerge := windows[iw]
+			delete(windows, iw)
+			for k, kt := range toMerge {
+				skt := sessionData[k]
+				skt.key = kt.key
+				skt.w = cur
+				skt.values = append(skt.values, kt.values...)
+				sessionData[k] = skt
+			}
+		}
+	}
 	// Everything's aggregated!
 	// Time to turn things into a windowed KV<K, Iterable<V>>
 
@@ -238,7 +287,7 @@ func gbkBytes(ws *pipepb.WindowingStrategy, wc exec.WindowDecoder, kc, vc *pipep
 	for _, w := range windows {
 		for _, kt := range w {
 			exec.EncodeWindowedValueHeader(
-				exec.MakeWindowEncoder(coder.NewGlobalWindow()),
+				wEnc,
 				[]typex.Window{kt.w},
 				kt.time,
 				typex.NoFiringPane(),

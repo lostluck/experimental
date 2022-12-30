@@ -203,13 +203,16 @@ func (wk *worker) Data(data fnpb.BeamFnData_DataServer) error {
 					V(3).Logf("data.Recv for unknown bundle: %v", resp)
 					continue
 				}
+
+				// There might not be data, eg. for side inputs, so we need to reconcile this elsewhere for
+				// downstream side inputs.
 				if len(d.GetData()) > 0 {
 					output := b.DataReceived[tID]
 					output = append(output, d.GetData())
 					b.DataReceived[tID] = output
 				}
 				if d.GetIsLast() {
-					V(3).Logf("XXX done waiting on data from %v", b.InstID)
+					V(3).Logf("XXX done waiting on data from %v, with tID: %v", b.InstID, tID)
 					b.DataWait.Done()
 				}
 			}
