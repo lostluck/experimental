@@ -19,10 +19,11 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 
-	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/graph/coder"
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/runtime/exec"
+	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/typex"
 	fnpb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/fnexecution_v1"
 	pipepb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/pipeline_v1"
 	"google.golang.org/protobuf/encoding/prototext"
@@ -237,8 +238,8 @@ func buildProcessBundle(wk *worker, tid string, t *pipepb.PTransform, comps *pip
 
 		sis = pardo.GetSideInputs()
 	}
-	iterSides := make(map[string][]byte)
-	multiMapSides := make(map[string]map[string][][]byte)
+	iterSides := make(map[string]map[string][][]byte)
+	multiMapSides := make(map[string]map[string]map[string][][]byte)
 
 	var parent *bundle
 	// Get WindowedValue Coders for the transform's input and output PCollections.
@@ -265,28 +266,19 @@ func buildProcessBundle(wk *worker, tid string, t *pipepb.PTransform, comps *pip
 			ec := coders[cID]
 			ed := pullDecoder(ec, coders)
 
-			wc := exec.MakeWindowDecoder(coder.NewGlobalWindow())
-			var outBuf bytes.Buffer
+			ws := comps.GetWindowingStrategies()[col.GetWindowingStrategyId()]
+			wcID := lpUnknownCoders(ws.GetWindowCoderId(), coders, comps.GetCoders())
+			wDec, wEnc := makeWindowCoders(coders[wcID])
 			// May be of zero length, but that's OK. Side inputs can be empty.
 			data := pb.DataReceived[key]
-			for _, datum := range data {
-				inBuf := bytes.NewBuffer(datum)
-				for {
-					// TODO window projection and segmentation of side inputs.
-					_, _, _, err := exec.DecodeWindowedValueHeader(wc, inBuf)
-					if err == io.EOF {
-						break
-					}
-					if err != nil {
-						logger.Fatalf("can't decode windowed value header with %v: %v", wc, err)
-					}
-					outBuf.Write(ed(inBuf))
-				}
-			}
+			iterSides[local] = collateByWindows(data, wDec, wEnc,
+				func(r io.Reader) [][]byte {
+					return [][]byte{ed(r)}
+				}, func(a, b [][]byte) [][]byte {
+					return append(a, b...)
+				})
 
-			iterSides[local] = outBuf.Bytes()
 		case urnSideInputMultiMap:
-
 			pb := parents[local]
 			src := pcolParents[global]
 			key := src.global + "_" + src.local
@@ -308,35 +300,28 @@ func buildProcessBundle(wk *worker, tid string, t *pipepb.PTransform, comps *pip
 			kd := pullDecoder(kc, coders)
 			vd := pullDecoder(vc, coders)
 
-			// TODO, support other window coders.
-			wc := exec.MakeWindowDecoder(coder.NewGlobalWindow())
-
-			// We basically need to do the GBK thing here, but without making everything into
-			// a single byte slice at the end.
-			keyedData := map[string][][]byte{}
+			ws := comps.GetWindowingStrategies()[col.GetWindowingStrategyId()]
+			wcID := lpUnknownCoders(ws.GetWindowCoderId(), coders, comps.GetCoders())
+			wDec, wEnc := makeWindowCoders(coders[wcID])
 
 			// May be of zero length, but that's OK. Side inputs can be empty.
 			data := pb.DataReceived[key]
-			for _, datum := range data {
-				inBuf := bytes.NewBuffer(datum)
-				// This only does the grouping by keys, but not any sorting or recoding.
-				for {
-					// TODO window projection and segmentation of side inputs.
-					_, _, _, err := exec.DecodeWindowedValueHeader(wc, inBuf)
-					if err == io.EOF {
-						break
-					}
-					if err != nil {
-						logger.Fatalf("can't decode windowed value header with %v: %v", wc, err)
-					}
 
-					dkey := string(kd(inBuf))
-
-					vs := keyedData[dkey]
-					keyedData[dkey] = append(vs, vd(inBuf))
-				}
-			}
-			multiMapSides[local] = keyedData
+			multiMapSides[local] = collateByWindows(data, wDec, wEnc,
+				func(r io.Reader) map[string][][]byte {
+					kb := kd(r)
+					return map[string][][]byte{
+						string(kb): [][]byte{vd(r)},
+					}
+				}, func(a, b map[string][][]byte) map[string][][]byte {
+					if len(a) == 0 {
+						return b
+					}
+					for k, vs := range b {
+						a[k] = append(a[k], vs...)
+					}
+					return a
+				})
 		default:
 			logger.Fatalf("local input %v (global %v) for transform %v uses accesspattern %v", local, global, tid, si.GetAccessPattern().GetUrn())
 
@@ -388,10 +373,10 @@ func buildProcessBundle(wk *worker, tid string, t *pipepb.PTransform, comps *pip
 
 		InputTransformID: parentID,
 		InputData:        parent.DataReceived[dataParentID],
-		IterableSideInputData: map[string]map[string][]byte{
+		IterableSideInputData: map[string]map[string]map[string][][]byte{
 			tid: iterSides,
 		},
-		MultiMapSideInputData: map[string]map[string]map[string][][]byte{
+		MultiMapSideInputData: map[string]map[string]map[string]map[string][][]byte{
 			tid: multiMapSides,
 		},
 		Resp: make(chan *fnpb.ProcessBundleResponse, 1),
@@ -474,10 +459,10 @@ type bundle struct {
 	InputData        [][]byte
 
 	// TODO change to a single map[tid] -> map[input] -> map[window] -> struct { Iter data, MultiMap data } instead of all maps.
-	// IterableSideInputData is a map from transformID, to inputID to data.
-	IterableSideInputData map[string]map[string][]byte
-	// MultiMapSideInputData is a map from transformID, to inputID, to data key, to data values.
-	MultiMapSideInputData map[string]map[string]map[string][][]byte
+	// IterableSideInputData is a map from transformID, to inputID, to window, to data.
+	IterableSideInputData map[string]map[string]map[string][][]byte
+	// MultiMapSideInputData is a map from transformID, to inputID, to window, to data key, to data values.
+	MultiMapSideInputData map[string]map[string]map[string]map[string][][]byte
 
 	// DataReceived is where all the data received from the SDK is put
 	// separated by their TransformIDs.
@@ -532,4 +517,32 @@ func (b *bundle) ProcessOn(wk *worker) {
 
 	// logger.Printf("ProcessBundle %v done! Resp: %v", b.InstID, prototext.Format(<-b.Resp))
 	// logger.Printf("ProcessBundle %v output: %v", b.InstID, b.DataReceived)
+}
+
+// collateByWindows takes the data and collates them into string keyed window maps.
+// Uses generics to consolidate the repetitive window loops.
+func collateByWindows[T any](data [][]byte, wDec exec.WindowDecoder, wEnc exec.WindowEncoder, ed func(io.Reader) T, join func(T, T) T) map[string]T {
+	windowed := map[typex.Window]T{}
+	for _, datum := range data {
+		inBuf := bytes.NewBuffer(datum)
+		for {
+			ws, _, _, err := exec.DecodeWindowedValueHeader(wDec, inBuf)
+			if err == io.EOF {
+				break
+			}
+			// Get the element out, and window them properly.
+			e := ed(inBuf)
+			for _, w := range ws {
+				windowed[w] = join(windowed[w], e)
+			}
+		}
+	}
+	output := make(map[string]T, len(windowed))
+	var buf strings.Builder
+	for w, v := range windowed {
+		wEnc.EncodeSingle(w, &buf)
+		output[buf.String()] = v
+		buf.Reset()
+	}
+	return output
 }

@@ -251,45 +251,41 @@ func (wk *worker) State(state fnpb.BeamFnState_StateServer) error {
 			}
 			switch resp.GetRequest().(type) {
 			case *fnpb.StateRequest_Get:
+				// TODO: move data handling to be pcollection based.
 				b := wk.bundles[resp.GetInstructionId()]
 				key := resp.GetStateKey()
-				// I need to pre-cache this BS in the original transform.
-				// No need to get clever and JustInTime at the moment.
+
+				var data [][]byte
 				switch key.GetType().(type) {
 				case *fnpb.StateKey_IterableSideInput_:
 					ikey := key.GetIterableSideInput()
-					data := b.IterableSideInputData[ikey.GetTransformId()][ikey.GetSideInputId()]
-					responses <- &fnpb.StateResponse{
-						Id: resp.GetId(),
-						Response: &fnpb.StateResponse_Get{
-							Get: &fnpb.StateGetResponse{
-								Data: data,
-							},
-						},
-					}
+					wKey := string(ikey.GetWindow())
+					data = b.IterableSideInputData[ikey.GetTransformId()][ikey.GetSideInputId()][wKey]
+
 				case *fnpb.StateKey_MultimapSideInput_:
 					mmkey := key.GetMultimapSideInput()
+					wKey := string(mmkey.GetWindow())
 					dKey := string(mmkey.GetKey())
-					data := b.MultiMapSideInputData[mmkey.GetTransformId()][mmkey.GetSideInputId()][dKey]
-
-					// Encode the runner iterable (no length, just consecutive elements), and send it out.
-					// This is also where we can handle things like State Backed Iterables.
-					var buf bytes.Buffer
-					for _, value := range data {
-						buf.Write(value)
-					}
-
-					responses <- &fnpb.StateResponse{
-						Id: resp.GetId(),
-						Response: &fnpb.StateResponse_Get{
-							Get: &fnpb.StateGetResponse{
-								Data: buf.Bytes(),
-							},
-						},
-					}
+					data = b.MultiMapSideInputData[mmkey.GetTransformId()][mmkey.GetSideInputId()][wKey][dKey]
 
 				default:
 					logger.Fatalf("unsupported StateKey Access type: %T: %v", key.GetType(), prototext.Format(key))
+				}
+
+				// Encode the runner iterable (no length, just consecutive elements), and send it out.
+				// This is also where we can handle things like State Backed Iterables.
+				var buf bytes.Buffer
+				for _, value := range data {
+					buf.Write(value)
+				}
+
+				responses <- &fnpb.StateResponse{
+					Id: resp.GetId(),
+					Response: &fnpb.StateResponse_Get{
+						Get: &fnpb.StateGetResponse{
+							Data: buf.Bytes(),
+						},
+					},
 				}
 			default:
 				logger.Fatalf("unsupported StateRequest kind %T: %v", resp.GetRequest(), prototext.Format(resp))

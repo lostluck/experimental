@@ -1,8 +1,6 @@
 # TODOs - no particular order.
 
-* Windowing in GBKs
-* Windowing in Side Inputs / Projection
-  * Fix Side Input order processing issue.
+* Fix Datalayer provision and lookup to allow for multiple bundles.
 * Triggers / TestStream
 * pullDecoder refactor
 * []byte avoidance -> To io.Reader/Writer streams
@@ -15,6 +13,20 @@
 * Stager Refactor
   * One PTransform : One Stage
   * Fusion Stager
+
+# Notes to myself: 2022-12-30
+
+Switching GBKs to handle windowing, worked out pretty easily, and so did adding Session windowing.
+That was followed up with sorting out the windowing for side inputs. Both were made easier since
+I could just pull the self validating integration test pipelines.
+
+The next thing on the list is Process Continuations and watermark handling, but I need to
+decouple the datalayer from the bundles, and that's probably going to be a small mess.
+
+Right now bundles retain their output data independantly, which has a problem when there
+are multiple bundles contributed data to the PCollection. So we need to fix up the data
+layer to abstract that out. Basically we should just key these things on the global Pcollection
+ID. This would probably simplify all the mess I have around data coming in and exiting
 
 # Notes to myself: 2022-12-29
 

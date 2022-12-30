@@ -618,9 +618,9 @@ func TestRunner_Pipelines(t *testing.T) {
 		}, {
 			name:     "WindowSums_Lifted",
 			pipeline: primitives.WindowSums_Lifted,
-			// }, {
-			// 	name:     "WindowedSideInputs",
-			// 	pipeline: primitives.ValidateWindowedSideInputs,
+		}, {
+			name:     "WindowedSideInputs",
+			pipeline: primitives.ValidateWindowedSideInputs,
 		},
 	}
 	// TODO: Explicit DoFn Failure case.
