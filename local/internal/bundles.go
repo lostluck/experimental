@@ -17,7 +17,6 @@ package internal
 
 import (
 	"bytes"
-	"fmt"
 	"io"
 	"strings"
 	"sync"
@@ -26,7 +25,6 @@ import (
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/typex"
 	fnpb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/fnexecution_v1"
 	pipepb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/pipeline_v1"
-	"google.golang.org/protobuf/encoding/prototext"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
@@ -129,7 +127,7 @@ func executePipeline(wk *worker, j *job) {
 		}
 	}
 
-	topo, succ, inputs, pcolParents := prepro.preProcessGraph(comps)
+	topo, succ, inputs := prepro.preProcessGraph(comps)
 	ts := comps.GetTransforms()
 
 	// We're going to do something fun with channels for this,
@@ -162,7 +160,6 @@ func executePipeline(wk *worker, j *job) {
 	for _, tid := range topo {
 		// Block until the previous bundle is done.
 		<-processed
-		parents := prevs[tid]
 		delete(prevs, tid) // Garbage collect the data.
 		V(2).Logf("making bundle for %v", tid)
 
@@ -180,7 +177,7 @@ func executePipeline(wk *worker, j *job) {
 		var b *bundle
 		switch envID {
 		case "": // Runner Transforms
-			b = exe.ExecuteTransform(tid, t, comps, parents)
+			b = exe.ExecuteTransform(tid, t, comps, wk)
 			// Runner transforms are processed immeadiately.
 			sendBundle = func() {
 				go func() {
@@ -189,7 +186,7 @@ func executePipeline(wk *worker, j *job) {
 			}
 		case wk.ID:
 			// Great! this is for this environment. // Broken abstraction.
-			b = buildProcessBundle(wk, tid, t, comps, inputs, parents, pcolParents)
+			b = buildProcessBundle(wk, tid, t, comps, inputs)
 			// FnAPI instructions need to be sent to the SDK.
 			sendBundle = func() {
 				toProcess <- b
@@ -213,15 +210,11 @@ func executePipeline(wk *worker, j *job) {
 	V(1).Logf("pipeline done! Final Bundle: %v", b.InstID)
 }
 
-func buildProcessBundle(wk *worker, tid string, t *pipepb.PTransform, comps *pipepb.Components, inputs map[string][]linkID, parents map[string]*bundle, pcolParents map[string]linkID) *bundle {
+func buildProcessBundle(wk *worker, tid string, t *pipepb.PTransform, comps *pipepb.Components, inputs map[string][]linkID) *bundle {
 	instID, bundID := wk.nextInst(), wk.nextBund()
 
 	in := inputs[tid][0]
-	dataParentID := in.global + "_" + in.local
 	parentID := in.global
-
-	V(2).Log(tid, " sources ", dataParentID, " ", parentID)
-	V(2).Log(tid, " inputs ", inputs[tid], " ", len(parents))
 
 	coders := map[string]*pipepb.Coder{}
 	transforms := map[string]*pipepb.PTransform{
@@ -241,7 +234,6 @@ func buildProcessBundle(wk *worker, tid string, t *pipepb.PTransform, comps *pip
 	iterSides := make(map[string]map[string][][]byte)
 	multiMapSides := make(map[string]map[string]map[string][][]byte)
 
-	var parent *bundle
 	// Get WindowedValue Coders for the transform's input and output PCollections.
 	for local, global := range t.GetInputs() {
 		inPID, wInCid := makeWindowedValueCoder(t, global, comps, coders)
@@ -249,7 +241,6 @@ func buildProcessBundle(wk *worker, tid string, t *pipepb.PTransform, comps *pip
 
 		if !ok {
 			// this is the main input
-			parent = parents[local]
 			transforms[parentID] = sourceTransform(parentID, portFor(wInCid, wk), inPID)
 			continue
 		}
@@ -257,10 +248,7 @@ func buildProcessBundle(wk *worker, tid string, t *pipepb.PTransform, comps *pip
 		// this is a side input
 		switch si.GetAccessPattern().GetUrn() {
 		case urnSideInputIterable:
-			pb := parents[local]
-			src := pcolParents[global]
-			key := src.global + "_" + src.local
-			V(2).Logf("urnSideInputIterable key? src %v, key %v, local %v, global %v", src, key, local, global)
+			V(2).Logf("urnSideInputIterable key? src %v, local %v, global %v", local, global)
 			col := comps.GetPcollections()[global]
 			cID := lpUnknownCoders(col.GetCoderId(), coders, comps.GetCoders())
 			ec := coders[cID]
@@ -270,7 +258,8 @@ func buildProcessBundle(wk *worker, tid string, t *pipepb.PTransform, comps *pip
 			wcID := lpUnknownCoders(ws.GetWindowCoderId(), coders, comps.GetCoders())
 			wDec, wEnc := makeWindowCoders(coders[wcID])
 			// May be of zero length, but that's OK. Side inputs can be empty.
-			data := pb.DataReceived[key]
+
+			data := wk.data.GetData(global)
 			iterSides[local] = collateByWindows(data, wDec, wEnc,
 				func(r io.Reader) [][]byte {
 					return [][]byte{ed(r)}
@@ -279,10 +268,7 @@ func buildProcessBundle(wk *worker, tid string, t *pipepb.PTransform, comps *pip
 				})
 
 		case urnSideInputMultiMap:
-			pb := parents[local]
-			src := pcolParents[global]
-			key := src.global + "_" + src.local
-			V(2).Logf("urnSideInputMultiMap key? %v, %v", key, local)
+			V(2).Logf("urnSideInputMultiMap key? %v, %v", local, global)
 			col := comps.GetPcollections()[global]
 
 			kvc := comps.GetCoders()[col.GetCoderId()]
@@ -305,7 +291,7 @@ func buildProcessBundle(wk *worker, tid string, t *pipepb.PTransform, comps *pip
 			wDec, wEnc := makeWindowCoders(coders[wcID])
 
 			// May be of zero length, but that's OK. Side inputs can be empty.
-			data := pb.DataReceived[key]
+			data := wk.data.GetData(global)
 
 			multiMapSides[local] = collateByWindows(data, wDec, wEnc,
 				func(r io.Reader) map[string][][]byte {
@@ -324,7 +310,6 @@ func buildProcessBundle(wk *worker, tid string, t *pipepb.PTransform, comps *pip
 				})
 		default:
 			logger.Fatalf("local input %v (global %v) for transform %v uses accesspattern %v", local, global, tid, si.GetAccessPattern().GetUrn())
-
 		}
 	}
 
@@ -332,9 +317,11 @@ func buildProcessBundle(wk *worker, tid string, t *pipepb.PTransform, comps *pip
 	// so we can avoid double counting PCollection metrics later.
 	// But this also means replacing the ID for the input in the bundle.
 	// inPIDSrc := inPID + "_src"
+	sink2Col := map[string]string{}
 	for local, global := range t.GetOutputs() {
 		outPID, wOutCid := makeWindowedValueCoder(t, global, comps, coders)
 		sinkID := tid + "_" + local
+		sink2Col[sinkID] = global
 		transforms[sinkID] = sinkTransform(sinkID, portFor(wOutCid, wk), outPID)
 	}
 
@@ -364,15 +351,13 @@ func buildProcessBundle(wk *worker, tid string, t *pipepb.PTransform, comps *pip
 		},
 	}
 
-	if parent == nil || parent.DataReceived[dataParentID] == nil {
-		panic(fmt.Sprintf("corruption detected: t: %v bundID %q parentID %q, parent %v, dataParentID %q", prototext.Format(t), bundID, parentID, parent, dataParentID))
-	}
-
 	b := &bundle{
 		BundID: bundID,
 
 		InputTransformID: parentID,
-		InputData:        parent.DataReceived[dataParentID],
+
+		// TODO Here's where we can split data for processing in multiple bundles.
+		InputData: wk.data.GetData(in.pcol),
 		IterableSideInputData: map[string]map[string]map[string][][]byte{
 			tid: iterSides,
 		},
@@ -381,20 +366,11 @@ func buildProcessBundle(wk *worker, tid string, t *pipepb.PTransform, comps *pip
 		},
 		Resp: make(chan *fnpb.ProcessBundleResponse, 1),
 
-		DataReceived: make(map[string][][]byte),
+		SinkToPCollection: sink2Col,
 	}
 	V(3).Logf("XXX Going to wait on data for %v: count %v - %v", instID, len(t.GetOutputs()), t.GetOutputs())
 	b.DataWait.Add(len(t.GetOutputs()))
 	return b
-}
-
-func sourceIDs(parent *bundle) (string, string) {
-	var dataParentID, parentID string
-	for k := range parent.DataReceived {
-		dataParentID = k
-		parentID = trimRightTo(dataParentID, '_')
-	}
-	return dataParentID, parentID
 }
 
 func sourceTransform(parentID string, sourcePortBytes []byte, outPID string) *pipepb.PTransform {
@@ -442,7 +418,7 @@ func portFor(wInCid string, wk *worker) []byte {
 type transformExecuter interface {
 	ExecuteUrns() []string
 	ExecuteWith(t *pipepb.PTransform) string
-	ExecuteTransform(tid string, t *pipepb.PTransform, comps *pipepb.Components, parents map[string]*bundle) *bundle
+	ExecuteTransform(tid string, t *pipepb.PTransform, comps *pipepb.Components, wk *worker) *bundle
 }
 
 type processor struct {
@@ -456,7 +432,7 @@ type bundle struct {
 
 	// InputTransformID is data being sent to the SDK.
 	InputTransformID string
-	InputData        [][]byte
+	InputData        [][]byte // Data specifically for this bundle.
 
 	// TODO change to a single map[tid] -> map[input] -> map[window] -> struct { Iter data, MultiMap data } instead of all maps.
 	// IterableSideInputData is a map from transformID, to inputID, to window, to data.
@@ -464,12 +440,10 @@ type bundle struct {
 	// MultiMapSideInputData is a map from transformID, to inputID, to window, to data key, to data values.
 	MultiMapSideInputData map[string]map[string]map[string]map[string][][]byte
 
-	// DataReceived is where all the data received from the SDK is put
-	// separated by their TransformIDs.
-	// TODO( Consider turning these directly to io.Readers to avoid extra copying and allocating & GC.)
-	DataReceived map[string][][]byte
-	DataWait     sync.WaitGroup
-	Resp         chan *fnpb.ProcessBundleResponse
+	DataWait sync.WaitGroup
+	Resp     chan *fnpb.ProcessBundleResponse
+
+	SinkToPCollection map[string]string
 
 	// TODO: Metrics for this bundle, can be handled after the fact.
 }
@@ -513,10 +487,7 @@ func (b *bundle) ProcessOn(wk *worker) {
 	}
 
 	V(3).Logf("XXX waiting on data from %v", b.InstID)
-	b.DataWait.Wait() // Wait until data is done.
-
-	// logger.Printf("ProcessBundle %v done! Resp: %v", b.InstID, prototext.Format(<-b.Resp))
-	// logger.Printf("ProcessBundle %v output: %v", b.InstID, b.DataReceived)
+	b.DataWait.Wait() // Wait until data is ready.
 }
 
 // collateByWindows takes the data and collates them into string keyed window maps.

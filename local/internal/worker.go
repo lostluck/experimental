@@ -57,6 +57,8 @@ type worker struct {
 
 	mu      sync.Mutex
 	bundles map[string]*bundle // Bundles keyed by InstructionID
+
+	data *dataService
 }
 
 // newWorker starts the server components of FnAPI Execution.
@@ -75,6 +77,8 @@ func newWorker(id string) *worker {
 		DataReqs: make(chan *fnpb.Elements, 10),
 
 		bundles: make(map[string]*bundle),
+
+		data: &dataService{rawData: map[string][][]byte{}},
 	}
 	V(0).Logf("Serving Worker components on %v\n", wk.Endpoint())
 	fnpb.RegisterBeamFnControlServer(wk.server, wk)
@@ -203,13 +207,12 @@ func (wk *worker) Data(data fnpb.BeamFnData_DataServer) error {
 					V(3).Logf("data.Recv for unknown bundle: %v", resp)
 					continue
 				}
+				colID := b.SinkToPCollection[d.GetTransformId()]
 
 				// There might not be data, eg. for side inputs, so we need to reconcile this elsewhere for
 				// downstream side inputs.
 				if len(d.GetData()) > 0 {
-					output := b.DataReceived[tID]
-					output = append(output, d.GetData())
-					b.DataReceived[tID] = output
+					wk.data.WriteData(colID, d.GetData())
 				}
 				if d.GetIsLast() {
 					V(3).Logf("XXX done waiting on data from %v, with tID: %v", b.InstID, tID)

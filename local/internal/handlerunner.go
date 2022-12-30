@@ -75,28 +75,25 @@ func (h *runner) ExecuteWith(t *pipepb.PTransform) string {
 }
 
 // ExecTransform handles special processing with respect to runner specific transforms
-func (h *runner) ExecuteTransform(tid string, t *pipepb.PTransform, comps *pipepb.Components, parents map[string]*bundle) *bundle {
+func (h *runner) ExecuteTransform(tid string, t *pipepb.PTransform, comps *pipepb.Components, wk *worker) *bundle {
 	urn := t.GetSpec().GetUrn()
 	var data [][]byte
 	switch urn {
 	case urnTransformImpulse:
 		// These will be subbed out by the pardo stage.
 		data = append(data, impulseBytes())
+
 	case urnTransformFlatten:
 		// Extract the data from the parents.
-		// TODO extract from the correct output.
-		for _, pb := range parents {
-			for _, ds := range pb.DataReceived {
-				data = append(data, ds...)
-			}
+		for _, globalID := range t.GetInputs() {
+			data = append(data, wk.data.GetData(globalID)...)
 		}
+
 	case urnTransformGBK:
-		var parent *bundle
-		// Extract the one parent.
-		for _, pb := range parents {
-			parent = pb
+		var inCol string
+		for _, in := range t.GetInputs() {
+			inCol = in
 		}
-		dataParentID, _ := sourceIDs(parent)
 
 		ws := windowingStrategy(comps, tid)
 		kvc := kvcoder(comps, tid)
@@ -113,9 +110,13 @@ func (h *runner) ExecuteTransform(tid string, t *pipepb.PTransform, comps *pipep
 		kc := coders[kcID]
 		ec := coders[ecID]
 
-		data = append(data, gbkBytes(ws, wc, kc, ec, parent.DataReceived[dataParentID], coders))
+		data = append(data, gbkBytes(ws, wc, kc, ec, wk.data.GetData(inCol), coders))
 	default:
 		logger.Fatalf("unimplemented runner transform[%v]", urn)
+	}
+	var onlyOut string
+	for _, out := range t.GetOutputs() {
+		onlyOut = out
 	}
 
 	// To avoid conflicts with these single transform
@@ -128,12 +129,15 @@ func (h *runner) ExecuteTransform(tid string, t *pipepb.PTransform, comps *pipep
 	if localID == "" {
 		V(1).Fatalf("bad transform: %v", prototext.Format(t))
 	}
+	for _, d := range data {
+		wk.data.WriteData(onlyOut, d)
+	}
 
 	dataID := tid + "_" + localID // The ID from which the consumer will read from.
 	b := &bundle{
 		InputTransformID: dataID,
-		DataReceived: map[string][][]byte{
-			dataID: data,
+		SinkToPCollection: map[string]string{
+			dataID: onlyOut,
 		},
 	}
 	return b

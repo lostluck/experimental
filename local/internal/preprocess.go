@@ -60,7 +60,7 @@ type transformPreparer interface {
 //
 // This is where Combines can become lifted (if it makes sense, or is configured), and
 // similar behaviors.
-func (p *preprocessor) preProcessGraph(comps *pipepb.Components) (topological []string, successors, inputs map[string][]linkID, pcolParents map[string]linkID) {
+func (p *preprocessor) preProcessGraph(comps *pipepb.Components) (topological []string, successors, inputs map[string][]linkID) {
 	ts := comps.GetTransforms()
 
 	// TODO move this out of this part of the pre-processor?
@@ -134,7 +134,7 @@ func (p *preprocessor) preProcessGraph(comps *pipepb.Components) (topological []
 	// Each PCollection only has one parent, determined by transform outputs.
 	// And since we only know pcollections, we need to map from pcol to parent transforms
 	// so we can derive the transform successors map.
-	pcolParents = make(map[string]linkID)
+	pcolParents := make(map[string]linkID)
 
 	// We iterate in the transform's topological order for determinism.
 	for _, id := range topological {
@@ -161,5 +161,5 @@ func (p *preprocessor) preProcessGraph(comps *pipepb.Components) (topological []
 	V(2).Logf("SUCCESSORS:\n%+v", successors)
 	V(2).Logf("INPUTS:\n%+v", inputs)
 
-	return topological, successors, inputs, pcolParents
+	return topological, successors, inputs
 }
