@@ -17,6 +17,45 @@
   * []byte avoidance -> To io.Reader/Writer streams
   * Error plumbing rather than log.Fatals or panics.
 
+# Notes to myself: 2022-12-31
+
+I cleaned up the urns, and deleted some long unused helper code. Using a generic factory function and a
+quick interface, I could get the urn extractor helpers to nice and compact and less error prone to add a new one.
+Just call the factory with the enum type, and you're good!
+
+I noted that most of the different features of ParDos are also duplicated
+as requirements, so we can handle some of those centrally in handlepardo.go.
+
+The go files are nearing 4k lines of code and comments and blank space which
+means we're edging towards when I should migrate this to the repo. It all
+needs to be reviewed. 
+
+I think the burndown list for finishing this phase of work is 
+ProcessContinuations, Dynamic Splitting, the Configuration set up & use. 
+
+State wouldn't be hard to do. I don't think Timers would be too hard, though
+then we want to have "time acceleration" or similar features to help with testing. Triggers shouldn't be too bad, but TBH might as well wait for state
+and timers, so It can build on those mechanisms. The configuration bit, should 
+enable and disable the various "requirements" features, so that we can emulate different Runners.
+Then there's the different data handling things, like State Backed Iterables, which would need to be eminently configurable, in terms of datasize thresholds, page size and the like, and whether to force them to be enabled or not for testing purposes.
+
+ProcessContinuations allow a bundle to checkpoint itself, so not only
+can it be restarted with the residuals, but also so that its children can
+begin downstream processing simultaneously. Aside from watermark handling to
+estimate if a given window should be closed or not at a GBK, I'll need to
+propagate through single transform PCollections. This affects the dataService API.
+
+The quick thing that comes to mind is that when a process bundle request returns with residuals and such, the residual bundles should be assigned an
+incremented generation number, which is stored with the data. This way up until a GBK, where we need to do watermark based processing, we simply start
+the next thing, and request the data for the same generation's parent.
+
+GBKs and Side Inputs in that scenario need to operate a little differently,
+since they will aggregate multiple previous generations of data. They don't 
+follow the same generation number scheme. A given GBK will be blocked on processing until at least one window is completed. Then it's generation number will be something different. Probably the latest generation's data
+that's being used in the aggregation.
+
+That's enough thoughts for now. I'll sleep on it, and figure it out next year.
+
 # Notes to myself: 2022-12-30
 
 Switching GBKs to handle windowing, worked out pretty easily, and so did adding Session windowing.

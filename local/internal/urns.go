@@ -28,11 +28,18 @@ type protoEnum interface {
 	Descriptor() protoreflect.EnumDescriptor
 }
 
+// toUrn returns a function that can get the urn string from the proto.
 func toUrn[Enum protoEnum]() func(Enum) string {
 	evd := (Enum)(0).Descriptor().Values()
 	return func(v Enum) string {
 		return proto.GetExtension(evd.ByNumber(protoreflect.EnumNumber(v)).Options(), pipepb.E_BeamUrn).(string)
 	}
+}
+
+// quickUrn handles one off urns instead of retaining a helper function.
+// Notably useful for the windowFns due to their older design.
+func quickUrn[Enum protoEnum](v Enum) string {
+	return toUrn[Enum]()(v)
 }
 
 var (
@@ -73,13 +80,10 @@ var (
 	urnSideInputMultiMap = siUrn(pipepb.StandardSideInputTypes_MULTIMAP)
 
 	// WindowsFns
-	// Note, we just copy the urn strings here because they were
-	// done each in their own enum block, and this is the lesser
-	// of two evils.
-	urnWindowFnGlobal  = "beam:window_fn:global_windows:v1"
-	urnWindowFnFixed   = "beam:window_fn:fixed_windows:v1"
-	urnWindowFnSliding = "beam:window_fn:sliding_windows:v1"
-	urnWindowFnSession = "beam:window_fn:session_windows:v1"
+	urnWindowFnGlobal  = quickUrn(pipepb.GlobalWindowsPayload_PROPERTIES)
+	urnWindowFnFixed   = quickUrn(pipepb.FixedWindowsPayload_PROPERTIES)
+	urnWindowFnSliding = quickUrn(pipepb.SlidingWindowsPayload_PROPERTIES)
+	urnWindowFnSession = quickUrn(pipepb.SessionWindowsPayload_PROPERTIES)
 
 	// Coders
 	urnCoderBytes      = cdrUrn(pipepb.StandardCoders_BYTES)
