@@ -30,14 +30,14 @@ import (
 // leafCoders lists coder urns the runner knows how to manipulate.
 // In particular, ones that won't be a problem to parse.
 var leafCoders = map[string]struct{}{
-	"beam:coder:bytes:v1":           {},
-	"beam:coder:string_utf8:v1":     {},
-	"beam:coder:length_prefix:v1":   {},
-	"beam:coder:varint:v1":          {},
-	"beam:coder:double:v1":          {},
-	"beam:coder:bool:v1":            {},
-	"beam:coder:global_window:v1":   {},
-	"beam:coder:interval_window:v1": {},
+	urnCoderBytes:          {},
+	urnCoderStringUTF8:     {},
+	urnCoderLengthPrefix:   {},
+	urnCoderVarInt:         {},
+	urnCoderDouble:         {},
+	urnCoderBool:           {},
+	urnCoderGlobalWindow:   {},
+	urnCoderIntervalWindow: {},
 }
 
 func isLeafCoder(c *pipepb.Coder) bool {
@@ -59,7 +59,7 @@ func makeWindowedValueCoder(t *pipepb.PTransform, pID string, comps *pipepb.Comp
 	wvcID := "cwv_" + pID
 	wInC := &pipepb.Coder{
 		Spec: &pipepb.FunctionSpec{
-			Urn: "beam:coder:windowed_value:v1",
+			Urn: urnCoderWindowedValue,
 		},
 		ComponentCoderIds: []string{cID, wcID},
 	}
@@ -72,9 +72,9 @@ func makeWindowedValueCoder(t *pipepb.PTransform, pID string, comps *pipepb.Comp
 func makeWindowCoders(wc *pipepb.Coder) (exec.WindowDecoder, exec.WindowEncoder) {
 	var cwc *coder.WindowCoder
 	switch wc.GetSpec().GetUrn() {
-	case "beam:coder:global_window:v1":
+	case urnCoderGlobalWindow:
 		cwc = coder.NewGlobalWindow()
-	case "beam:coder:interval_window:v1":
+	case urnCoderIntervalWindow:
 		cwc = coder.NewIntervalWindow()
 	default:
 		V(0).Fatalf("makeWindowCoders, unknown urn: %v", prototext.Format(wc))
@@ -109,7 +109,7 @@ func lpUnknownCoders(cID string, coders, base map[string]*pipepb.Coder) string {
 	if len(c.GetComponentCoderIds()) == 0 && !isLeafCoder(c) {
 		lpc := &pipepb.Coder{
 			Spec: &pipepb.FunctionSpec{
-				Urn: "beam:coder:length_prefix:v1",
+				Urn: urnCoderLengthPrefix,
 			},
 			ComponentCoderIds: []string{cID},
 		}
@@ -177,7 +177,7 @@ func pullDecoder(c *pipepb.Coder, coders map[string]*pipepb.Coder) func(io.Reade
 	urn := c.GetSpec().GetUrn()
 	switch urn {
 	// Anything length prefixed can be treated as opaque.
-	case "beam:coder:bytes:v1", "beam:coder:string_utf8:v1", "beam:coder:length_prefix:v1":
+	case urnCoderBytes, urnCoderStringUTF8, urnCoderLengthPrefix:
 		return func(r io.Reader) []byte {
 			var buf bytes.Buffer
 			tr := io.TeeReader(r, &buf)
@@ -185,28 +185,28 @@ func pullDecoder(c *pipepb.Coder, coders map[string]*pipepb.Coder) func(io.Reade
 			ioutilx.ReadN(tr, int(l))
 			return buf.Bytes()
 		}
-	case "beam:coder:varint:v1":
+	case urnCoderVarInt:
 		return func(r io.Reader) []byte {
 			var buf bytes.Buffer
 			tr := io.TeeReader(r, &buf)
 			coder.DecodeVarInt(tr)
 			return buf.Bytes()
 		}
-	case "beam:coder:bool:v1":
+	case urnCoderBool:
 		return func(r io.Reader) []byte {
 			if v, _ := coder.DecodeBool(r); v {
 				return []byte{1}
 			}
 			return []byte{0}
 		}
-	case "beam:coder:double:v1":
+	case urnCoderDouble:
 		return func(r io.Reader) []byte {
 			var buf bytes.Buffer
 			tr := io.TeeReader(r, &buf)
 			coder.DecodeDouble(tr)
 			return buf.Bytes()
 		}
-	case "beam:coder:kv:v1":
+	case urnCoderKV:
 		ccids := c.GetComponentCoderIds()
 		kd := pullDecoder(coders[ccids[0]], coders)
 		vd := pullDecoder(coders[ccids[1]], coders)
@@ -219,7 +219,7 @@ func pullDecoder(c *pipepb.Coder, coders map[string]*pipepb.Coder) func(io.Reade
 			vd(tr)
 			return buf.Bytes()
 		}
-	case "beam:coder:row:v1":
+	case urnCoderRow:
 		logger.Fatalf("Runner forgot to LP this Row Coder.")
 	default:
 		panic(fmt.Sprintf("unknown coder urn key: %v", urn))

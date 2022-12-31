@@ -242,7 +242,7 @@ func gbkBytes(ws *pipepb.WindowingStrategy, wc, kc, vc *pipepb.Coder, toAggregat
 
 	// If the strategy is session windows, then we need to get all the windows, sort them
 	// and see which ones need to be merged together.
-	if ws.GetWindowFn().GetUrn() == "beam:window_fn:session_windows:v1" {
+	if ws.GetWindowFn().GetUrn() == urnWindowFnSession {
 		session := &pipepb.SessionWindowsPayload{}
 		if err := (proto.UnmarshalOptions{}).Unmarshal(ws.GetWindowFn().GetPayload(), session); err != nil {
 			panic("unable to decode SessionWindowsPayload")

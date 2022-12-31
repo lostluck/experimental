@@ -31,7 +31,7 @@ import (
 )
 
 var capabilities = map[string]struct{}{
-	"beam:requirement:pardo:splittable_dofn:v1": {}, // Not actually implemented yet. Cheating.
+	urnRequirementSplittableDoFn: {},
 }
 
 func isSupported(requirements []string) error {
@@ -108,7 +108,7 @@ func (j *job) runEnvironment(ctx context.Context, env string, wk *worker) {
 	// a different flow from a provisioned docker container.
 	e := j.pipeline.GetComponents().GetEnvironments()[env]
 	switch e.GetUrn() {
-	case "beam:env:external:v1":
+	case urnEnvExternal:
 		ep := &pipepb.ExternalPayload{}
 		if err := (proto.UnmarshalOptions{}).Unmarshal(e.GetPayload(), ep); err != nil {
 			V(1).Logf("unmarshalling environment payload %v: %v", wk.ID, err)

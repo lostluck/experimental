@@ -184,9 +184,9 @@ func (h *combine) PrepareTransform(tid string, t *pipepb.PTransform, comps *pipe
 
 	newComps := &pipepb.Components{
 		Coders: map[string]*pipepb.Coder{
-			iterACID:    coder("beam:coder:iterable:v1", aID),
-			kvkaCID:     coder("beam:coder:kv:v1", kID, aID),
-			kvkIterACID: coder("beam:coder:kv:v1", kID, iterACID),
+			iterACID:    coder(urnCoderIterable, aID),
+			kvkaCID:     coder(urnCoderKV, kID, aID),
+			kvkIterACID: coder(urnCoderKV, kID, iterACID),
 		},
 		Pcollections: map[string]*pipepb.PCollection{
 			liftedNID:  pcol(liftedNID, kvkaCID),
@@ -194,10 +194,10 @@ func (h *combine) PrepareTransform(tid string, t *pipepb.PTransform, comps *pipe
 			mergedNID:  pcol(mergedNID, kvkaCID),
 		},
 		Transforms: map[string]*pipepb.PTransform{
-			liftEID:    tform(liftEID, "beam:transform:combine_per_key_precombine:v1", pcolInID, liftedNID, t.GetEnvironmentId()),
-			gbkEID:     tform(gbkEID, "beam:transform:group_by_key:v1", liftedNID, groupedNID, ""),
-			mergeEID:   tform(mergeEID, "beam:transform:combine_per_key_merge_accumulators:v1", groupedNID, mergedNID, t.GetEnvironmentId()),
-			extractEID: tform(mergeEID, "beam:transform:combine_per_key_extract_outputs:v1", mergedNID, pcolOutID, t.GetEnvironmentId()),
+			liftEID:    tform(liftEID, urnTransformPreCombine, pcolInID, liftedNID, t.GetEnvironmentId()),
+			gbkEID:     tform(gbkEID, urnTransformGBK, liftedNID, groupedNID, ""),
+			mergeEID:   tform(mergeEID, urnTransformMerge, groupedNID, mergedNID, t.GetEnvironmentId()),
+			extractEID: tform(mergeEID, urnTransformExtract, mergedNID, pcolOutID, t.GetEnvironmentId()),
 		},
 	}
 	V(2).Logf("new components from combine %v\n%v", tid, prototext.Format(newComps))

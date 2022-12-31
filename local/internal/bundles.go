@@ -26,59 +26,6 @@ import (
 	fnpb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/fnexecution_v1"
 	pipepb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/pipeline_v1"
 	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/reflect/protoreflect"
-)
-
-func ptUrn(v pipepb.StandardPTransforms_Primitives) string {
-	return proto.GetExtension(prims.ByNumber(protoreflect.EnumNumber(v)).Options(), pipepb.E_BeamUrn).(string)
-}
-
-func ctUrn(v pipepb.StandardPTransforms_Composites) string {
-	return proto.GetExtension(cmps.ByNumber(protoreflect.EnumNumber(v)).Options(), pipepb.E_BeamUrn).(string)
-}
-
-func cmbtUrn(v pipepb.StandardPTransforms_CombineComponents) string {
-	return proto.GetExtension(cmbcomps.ByNumber(protoreflect.EnumNumber(v)).Options(), pipepb.E_BeamUrn).(string)
-}
-
-func sdfUrn(v pipepb.StandardPTransforms_SplittableParDoComponents) string {
-	return proto.GetExtension(sdfcomps.ByNumber(protoreflect.EnumNumber(v)).Options(), pipepb.E_BeamUrn).(string)
-}
-
-func siUrn(v pipepb.StandardSideInputTypes_Enum) string {
-	return proto.GetExtension(sids.ByNumber(protoreflect.EnumNumber(v)).Options(), pipepb.E_BeamUrn).(string)
-}
-
-var (
-	prims    = (pipepb.StandardPTransforms_Primitives)(0).Descriptor().Values()
-	cmps     = (pipepb.StandardPTransforms_Composites)(0).Descriptor().Values()
-	cmbcomps = (pipepb.StandardPTransforms_CombineComponents)(0).Descriptor().Values()
-	sdfcomps = (pipepb.StandardPTransforms_SplittableParDoComponents)(0).Descriptor().Values()
-
-	sids = (pipepb.StandardSideInputTypes_Enum)(0).Descriptor().Values()
-
-	// SDK transforms.
-	urnTransformParDo                = ptUrn(pipepb.StandardPTransforms_PAR_DO)
-	urnTransformCombinePerKey        = ctUrn(pipepb.StandardPTransforms_COMBINE_PER_KEY)
-	urnTransformPreCombine           = cmbtUrn(pipepb.StandardPTransforms_COMBINE_PER_KEY_PRECOMBINE)
-	urnTransformMerge                = cmbtUrn(pipepb.StandardPTransforms_COMBINE_PER_KEY_MERGE_ACCUMULATORS)
-	urnTransformExtract              = cmbtUrn(pipepb.StandardPTransforms_COMBINE_PER_KEY_EXTRACT_OUTPUTS)
-	urnTransformPairWithRestriction  = sdfUrn(pipepb.StandardPTransforms_PAIR_WITH_RESTRICTION)
-	urnTransformSplitAndSize         = sdfUrn(pipepb.StandardPTransforms_SPLIT_AND_SIZE_RESTRICTIONS)
-	urnTransformProcessSizedElements = sdfUrn(pipepb.StandardPTransforms_PROCESS_SIZED_ELEMENTS_AND_RESTRICTIONS)
-	urnTransformTruncate             = sdfUrn(pipepb.StandardPTransforms_TRUNCATE_SIZED_RESTRICTION)
-
-	// DoFn Urns
-	urnGoDoFn = "beam:go:transform:dofn:v1" // Only used for Go DoFn.
-
-	// Runner transforms.
-	urnTransformImpulse = ptUrn(pipepb.StandardPTransforms_IMPULSE)
-	urnTransformGBK     = ptUrn(pipepb.StandardPTransforms_GROUP_BY_KEY)
-	urnTransformFlatten = ptUrn(pipepb.StandardPTransforms_FLATTEN)
-
-	// Side Input access patterns
-	urnSideInputIterable = siUrn(pipepb.StandardSideInputTypes_ITERABLE)
-	urnSideInputMultiMap = siUrn(pipepb.StandardSideInputTypes_MULTIMAP)
 )
 
 func executePipeline(wk *worker, j *job) {
@@ -272,7 +219,7 @@ func buildProcessBundle(wk *worker, tid string, t *pipepb.PTransform, comps *pip
 			col := comps.GetPcollections()[global]
 
 			kvc := comps.GetCoders()[col.GetCoderId()]
-			if kvc.GetSpec().GetUrn() != "beam:coder:kv:v1" {
+			if kvc.GetSpec().GetUrn() != urnCoderKV {
 				logger.Fatalf("multimap side inputs needs KV coder, got %v", kvc.GetSpec().GetUrn())
 			}
 			kcID := lpUnknownCoders(kvc.GetComponentCoderIds()[0], coders, comps.GetCoders())
@@ -377,7 +324,7 @@ func sourceTransform(parentID string, sourcePortBytes []byte, outPID string) *pi
 	source := &pipepb.PTransform{
 		UniqueName: parentID,
 		Spec: &pipepb.FunctionSpec{
-			Urn:     "beam:runner:source:v1",
+			Urn:     urnTransformSource,
 			Payload: sourcePortBytes,
 		},
 		Outputs: map[string]string{
@@ -391,7 +338,7 @@ func sinkTransform(sinkID string, sinkPortBytes []byte, inPID string) *pipepb.PT
 	source := &pipepb.PTransform{
 		UniqueName: sinkID,
 		Spec: &pipepb.FunctionSpec{
-			Urn:     "beam:runner:sink:v1",
+			Urn:     urnTransformSink,
 			Payload: sinkPortBytes,
 		},
 		Inputs: map[string]string{
