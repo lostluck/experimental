@@ -75,7 +75,7 @@ func (h *runner) ExecuteWith(t *pipepb.PTransform) string {
 }
 
 // ExecTransform handles special processing with respect to runner specific transforms
-func (h *runner) ExecuteTransform(tid string, t *pipepb.PTransform, comps *pipepb.Components, wk *worker) *bundle {
+func (h *runner) ExecuteTransform(tid string, t *pipepb.PTransform, comps *pipepb.Components, wk *worker, gen int) *bundle {
 	urn := t.GetSpec().GetUrn()
 	var data [][]byte
 	switch urn {
@@ -84,9 +84,11 @@ func (h *runner) ExecuteTransform(tid string, t *pipepb.PTransform, comps *pipep
 		data = append(data, impulseBytes())
 
 	case urnTransformFlatten:
-		// Extract the data from the parents.
+		// Extract the data from the parents, by generation of the inputs...
+		// Hmmm, tricky, since we'd need to extract the earlier ones.
+		// But is this something we should just have the data service manage?
 		for _, globalID := range t.GetInputs() {
-			data = append(data, wk.data.GetData(globalID)...)
+			data = append(data, wk.data.GetData(globalID, gen)...)
 		}
 
 	case urnTransformGBK:
@@ -110,7 +112,7 @@ func (h *runner) ExecuteTransform(tid string, t *pipepb.PTransform, comps *pipep
 		kc := coders[kcID]
 		ec := coders[ecID]
 
-		data = append(data, gbkBytes(ws, wc, kc, ec, wk.data.GetData(inCol), coders))
+		data = append(data, gbkBytes(ws, wc, kc, ec, wk.data.GetData(inCol, gen), coders))
 	default:
 		logger.Fatalf("unimplemented runner transform[%v]", urn)
 	}
@@ -130,7 +132,8 @@ func (h *runner) ExecuteTransform(tid string, t *pipepb.PTransform, comps *pipep
 		V(1).Fatalf("bad transform: %v", prototext.Format(t))
 	}
 	for _, d := range data {
-		wk.data.WriteData(onlyOut, d)
+		// Runner transforms reset the generation to 0.
+		wk.data.WriteData(onlyOut, 0, d)
 	}
 
 	dataID := tid + "_" + localID // The ID from which the consumer will read from.

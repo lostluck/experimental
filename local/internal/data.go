@@ -21,14 +21,22 @@ package internal
 
 type dataService struct {
 	// TODO actually quick process the data to windows here as well.
-	rawData map[string][][]byte
+	raw map[string]map[int][][]byte
 }
 
 // WriteData adds data to a given global collectionID.
-func (d *dataService) WriteData(colID string, data []byte) {
-	d.rawData[colID] = append(d.rawData[colID], data)
+func (d *dataService) WriteData(colID string, gen int, data []byte) {
+	if d.raw == nil {
+		d.raw = map[string]map[int][][]byte{}
+	}
+	c, ok := d.raw[colID]
+	if !ok {
+		c = map[int][][]byte{}
+		d.raw[colID] = c
+	}
+	c[gen] = append(c[gen], data)
 }
 
-func (d *dataService) GetData(colID string) [][]byte {
-	return d.rawData[colID]
+func (d *dataService) GetData(colID string, gen int) [][]byte {
+	return d.raw[colID][gen]
 }

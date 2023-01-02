@@ -74,7 +74,7 @@ func executePipeline(wk *worker, j *job) {
 		}
 	}
 
-	topo, succ, inputs := prepro.preProcessGraph(comps)
+	topo, succ := prepro.preProcessGraph(comps)
 	ts := comps.GetTransforms()
 
 	// We're going to do something fun with channels for this,
@@ -122,9 +122,10 @@ func executePipeline(wk *worker, j *job) {
 
 		var sendBundle func()
 		var b *bundle
+		gen := 0
 		switch envID {
 		case "": // Runner Transforms
-			b = exe.ExecuteTransform(tid, t, comps, wk)
+			b = exe.ExecuteTransform(tid, t, comps, wk, gen)
 			// Runner transforms are processed immeadiately.
 			sendBundle = func() {
 				go func() {
@@ -133,7 +134,8 @@ func executePipeline(wk *worker, j *job) {
 			}
 		case wk.ID:
 			// Great! this is for this environment. // Broken abstraction.
-			b = buildProcessBundle(wk, tid, t, comps, inputs)
+
+			b = buildProcessBundle(tid, t, comps, wk, gen)
 			// FnAPI instructions need to be sent to the SDK.
 			sendBundle = func() {
 				toProcess <- b
@@ -142,12 +144,12 @@ func executePipeline(wk *worker, j *job) {
 			logger.Fatalf("unknown environment[%v]", t.GetEnvironmentId())
 		}
 		for _, ch := range succ[tid] {
-			m, ok := prevs[ch.global]
+			m, ok := prevs[ch.transformID]
 			if !ok {
 				m = make(map[string]*bundle)
 			}
 			m[ch.local] = b
-			prevs[ch.global] = m
+			prevs[ch.transformID] = m
 		}
 		sendBundle()
 	}
@@ -157,11 +159,10 @@ func executePipeline(wk *worker, j *job) {
 	V(1).Logf("pipeline done! Final Bundle: %v", b.InstID)
 }
 
-func buildProcessBundle(wk *worker, tid string, t *pipepb.PTransform, comps *pipepb.Components, inputs map[string][]linkID) *bundle {
+func buildProcessBundle(tid string, t *pipepb.PTransform, comps *pipepb.Components, wk *worker, gen int) *bundle {
 	instID, bundID := wk.nextInst(), wk.nextBund()
 
-	in := inputs[tid][0]
-	parentID := in.global
+	parallelInputID := tid + "_source"
 
 	coders := map[string]*pipepb.Coder{}
 	transforms := map[string]*pipepb.PTransform{
@@ -182,13 +183,15 @@ func buildProcessBundle(wk *worker, tid string, t *pipepb.PTransform, comps *pip
 	multiMapSides := make(map[string]map[string]map[string][][]byte)
 
 	// Get WindowedValue Coders for the transform's input and output PCollections.
+	var mainInputPCol string
 	for local, global := range t.GetInputs() {
 		inPID, wInCid := makeWindowedValueCoder(t, global, comps, coders)
 		si, ok := sis[local]
 
 		if !ok {
 			// this is the main input
-			transforms[parentID] = sourceTransform(parentID, portFor(wInCid, wk), inPID)
+			transforms[parallelInputID] = sourceTransform(parallelInputID, portFor(wInCid, wk), inPID)
+			mainInputPCol = global
 			continue
 		}
 
@@ -206,7 +209,7 @@ func buildProcessBundle(wk *worker, tid string, t *pipepb.PTransform, comps *pip
 			wDec, wEnc := makeWindowCoders(coders[wcID])
 			// May be of zero length, but that's OK. Side inputs can be empty.
 
-			data := wk.data.GetData(global)
+			data := wk.data.GetData(global, gen)
 			iterSides[local] = collateByWindows(data, wDec, wEnc,
 				func(r io.Reader) [][]byte {
 					return [][]byte{ed(r)}
@@ -238,13 +241,13 @@ func buildProcessBundle(wk *worker, tid string, t *pipepb.PTransform, comps *pip
 			wDec, wEnc := makeWindowCoders(coders[wcID])
 
 			// May be of zero length, but that's OK. Side inputs can be empty.
-			data := wk.data.GetData(global)
+			data := wk.data.GetData(global, gen)
 
 			multiMapSides[local] = collateByWindows(data, wDec, wEnc,
 				func(r io.Reader) map[string][][]byte {
 					kb := kd(r)
 					return map[string][][]byte{
-						string(kb): [][]byte{vd(r)},
+						string(kb): {vd(r)},
 					}
 				}, func(a, b map[string][][]byte) map[string][][]byte {
 					if len(a) == 0 {
@@ -260,10 +263,9 @@ func buildProcessBundle(wk *worker, tid string, t *pipepb.PTransform, comps *pip
 		}
 	}
 
-	// We need a new logical PCollection to represent the source
+	// TODO: We need a new logical PCollection to represent the source
 	// so we can avoid double counting PCollection metrics later.
 	// But this also means replacing the ID for the input in the bundle.
-	// inPIDSrc := inPID + "_src"
 	sink2Col := map[string]string{}
 	for local, global := range t.GetOutputs() {
 		outPID, wOutCid := makeWindowedValueCoder(t, global, comps, coders)
@@ -299,12 +301,13 @@ func buildProcessBundle(wk *worker, tid string, t *pipepb.PTransform, comps *pip
 	}
 
 	b := &bundle{
-		BundID: bundID,
+		BundID:     bundID,
+		Generation: gen,
 
-		InputTransformID: parentID,
+		InputTransformID: parallelInputID,
 
 		// TODO Here's where we can split data for processing in multiple bundles.
-		InputData: wk.data.GetData(in.pcol),
+		InputData: wk.data.GetData(mainInputPCol, gen),
 		IterableSideInputData: map[string]map[string]map[string][][]byte{
 			tid: iterSides,
 		},
@@ -365,7 +368,7 @@ func portFor(wInCid string, wk *worker) []byte {
 type transformExecuter interface {
 	ExecuteUrns() []string
 	ExecuteWith(t *pipepb.PTransform) string
-	ExecuteTransform(tid string, t *pipepb.PTransform, comps *pipepb.Components, wk *worker) *bundle
+	ExecuteTransform(tid string, t *pipepb.PTransform, comps *pipepb.Components, wk *worker, gen int) *bundle
 }
 
 type processor struct {
@@ -374,8 +377,9 @@ type processor struct {
 
 // bundle represents an extant ProcessBundle instruction sent to an SDK worker.
 type bundle struct {
-	InstID string // ID for the instruction processing this bundle.
-	BundID string // ID for the ProcessBundleDescriptor
+	InstID     string // ID for the instruction processing this bundle.
+	BundID     string // ID for the ProcessBundleDescriptor
+	Generation int    // Which generation this is related to.
 
 	// InputTransformID is data being sent to the SDK.
 	InputTransformID string
@@ -405,7 +409,7 @@ func (b *bundle) ProcessOn(wk *worker) {
 	wk.bundles[b.InstID] = b
 	wk.mu.Unlock()
 
-	V(2).Logf("processing %v %v on %v", b.InstID, b.BundID, wk)
+	V(2).Logf("processing %v %v %v on %v", b.InstID, b.BundID, b.Generation, wk)
 
 	// Tell the SDK to start processing the bundle.
 	wk.InstReqs <- &fnpb.InstructionRequest{

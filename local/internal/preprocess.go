@@ -28,9 +28,9 @@ import (
 // identifying the relative transform, the local identifier for the input
 // and what the global pcollection of this link is.
 type linkID struct {
-	global string // Transform
-	local  string // local input/output id
-	pcol   string // What PCol, is This?
+	transformID string // Transform
+	local       string // local input/output id
+	pcol        string // What PCol, is This?
 }
 
 // preprocessor retains configuration for preprocessing the
@@ -60,7 +60,7 @@ type transformPreparer interface {
 //
 // This is where Combines can become lifted (if it makes sense, or is configured), and
 // similar behaviors.
-func (p *preprocessor) preProcessGraph(comps *pipepb.Components) (topological []string, successors, inputs map[string][]linkID) {
+func (p *preprocessor) preProcessGraph(comps *pipepb.Components) (topological []string, successors map[string][]linkID) {
 	ts := comps.GetTransforms()
 
 	// TODO move this out of this part of the pre-processor?
@@ -128,7 +128,7 @@ func (p *preprocessor) preProcessGraph(comps *pipepb.Components) (topological []
 	keptLeaves := maps.Keys(leaves)
 	topological = pipelinex.TopologicalSort(ts, keptLeaves)
 
-	inputs = make(map[string][]linkID)     // TransformID -> []linkID (outputs they consume from the parent)
+	inputs := make(map[string][]linkID)    // TransformID -> []linkID (outputs they consume from the parent)
 	successors = make(map[string][]linkID) // TransformID -> []linkID (successors inputs they generate for their children)
 
 	// Each PCollection only has one parent, determined by transform outputs.
@@ -136,11 +136,11 @@ func (p *preprocessor) preProcessGraph(comps *pipepb.Components) (topological []
 	// so we can derive the transform successors map.
 	pcolParents := make(map[string]linkID)
 
-	// We iterate in the transform's topological order for determinism.
+	// We iterate through the transforms in topological order for determinism.
 	for _, id := range topological {
 		t := ts[id]
 		for o, out := range t.GetOutputs() {
-			pcolParents[out] = linkID{id, o, out}
+			pcolParents[out] = linkID{transformID: id, local: o, pcol: out}
 		}
 	}
 
@@ -153,13 +153,12 @@ func (p *preprocessor) preProcessGraph(comps *pipepb.Components) (topological []
 		for _, local := range ks {
 			in := ins[local]
 			from := pcolParents[in]
-			successors[from.global] = append(successors[from.global], linkID{id, local, in})
+			successors[from.transformID] = append(successors[from.transformID], linkID{transformID: id, local: local, pcol: in})
 			inputs[id] = append(inputs[id], from)
 		}
 	}
 	V(2).Logf("TOPO:\n%+v", topological)
 	V(2).Logf("SUCCESSORS:\n%+v", successors)
-	V(2).Logf("INPUTS:\n%+v", inputs)
 
-	return topological, successors, inputs
+	return topological, successors
 }
