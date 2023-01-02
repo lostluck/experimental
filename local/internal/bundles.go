@@ -32,17 +32,6 @@ func executePipeline(wk *worker, j *job) {
 	pipeline := j.pipeline
 	comps := proto.Clone(pipeline.GetComponents()).(*pipepb.Components)
 
-	// Basically need to figure out the "plan" at this point.
-	// Long term: Take RootTransforms & TOPO sort them. (technically not necessary, but paranoid) (DONE)
-	//  - Recurse through composites from there: TOPO sort subtransforms (DONE)
-	//  - Eventually we have our ordered list of transforms. (DONE)
-	//  - Then we can figure out how to fuse transforms into bundles
-	//    (producer-consumer & sibling fusion & environment awareness)
-	//
-	// But for now we figure out how to connect bundles together
-	// First: default "impulse" bundle. "executed" by the runner.
-	// Second: Derive bundle for a DoFn for the environment.
-
 	// TODO, configure the preprocessor from pipeline options.
 	// Maybe change these returns to a single struct for convenience and further
 	// annotation?
@@ -74,9 +63,6 @@ func executePipeline(wk *worker, j *job) {
 		}
 	}
 
-	topo, succ := prepro.preProcessGraph(comps)
-	ts := comps.GetTransforms()
-
 	// We're going to do something fun with channels for this,
 	// and do a "Generator" pattern to get the bundles we need
 	// to process.
@@ -101,13 +87,17 @@ func executePipeline(wk *worker, j *job) {
 		close(processed)
 	}()
 
-	// prevs is a map from current transform ID to a map from local ids to bundles instead.
-	prevs := map[string]map[string]*bundle{}
+	topo := prepro.preProcessGraph(comps)
+	ts := comps.GetTransforms()
 
 	for _, tid := range topo {
 		// Block until the previous bundle is done.
 		prevBundle := <-processed
-		delete(prevs, tid) // Garbage collect the data.
+		var gen int
+		if prevBundle != nil {
+			gen = prevBundle.Generation
+		}
+		//	delete(prevs, tid) // Garbage collect the data.
 		V(2).Logf("making bundle for %v", tid)
 
 		t := ts[tid]
@@ -124,7 +114,7 @@ func executePipeline(wk *worker, j *job) {
 		var b *bundle
 		switch envID {
 		case "": // Runner Transforms
-			b = exe.ExecuteTransform(tid, t, comps, wk, prevBundle.Generation)
+			b = exe.ExecuteTransform(tid, t, comps, wk, gen)
 			// Runner transforms are processed immeadiately.
 			sendBundle = func() {
 				go func() {
@@ -133,8 +123,7 @@ func executePipeline(wk *worker, j *job) {
 			}
 		case wk.ID:
 			// Great! this is for this environment. // Broken abstraction.
-
-			b = buildProcessBundle(tid, t, comps, wk, prevBundle.Generation)
+			b = buildProcessBundle(tid, t, comps, wk, gen)
 			// FnAPI instructions need to be sent to the SDK.
 			sendBundle = func() {
 				toProcess <- b
@@ -142,14 +131,7 @@ func executePipeline(wk *worker, j *job) {
 		default:
 			logger.Fatalf("unknown environment[%v]", t.GetEnvironmentId())
 		}
-		for _, ch := range succ[tid] {
-			m, ok := prevs[ch.transformID]
-			if !ok {
-				m = make(map[string]*bundle)
-			}
-			m[ch.local] = b
-			prevs[ch.transformID] = m
-		}
+		// for
 		sendBundle()
 	}
 	// We're done with the pipeline!

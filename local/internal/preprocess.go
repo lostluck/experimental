@@ -16,22 +16,10 @@
 package internal
 
 import (
-	"sort"
-
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/runtime/pipelinex"
 	pipepb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/pipeline_v1"
 	"golang.org/x/exp/maps"
 )
-
-// Shamelessly derived from the direct runner's processing.
-// linkID is an identifier for a PCollection from a DoFn's perspective
-// identifying the relative transform, the local identifier for the input
-// and what the global pcollection of this link is.
-type linkID struct {
-	transformID string // Transform
-	local       string // local input/output id
-	pcol        string // What PCol, is This?
-}
 
 // preprocessor retains configuration for preprocessing the
 // graph, such as special handling for lifted combiners or
@@ -49,8 +37,7 @@ type transformPreparer interface {
 }
 
 // preProcessGraph takes the graph and preprocesses for consumption in bundles.
-// The outputs the topological sort of the transform ids, and maps of their successor and input transforms for lookup,
-// as well as the parents of any given PCollection.
+// The outputs the topological sort of the transform ids.
 //
 // These are how transforms are related in graph form, but not the specific bundles themselves, which will come later.
 //
@@ -58,9 +45,8 @@ type transformPreparer interface {
 // the graph stops being a hypergraph, with composite transforms being treated as
 // "leaves" downstream as needed.
 //
-// This is where Combines can become lifted (if it makes sense, or is configured), and
-// similar behaviors.
-func (p *preprocessor) preProcessGraph(comps *pipepb.Components) (topological []string, successors map[string][]linkID) {
+// This is where Combines become lifted (if it makes sense, or is configured), and similar behaviors.
+func (p *preprocessor) preProcessGraph(comps *pipepb.Components) (topological []string) {
 	ts := comps.GetTransforms()
 
 	// TODO move this out of this part of the pre-processor?
@@ -127,38 +113,6 @@ func (p *preprocessor) preProcessGraph(comps *pipepb.Components) (topological []
 
 	keptLeaves := maps.Keys(leaves)
 	topological = pipelinex.TopologicalSort(ts, keptLeaves)
-
-	inputs := make(map[string][]linkID)    // TransformID -> []linkID (outputs they consume from the parent)
-	successors = make(map[string][]linkID) // TransformID -> []linkID (successors inputs they generate for their children)
-
-	// Each PCollection only has one parent, determined by transform outputs.
-	// And since we only know pcollections, we need to map from pcol to parent transforms
-	// so we can derive the transform successors map.
-	pcolParents := make(map[string]linkID)
-
-	// We iterate through the transforms in topological order for determinism.
-	for _, id := range topological {
-		t := ts[id]
-		for o, out := range t.GetOutputs() {
-			pcolParents[out] = linkID{transformID: id, local: o, pcol: out}
-		}
-	}
-
-	for _, id := range topological {
-		t := ts[id]
-		ins := t.GetInputs()
-		ks := maps.Keys(ins)
-		// Sort the inputs by local key id for determinism.
-		sort.Strings(ks)
-		for _, local := range ks {
-			in := ins[local]
-			from := pcolParents[in]
-			successors[from.transformID] = append(successors[from.transformID], linkID{transformID: id, local: local, pcol: in})
-			inputs[id] = append(inputs[id], from)
-		}
-	}
 	V(2).Logf("TOPO:\n%+v", topological)
-	V(2).Logf("SUCCESSORS:\n%+v", successors)
-
-	return topological, successors
+	return topological
 }
