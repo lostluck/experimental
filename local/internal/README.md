@@ -17,6 +17,29 @@
   * []byte avoidance -> To io.Reader/Writer streams
   * Error plumbing rather than log.Fatals or panics.
 
+# Notes to myself: 2023-01-01
+
+I did a little bit of cleanup and unification for the generation thing, and got it
+plumbed all the way through.
+
+It occurs to me that for continuous processing, I need to do the packaging for fusion and
+staging first. Each generation will be in it's own place in the pipeline.
+ that each generation of a process can flow through the runner independantly.
+Basically, the returned bundle needs to know which stage it represents, so the next stage can
+be kicked off correctly from the previous one. So in addition to the generation, each bundle
+needs to have a stageID mapping. For convenience, this will be the index into the topologically
+sorted stage slice.
+
+This approach, while correct due to topological sorting, will end up having problems with 
+respect to multiple transforms with Process Continuations. The generation numbers will
+get mixed up... So that means that each impulse would need to begin it's own subtree,
+with runner side flattens, and GBKs doing the same, as they wait for their input to be ready
+by watermark advancement.
+
+buildProcessBundle is going to need to take something other than a single transform....
+
+Oh boy. It's beginning to get complicated.
+
 # Notes to myself: 2022-12-31
 
 I cleaned up the urns, and deleted some long unused helper code. Using a generic factory function and a
