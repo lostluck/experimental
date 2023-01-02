@@ -106,7 +106,7 @@ func executePipeline(wk *worker, j *job) {
 
 	for _, tid := range topo {
 		// Block until the previous bundle is done.
-		<-processed
+		prevBundle := <-processed
 		delete(prevs, tid) // Garbage collect the data.
 		V(2).Logf("making bundle for %v", tid)
 
@@ -122,10 +122,9 @@ func executePipeline(wk *worker, j *job) {
 
 		var sendBundle func()
 		var b *bundle
-		gen := 0
 		switch envID {
 		case "": // Runner Transforms
-			b = exe.ExecuteTransform(tid, t, comps, wk, gen)
+			b = exe.ExecuteTransform(tid, t, comps, wk, prevBundle.Generation)
 			// Runner transforms are processed immeadiately.
 			sendBundle = func() {
 				go func() {
@@ -135,7 +134,7 @@ func executePipeline(wk *worker, j *job) {
 		case wk.ID:
 			// Great! this is for this environment. // Broken abstraction.
 
-			b = buildProcessBundle(tid, t, comps, wk, gen)
+			b = buildProcessBundle(tid, t, comps, wk, prevBundle.Generation)
 			// FnAPI instructions need to be sent to the SDK.
 			sendBundle = func() {
 				toProcess <- b
