@@ -23,7 +23,7 @@ import (
 
 // The logger for this runner.
 var logger = &runnerLog{
-	disabled: 1,
+	disabled: 3,
 	logger:   log.New(os.Stderr, "[local] ", log.Ldate|log.Ltime|log.Lmicroseconds|log.Lshortfile),
 }
 

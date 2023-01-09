@@ -78,9 +78,45 @@ func executePipeline(wk *worker, j *job) {
 		// Send nil to start, Impulses won't require parental translation.
 		processed <- nil
 		for b := range toProcess {
+			V(1).Logf("processing %v", b.BundID)
 			b.ProcessOn(wk) // Blocks until finished.
+
+			resp := <-b.Resp
+			V(1).Logf("got response for %v", b.BundID)
 			// Metrics?
-			j.metrics.contributeMetrics(<-b.Resp)
+			j.metrics.contributeMetrics(resp)
+			resp.MonitoringData = nil
+
+			// Basic attempt at Process Continuations.
+			// Goal 1: Process applications to completion, then start the next bundle.
+			if len(resp.GetResidualRoots()) > 0 {
+				var data [][]byte
+				for _, rr := range resp.GetResidualRoots() {
+					ba := rr.GetApplication()
+					data = append(data, ba.GetElement())
+
+					if len(ba.GetElement()) == 0 {
+						logger.Fatalf("bundle %v returned empty residual application", b.BundID)
+					}
+				}
+				// Technically we also grab the read index,
+				// then we use that against the original data set by input elements for the remaining residual,
+				// to avoid the extra round trip back from the SDK when we already have the data.
+
+				b.InputData = data
+				if len(b.InputData) == 0 {
+					logger.Fatalf("bundle %v returned empty residual application", b.BundID)
+				}
+
+				b.DataWait.Add(b.OutputCount)
+				go func() {
+					toProcess <- b
+					V(1).Logf("residuals %v sent", b.BundID)
+				}()
+
+				continue
+			}
+
 			// Send back for dependency handling afterwards.
 			processed <- b
 		}
@@ -90,50 +126,52 @@ func executePipeline(wk *worker, j *job) {
 	topo := prepro.preProcessGraph(comps)
 	ts := comps.GetTransforms()
 
-	for _, tid := range topo {
+	for _, stage := range topo {
 		// Block until the previous bundle is done.
 		prevBundle := <-processed
 		var gen int
 		if prevBundle != nil {
 			gen = prevBundle.Generation
 		}
-		//	delete(prevs, tid) // Garbage collect the data.
-		V(2).Logf("making bundle for %v", tid)
 
-		t := ts[tid]
-		urn := t.GetSpec().GetUrn()
-		exe := proc.transformExecuters[urn]
+		for _, tid := range stage.transforms {
+			V(2).Logf("making bundle for %v", tid)
 
-		// Stopgap until everythinng's moved to handlers.
-		envID := t.GetEnvironmentId()
-		if exe != nil {
-			envID = exe.ExecuteWith(t)
-		}
+			t := ts[tid]
+			urn := t.GetSpec().GetUrn()
+			exe := proc.transformExecuters[urn]
 
-		var sendBundle func()
-		var b *bundle
-		switch envID {
-		case "": // Runner Transforms
-			b = exe.ExecuteTransform(tid, t, comps, wk, gen)
-			// Runner transforms are processed immeadiately.
-			sendBundle = func() {
-				go func() {
-					processed <- b
-				}()
+			// Stopgap until everythinng's moved to handlers.
+			envID := t.GetEnvironmentId()
+			if exe != nil {
+				envID = exe.ExecuteWith(t)
 			}
-		case wk.ID:
-			// Great! this is for this environment. // Broken abstraction.
-			b = buildProcessBundle(tid, t, comps, wk, gen)
-			// FnAPI instructions need to be sent to the SDK.
-			sendBundle = func() {
-				toProcess <- b
+
+			var sendBundle func()
+			var b *bundle
+			switch envID {
+			case "": // Runner Transforms
+				b = exe.ExecuteTransform(tid, t, comps, wk, gen)
+				// Runner transforms are processed immeadiately.
+				sendBundle = func() {
+					go func() {
+						processed <- b
+					}()
+				}
+			case wk.ID:
+				// Great! this is for this environment. // Broken abstraction.
+				b = buildProcessBundle(tid, t, comps, wk, gen)
+				// FnAPI instructions need to be sent to the SDK.
+				sendBundle = func() {
+					toProcess <- b
+				}
+			default:
+				logger.Fatalf("unknown environment[%v]", t.GetEnvironmentId())
 			}
-		default:
-			logger.Fatalf("unknown environment[%v]", t.GetEnvironmentId())
+			sendBundle()
 		}
-		// for
-		sendBundle()
 	}
+
 	// We're done with the pipeline!
 	close(toProcess)
 	b := <-processed // Drain the final bundle.
@@ -299,8 +337,8 @@ func buildProcessBundle(tid string, t *pipepb.PTransform, comps *pipepb.Componen
 
 		SinkToPCollection: sink2Col,
 	}
-	V(3).Logf("XXX Going to wait on data for %v: count %v - %v", instID, len(t.GetOutputs()), t.GetOutputs())
-	b.DataWait.Add(len(t.GetOutputs()))
+	b.OutputCount = len(t.Outputs)
+	b.DataWait.Add(b.OutputCount)
 	return b
 }
 
@@ -372,8 +410,11 @@ type bundle struct {
 	// MultiMapSideInputData is a map from transformID, to inputID, to window, to data key, to data values.
 	MultiMapSideInputData map[string]map[string]map[string]map[string][][]byte
 
-	DataWait sync.WaitGroup
-	Resp     chan *fnpb.ProcessBundleResponse
+	// OutputCount is the number of data outputs this bundle has.
+	// We need to see this many closed data channels before the bundle is complete.
+	OutputCount int
+	DataWait    sync.WaitGroup
+	Resp        chan *fnpb.ProcessBundleResponse
 
 	SinkToPCollection map[string]string
 

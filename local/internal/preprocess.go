@@ -46,7 +46,7 @@ type transformPreparer interface {
 // "leaves" downstream as needed.
 //
 // This is where Combines become lifted (if it makes sense, or is configured), and similar behaviors.
-func (p *preprocessor) preProcessGraph(comps *pipepb.Components) (topological []string) {
+func (p *preprocessor) preProcessGraph(comps *pipepb.Components) []stage {
 	ts := comps.GetTransforms()
 
 	// TODO move this out of this part of the pre-processor?
@@ -112,7 +112,23 @@ func (p *preprocessor) preProcessGraph(comps *pipepb.Components) (topological []
 	// Extract URNs for the given transform.
 
 	keptLeaves := maps.Keys(leaves)
-	topological = pipelinex.TopologicalSort(ts, keptLeaves)
+	topological := pipelinex.TopologicalSort(ts, keptLeaves)
 	V(2).Logf("TOPO:\n%+v", topological)
-	return topological
+
+	var stages []stage
+	for _, tid := range topological {
+		stages = append(stages, stage{
+			transforms: []string{tid},
+		})
+	}
+	return stages
+}
+
+// stage represents a fused subgraph.
+//
+// TODO: do we guarantee that they are all
+// the same environment at this point, or
+// should that be handled later?
+type stage struct {
+	transforms []string
 }
