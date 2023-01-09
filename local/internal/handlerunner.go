@@ -124,7 +124,7 @@ func (h *runner) ExecuteTransform(tid string, t *pipepb.PTransform, comps *pipep
 	// To avoid conflicts with these single transform
 	// bundles, we suffix the transform IDs.
 	var localID string
-	for key, _ := range t.GetOutputs() {
+	for key := range t.GetOutputs() {
 		localID = key
 	}
 
