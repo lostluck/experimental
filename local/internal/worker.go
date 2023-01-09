@@ -212,7 +212,7 @@ func (wk *worker) Data(data fnpb.BeamFnData_DataServer) error {
 				// There might not be data, eg. for side inputs, so we need to reconcile this elsewhere for
 				// downstream side inputs.
 				if len(d.GetData()) > 0 {
-					wk.data.WriteData(colID, b.Generation, d.GetData())
+					b.OutputData.WriteData(colID, d.GetData())
 				}
 				if d.GetIsLast() {
 					V(3).Logf("XXX done waiting on data from %v, with tID: %v", b.InstID, tID)

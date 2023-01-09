@@ -19,12 +19,51 @@ package internal
 // from the SDKs. If there were a place to add reliability & restart persistence
 // it would be here.
 
+// The dataService needs to support outputs from different bundles, which means
+// that we can't put the ouput data from a given bundle into the main service
+// until that bundle has terminated successfully.
+//
+// This implies we can have a "tentativeData" structure that is used by the
+// bundle, and the worker to store the data. Once the wait is complete,
+// all the output data can be committed at once.
+//
+// This mechanism will also allow for bundle retries to be added later, so
+// tentative outputs can be disgarded.
+
+type tentativeData struct {
+	raw map[string][][]byte
+}
+
+// WriteData adds data to a given global collectionID.
+func (d *tentativeData) WriteData(colID string, data []byte) {
+	if d.raw == nil {
+		d.raw = map[string][][]byte{}
+	}
+	d.raw[colID] = append(d.raw[colID], data)
+}
+
 type dataService struct {
 	// TODO actually quick process the data to windows here as well.
 	raw map[string]map[int][][]byte
 }
 
+// Commit tentative data to the datastore.
+func (d *dataService) Commit(gen int, tent tentativeData) {
+	if d.raw == nil {
+		d.raw = map[string]map[int][][]byte{}
+	}
+	for colID, data := range tent.raw {
+		c, ok := d.raw[colID]
+		if !ok {
+			c = map[int][][]byte{}
+			d.raw[colID] = c
+		}
+		c[gen] = append(c[gen], data...)
+	}
+}
+
 // WriteData adds data to a given global collectionID.
+// Currently only used directly by runner based transforms.
 func (d *dataService) WriteData(colID string, gen int, data []byte) {
 	if d.raw == nil {
 		d.raw = map[string]map[int][][]byte{}

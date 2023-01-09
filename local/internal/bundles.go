@@ -413,8 +413,12 @@ type bundle struct {
 	// OutputCount is the number of data outputs this bundle has.
 	// We need to see this many closed data channels before the bundle is complete.
 	OutputCount int
-	DataWait    sync.WaitGroup
-	Resp        chan *fnpb.ProcessBundleResponse
+	// DataWait is how we determine if a bundle is finished, by waiting for each of
+	// a Bundle's DataSinks to produce their last output.
+	// After this point we can "commit" the bundle's output for downstream use.
+	DataWait   sync.WaitGroup
+	OutputData tentativeData
+	Resp       chan *fnpb.ProcessBundleResponse
 
 	SinkToPCollection map[string]string
 
@@ -461,6 +465,9 @@ func (b *bundle) ProcessOn(wk *worker) {
 
 	V(3).Logf("XXX waiting on data from %v", b.InstID)
 	b.DataWait.Wait() // Wait until data is ready.
+
+	// Tentative Data is ready, commit it to the main datastore.
+	wk.data.Commit(b.Generation, b.OutputData)
 }
 
 // collateByWindows takes the data and collates them into string keyed window maps.
