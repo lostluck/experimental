@@ -17,6 +17,46 @@
   * []byte avoidance -> To io.Reader/Writer streams
   * Error plumbing rather than log.Fatals or panics.
 
+# Notes to myself: 2023-01-08
+
+After a bit of a struggle, I was able to get a global window process continuation
+pipeline working on the runner!  Turns out that if you forget to actually keep the
+data weights straight, and have the correct things on the inside of the residual loop
+it all fails to terminate.
+
+Right now the "window closing" is implied by there being no more data to process.
+This isn't correct outside the global window.
+
+Which means what I need to do next is parse out data elements more than I have been.
+Currently it happens around aggregation points, but it needs to happen at each bundle
+boundary, in the data layer. It's hard to keep all the separations in my head.
+
+I've got the concept of a stage, which represents a bundle descriptor.
+A stage can have one or more bundles, which represent data to be processed.
+The data can be one or more elements. The elements can be part of one or more
+windows, and have a timestamp.
+
+What I don't have yet is separating data into multiple bundles to be processed simultanously.
+Even without the watermark handling, that also allows for the begining of dynamic splittings.
+
+But for any of those, we need to parse out the windowed value header.
+The header has the windows, for use in aggregations, the pane, which isn't useful on the 
+receiving end in the runner but needs to be maintained between aggregations, and the timestamp
+which is part of the element metadata.
+
+Each windowed value needs to go through the watermark estimator, which provides a tentative
+estimate until the bundle is complete, which would need to be overridden based on the
+progress estimates.
+
+Then those receiving estimators would need to signal the correct downstream aggregations
+to process the closed windows. Something Something Triggers.
+
+------
+
+If I feel really saucy, I could try to hack in a Web UI visual display of stages & progress, which
+requires at least putting the various levels of progress into a single store.
+But that's a big refactor for later.
+
 # Notes to myself: 2023-01-01
 
 I did a little bit of cleanup and unification for the generation thing, and got it
