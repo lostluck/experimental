@@ -169,7 +169,7 @@ func executePipeline(wk *worker, j *job) {
 			// Great! this is for this environment. // Broken abstraction.
 			b, stage.desc = buildProcessBundle(tid, t, comps, wk, gen)
 			// TODO Fix descriptor disemnination.
-			wk.stages[b.PBDID] = stage.desc
+			wk.stages[b.PBDID] = stage
 			// FnAPI instructions need to be sent to the SDK.
 			sendBundle = func() {
 				toProcess <- b
