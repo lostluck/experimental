@@ -17,6 +17,7 @@ package internal
 
 import (
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/runtime/pipelinex"
+	fnpb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/fnexecution_v1"
 	pipepb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/pipeline_v1"
 	"golang.org/x/exp/maps"
 )
@@ -130,5 +131,8 @@ func (p *preprocessor) preProcessGraph(comps *pipepb.Components) []stage {
 // the same environment at this point, or
 // should that be handled later?
 type stage struct {
+	ID         string
 	transforms []string
+
+	desc *fnpb.ProcessBundleDescriptor
 }

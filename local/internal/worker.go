@@ -17,6 +17,7 @@ package internal
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"net"
 	"sync"
@@ -56,7 +57,8 @@ type worker struct {
 	DataReqs chan *fnpb.Elements
 
 	mu      sync.Mutex
-	bundles map[string]*bundle // Bundles keyed by InstructionID
+	bundles map[string]*bundle                       // Bundles keyed by InstructionID
+	stages  map[string]*fnpb.ProcessBundleDescriptor // Descriptors keyed by PBDID
 
 	data *dataService
 }
@@ -77,6 +79,7 @@ func newWorker(id string) *worker {
 		DataReqs: make(chan *fnpb.Elements, 10),
 
 		bundles: make(map[string]*bundle),
+		stages:  make(map[string]*fnpb.ProcessBundleDescriptor),
 
 		data: &dataService{},
 	}
@@ -138,6 +141,14 @@ func (wk *worker) Logging(stream fnpb.BeamFnLogging_LoggingServer) error {
 			}
 		}
 	}
+}
+
+func (wk *worker) GetProcessBundleDescriptor(ctx context.Context, req *fnpb.GetProcessBundleDescriptorRequest) (*fnpb.ProcessBundleDescriptor, error) {
+	desc, ok := wk.stages[req.GetProcessBundleDescriptorId()]
+	if !ok {
+		return nil, fmt.Errorf("descriptor %v not found", req.GetProcessBundleDescriptorId())
+	}
+	return desc, nil
 }
 
 func (wk *worker) Control(ctrl fnpb.BeamFnControl_ControlServer) error {

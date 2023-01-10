@@ -17,6 +17,49 @@
   * []byte avoidance -> To io.Reader/Writer streams
   * Error plumbing rather than log.Fatals or panics.
 
+# Notes to myself: 2023-01-10
+
+ A stage is ready to compute if it's data dependencies are available.
+ A data dependency is available, if it's dependencies are no longer computing
+ (all outstanding bundles) are complete, and the watermark has advanced to close
+ a window (if appropriate for the aggregation.)
+
+ So for direct dependencies, it's a matter of "all bundles for that generation are complete".
+ For aggregations, its "lower watermark is past close of a window"
+Special case for Global Windows in "there are no subsequent generations" ->
+That is we automatically advance a global window watermark to the end and close it, if
+all the data is complete, and there are no subsequent generations.
+
+A new Generation is only triggered by returned ProcessContinuation residuals.
+ Splits would always have the same generation, since they still need to finish.
+
+So lets walk this through.
+
+Runner side transforms reset a generation.
+Input data is divided into one or more bundles.
+(1st pass, split each element into it's own bundle).
+Start the next stage only when all bundles for that generation are complete.
+
+Process Continuation Residuals cause a fork, with output data going to their own
+downstream processing in the same generation, and returned residuals spawning the
+G+1 generation.
+
+Aggregations cause an unfork. They accumulate input data until the dependency blocker
+described above is resolved, by watermark advancement.
+
+So to make this all work, we need to pivot.
+
+Have each stage be a Goroutine fed by a channel, feeding out to channels per the outputs.
+To start, we can probably have each stage simply block until each generation is ready.
+We can add synthetic stages which would manage emitting closed windows downstream.
+
+This also simplifies the logic getting bundle descriptors, since they're all
+precomputed for the stage, instead of the current approach which gates each bundle
+linearly.
+
+Also, it looks like the old pre register bundle descriptor approach is deprecated
+in the FnAPI, so time to make those registrations work properly.
+
 # Notes to myself: 2023-01-08
 
 After a bit of a struggle, I was able to get a global window process continuation

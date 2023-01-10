@@ -78,14 +78,14 @@ func executePipeline(wk *worker, j *job) {
 		// Send nil to start, Impulses won't require parental translation.
 		processed <- nil
 		for b := range toProcess {
-			V(1).Logf("processing %v", b.BundID)
+			V(1).Logf("processing %v", b.PBDID)
 			b.ProcessOn(wk) // Blocks until finished.
 
 			resp := <-b.Resp
-			V(1).Logf("got response for %v", b.BundID)
-			// Metrics?
+			V(1).Logf("got response for %v", b.PBDID)
+			// Tentative Data is ready, commit it to the main datastore.
+			wk.data.Commit(b.Generation, b.OutputData)
 			j.metrics.contributeMetrics(resp)
-			resp.MonitoringData = nil
 
 			// Basic attempt at Process Continuations.
 			// Goal 1: Process applications to completion, then start the next bundle.
@@ -96,7 +96,7 @@ func executePipeline(wk *worker, j *job) {
 					data = append(data, ba.GetElement())
 
 					if len(ba.GetElement()) == 0 {
-						logger.Fatalf("bundle %v returned empty residual application", b.BundID)
+						logger.Fatalf("bundle %v returned empty residual application", b.PBDID)
 					}
 				}
 				// Technically we also grab the read index,
@@ -105,13 +105,13 @@ func executePipeline(wk *worker, j *job) {
 
 				b.InputData = data
 				if len(b.InputData) == 0 {
-					logger.Fatalf("bundle %v returned empty residual application", b.BundID)
+					logger.Fatalf("bundle %v returned empty residual application", b.PBDID)
 				}
 
 				b.DataWait.Add(b.OutputCount)
 				go func() {
 					toProcess <- b
-					V(1).Logf("residuals %v sent", b.BundID)
+					V(1).Logf("residuals %v sent", b.PBDID)
 				}()
 
 				continue
@@ -126,7 +126,10 @@ func executePipeline(wk *worker, j *job) {
 	topo := prepro.preProcessGraph(comps)
 	ts := comps.GetTransforms()
 
-	for _, stage := range topo {
+	// This is where the Batch -> Streaming tension exists.
+	// We don't *pre* do this, and we need a different mechanism
+	// to sort out processing order.
+	for i, stage := range topo {
 		// Block until the previous bundle is done.
 		prevBundle := <-processed
 		var gen int
@@ -134,42 +137,47 @@ func executePipeline(wk *worker, j *job) {
 			gen = prevBundle.Generation
 		}
 
-		for _, tid := range stage.transforms {
-			V(2).Logf("making bundle for %v", tid)
-
-			t := ts[tid]
-			urn := t.GetSpec().GetUrn()
-			exe := proc.transformExecuters[urn]
-
-			// Stopgap until everythinng's moved to handlers.
-			envID := t.GetEnvironmentId()
-			if exe != nil {
-				envID = exe.ExecuteWith(t)
-			}
-
-			var sendBundle func()
-			var b *bundle
-			switch envID {
-			case "": // Runner Transforms
-				b = exe.ExecuteTransform(tid, t, comps, wk, gen)
-				// Runner transforms are processed immeadiately.
-				sendBundle = func() {
-					go func() {
-						processed <- b
-					}()
-				}
-			case wk.ID:
-				// Great! this is for this environment. // Broken abstraction.
-				b = buildProcessBundle(tid, t, comps, wk, gen)
-				// FnAPI instructions need to be sent to the SDK.
-				sendBundle = func() {
-					toProcess <- b
-				}
-			default:
-				logger.Fatalf("unknown environment[%v]", t.GetEnvironmentId())
-			}
-			sendBundle()
+		if len(stage.transforms) != 1 {
+			V(0).Fatalf("unsupported stage[%d]: contains multiple transforms: %v", i, stage.transforms)
 		}
+		tid := stage.transforms[0]
+
+		V(2).Logf("making bundle for %v", tid)
+
+		t := ts[tid]
+		urn := t.GetSpec().GetUrn()
+		exe := proc.transformExecuters[urn]
+
+		// Stopgap until everythinng's moved to handlers.
+		envID := t.GetEnvironmentId()
+		if exe != nil {
+			envID = exe.ExecuteWith(t)
+		}
+
+		var sendBundle func()
+		var b *bundle
+		switch envID {
+		case "": // Runner Transforms
+			b = exe.ExecuteTransform(tid, t, comps, wk, gen)
+			// Runner transforms are processed immeadiately.
+			sendBundle = func() {
+				go func() {
+					processed <- b
+				}()
+			}
+		case wk.ID:
+			// Great! this is for this environment. // Broken abstraction.
+			b, stage.desc = buildProcessBundle(tid, t, comps, wk, gen)
+			// TODO Fix descriptor disemnination.
+			wk.stages[b.PBDID] = stage.desc
+			// FnAPI instructions need to be sent to the SDK.
+			sendBundle = func() {
+				toProcess <- b
+			}
+		default:
+			logger.Fatalf("unknown environment[%v]", t.GetEnvironmentId())
+		}
+		sendBundle()
 	}
 
 	// We're done with the pipeline!
@@ -178,7 +186,7 @@ func executePipeline(wk *worker, j *job) {
 	V(1).Logf("pipeline done! Final Bundle: %v", b.InstID)
 }
 
-func buildProcessBundle(tid string, t *pipepb.PTransform, comps *pipepb.Components, wk *worker, gen int) *bundle {
+func buildProcessBundle(tid string, t *pipepb.PTransform, comps *pipepb.Components, wk *worker, gen int) (*bundle, *fnpb.ProcessBundleDescriptor) {
 	instID, bundID := wk.nextInst(), wk.nextBund()
 
 	parallelInputID := tid + "_source"
@@ -320,7 +328,7 @@ func buildProcessBundle(tid string, t *pipepb.PTransform, comps *pipepb.Componen
 	}
 
 	b := &bundle{
-		BundID:     bundID,
+		PBDID:      bundID,
 		Generation: gen,
 
 		InputTransformID: parallelInputID,
@@ -339,7 +347,7 @@ func buildProcessBundle(tid string, t *pipepb.PTransform, comps *pipepb.Componen
 	}
 	b.OutputCount = len(t.Outputs)
 	b.DataWait.Add(b.OutputCount)
-	return b
+	return b, desc
 }
 
 func sourceTransform(parentID string, sourcePortBytes []byte, outPID string) *pipepb.PTransform {
@@ -397,7 +405,7 @@ type processor struct {
 // bundle represents an extant ProcessBundle instruction sent to an SDK worker.
 type bundle struct {
 	InstID     string // ID for the instruction processing this bundle.
-	BundID     string // ID for the ProcessBundleDescriptor
+	PBDID      string // ID for the ProcessBundleDescriptor
 	Generation int    // Which generation this is related to.
 
 	// InputTransformID is data being sent to the SDK.
@@ -435,14 +443,14 @@ func (b *bundle) ProcessOn(wk *worker) {
 	wk.bundles[b.InstID] = b
 	wk.mu.Unlock()
 
-	V(2).Logf("processing %v %v %v on %v", b.InstID, b.BundID, b.Generation, wk)
+	V(2).Logf("processing %v %v %v on %v", b.InstID, b.PBDID, b.Generation, wk)
 
 	// Tell the SDK to start processing the bundle.
 	wk.InstReqs <- &fnpb.InstructionRequest{
 		InstructionId: b.InstID,
 		Request: &fnpb.InstructionRequest_ProcessBundle{
 			ProcessBundle: &fnpb.ProcessBundleRequest{
-				ProcessBundleDescriptorId: b.BundID,
+				ProcessBundleDescriptorId: b.PBDID,
 			},
 		},
 	}
@@ -465,9 +473,6 @@ func (b *bundle) ProcessOn(wk *worker) {
 
 	V(3).Logf("XXX waiting on data from %v", b.InstID)
 	b.DataWait.Wait() // Wait until data is ready.
-
-	// Tentative Data is ready, commit it to the main datastore.
-	wk.data.Commit(b.Generation, b.OutputData)
 }
 
 // collateByWindows takes the data and collates them into string keyed window maps.
