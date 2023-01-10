@@ -36,15 +36,6 @@ import (
 // separate_test.go is retains structures and tests to ensure the runner can
 // perform separation, and terminate checkpoints.
 
-func init() {
-	register.Function1x1(allSentinel)
-}
-
-// allSentinel indicates that all elements are sentinels.
-func allSentinel(v beam.T) bool {
-	return true
-}
-
 // TestSeparation validates that the runner is able to split
 // elements in time and space. Beam has a few mechanisms to
 // do this.
@@ -91,6 +82,7 @@ func TestSeparation(t *testing.T) {
 		{
 			name: "ProcessContinuations_globalWindow",
 			pipeline: func(s beam.Scope) {
+				count := 10
 				imp := beam.Impulse(s)
 				out := beam.ParDo(s, &sepHarnessSdfStream{
 					Base: sepHarnessBase{
@@ -99,9 +91,20 @@ func TestSeparation(t *testing.T) {
 						IsSentinelEncoded: beam.EncodedFunc{Fn: reflectx.MakeFunc(allSentinel)},
 						LocalService:      ws.serviceAddress,
 					},
-					RestSize: 10,
+					RestSize: int64(count),
 				}, imp)
-				passert.Count(s, out, "num ints", 10)
+				passert.Count(s, out, "global num ints", count)
+			},
+		}, {
+			name: "ProcessContinuations_stepped_globalWindow",
+			pipeline: func(s beam.Scope) {
+				count := 10
+				imp := beam.Impulse(s)
+				out := beam.ParDo(s, &singleStepSdfStream{
+					Sleep:    time.Second,
+					RestSize: int64(count),
+				}, imp)
+				passert.Count(s, out, "global stepped num ints", count)
 			},
 		},
 	}
@@ -122,6 +125,15 @@ func TestSeparation(t *testing.T) {
 			}
 		})
 	}
+}
+
+func init() {
+	register.Function1x1(allSentinel)
+}
+
+// allSentinel indicates that all elements are sentinels.
+func allSentinel(v beam.T) bool {
+	return true
 }
 
 // Watcher is an instance of the counters.
@@ -376,6 +388,9 @@ func (fn *sepHarnessSdf) ProcessElement(rt *sdf.LockRTracker, v beam.T, emit fun
 
 func init() {
 	register.DoFn3x1[*sdf.LockRTracker, beam.T, func(beam.T), sdf.ProcessContinuation]((*sepHarnessSdfStream)(nil))
+	register.Emitter1[beam.T]()
+	register.DoFn3x1[*sdf.LockRTracker, beam.T, func(int64), sdf.ProcessContinuation]((*singleStepSdfStream)(nil))
+	register.Emitter1[int64]()
 }
 
 type sepHarnessSdfStream struct {
@@ -419,4 +434,45 @@ func (fn *sepHarnessSdfStream) ProcessElement(rt *sdf.LockRTracker, v beam.T, em
 		i++
 	}
 	return sdf.StopProcessing()
+}
+
+// singleStepSdfStream only emits a single position at a time then sleeps.
+// Stops when a restriction of size 0 is provided.
+type singleStepSdfStream struct {
+	RestSize int64
+	Sleep    time.Duration
+}
+
+func (fn *singleStepSdfStream) Setup() error {
+	return nil
+}
+
+func (fn *singleStepSdfStream) CreateInitialRestriction(v beam.T) offsetrange.Restriction {
+	return offsetrange.Restriction{Start: 0, End: fn.RestSize}
+}
+
+func (fn *singleStepSdfStream) SplitRestriction(v beam.T, r offsetrange.Restriction) []offsetrange.Restriction {
+	return r.EvenSplits(2)
+}
+
+func (fn *singleStepSdfStream) RestrictionSize(v beam.T, r offsetrange.Restriction) float64 {
+	return r.Size()
+}
+
+func (fn *singleStepSdfStream) CreateTracker(r offsetrange.Restriction) *sdf.LockRTracker {
+	return sdf.NewLockRTracker(offsetrange.NewTracker(r))
+}
+
+func (fn *singleStepSdfStream) ProcessElement(rt *sdf.LockRTracker, v beam.T, emit func(int64)) sdf.ProcessContinuation {
+	r := rt.GetRestriction().(offsetrange.Restriction)
+	i := r.Start
+	if r.Size() < 1 {
+		V(2).Logf("size 0 restriction, stopping %v: %v", r.Size(), r)
+		return sdf.StopProcessing()
+	}
+	V(2).Logf("emitting element to restriction size %v: %v ; claiming position %v", r.Size(), r, i)
+	if rt.TryClaim(i) {
+		emit(i)
+	}
+	return sdf.ResumeProcessingIn(fn.Sleep)
 }

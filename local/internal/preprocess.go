@@ -47,7 +47,7 @@ type transformPreparer interface {
 // "leaves" downstream as needed.
 //
 // This is where Combines become lifted (if it makes sense, or is configured), and similar behaviors.
-func (p *preprocessor) preProcessGraph(comps *pipepb.Components) []stage {
+func (p *preprocessor) preProcessGraph(comps *pipepb.Components) []*stage {
 	ts := comps.GetTransforms()
 
 	// TODO move this out of this part of the pre-processor?
@@ -116,9 +116,9 @@ func (p *preprocessor) preProcessGraph(comps *pipepb.Components) []stage {
 	topological := pipelinex.TopologicalSort(ts, keptLeaves)
 	V(2).Logf("TOPO:\n%+v", topological)
 
-	var stages []stage
+	var stages []*stage
 	for _, tid := range topological {
-		stages = append(stages, stage{
+		stages = append(stages, &stage{
 			transforms: []string{tid},
 		})
 	}

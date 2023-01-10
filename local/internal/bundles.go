@@ -85,6 +85,7 @@ func executePipeline(wk *worker, j *job) {
 			V(1).Logf("got response for %v", b.PBDID)
 			// Tentative Data is ready, commit it to the main datastore.
 			wk.data.Commit(b.Generation, b.OutputData)
+			b.OutputData = tentativeData{} // Clear the data.
 			j.metrics.contributeMetrics(resp)
 
 			// Basic attempt at Process Continuations.
