@@ -18,3 +18,4 @@ gbrt/gbrt
 go.work
 go.work.sum
 workspace.code-workspace
+.vscode/
