@@ -188,7 +188,7 @@ func executePipeline(wk *worker, j *job) {
 }
 
 func buildProcessBundle(tid string, t *pipepb.PTransform, comps *pipepb.Components, wk *worker, gen int) (*bundle, *fnpb.ProcessBundleDescriptor) {
-	instID, bundID := wk.nextInst(), wk.nextBund()
+	bundID := wk.nextBund()
 
 	parallelInputID := tid + "_source"
 
@@ -312,19 +312,6 @@ func buildProcessBundle(tid string, t *pipepb.PTransform, comps *pipepb.Componen
 		Coders:              coders,
 		StateApiServiceDescriptor: &pipepb.ApiServiceDescriptor{
 			Url: wk.Endpoint(),
-		},
-	}
-
-	V(2).Logf("registering %v with %v:", desc.GetId(), instID)
-
-	wk.InstReqs <- &fnpb.InstructionRequest{
-		InstructionId: instID,
-		Request: &fnpb.InstructionRequest_Register{
-			Register: &fnpb.RegisterRequest{
-				ProcessBundleDescriptor: []*fnpb.ProcessBundleDescriptor{
-					desc,
-				},
-			},
 		},
 	}
 
