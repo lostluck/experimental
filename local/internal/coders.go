@@ -45,7 +45,7 @@ func isLeafCoder(c *pipepb.Coder) bool {
 	return ok
 }
 
-func makeWindowedValueCoder(t *pipepb.PTransform, pID string, comps *pipepb.Components, coders map[string]*pipepb.Coder) (string, string) {
+func makeWindowedValueCoder(t *pipepb.PTransform, pID string, comps *pipepb.Components, coders map[string]*pipepb.Coder) string {
 	col := comps.GetPcollections()[pID]
 	cID := lpUnknownCoders(col.GetCoderId(), coders, comps.GetCoders())
 	wcID := comps.GetWindowingStrategies()[col.GetWindowingStrategyId()].GetWindowCoderId()
@@ -65,7 +65,7 @@ func makeWindowedValueCoder(t *pipepb.PTransform, pID string, comps *pipepb.Comp
 	}
 	// Populate the coders to send with the new windowed value coder.
 	coders[wvcID] = wInC
-	return pID, wvcID
+	return wvcID
 }
 
 // makeWindowCoders makes the coder pair but behavior is ultimately determined by the strategy's windowFn.

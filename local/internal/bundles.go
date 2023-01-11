@@ -17,6 +17,7 @@ package internal
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"strings"
 	"sync"
@@ -197,98 +198,28 @@ func buildProcessBundle(tid string, t *pipepb.PTransform, comps *pipepb.Componen
 		tid: t, // The Transform to Execute!
 	}
 
-	var sis map[string]*pipepb.SideInput
-
-	if t.GetSpec().GetUrn() == urnTransformParDo {
-		pardo := &pipepb.ParDoPayload{}
-		if err := (proto.UnmarshalOptions{}).Unmarshal(t.GetSpec().GetPayload(), pardo); err != nil {
-			V(1).Fatalf("unable to decode ParDoPayload for transform[%v]", tid)
-		}
-
-		sis = pardo.GetSideInputs()
+	sis, err := getSideInputs(t)
+	if err != nil {
+		logger.Fatalf("for transform %v: %v", tid, err)
 	}
-	iterSides := make(map[string]map[string][][]byte)
-	multiMapSides := make(map[string]map[string]map[string][][]byte)
-
-	// Get WindowedValue Coders for the transform's input and output PCollections.
 	var mainInputPCol string
 	for local, global := range t.GetInputs() {
-		inPID, wInCid := makeWindowedValueCoder(t, global, comps, coders)
-		si, ok := sis[local]
-
+		// This id is directly used for the source, but this also copies
+		// coders used by side inputs to the coders map for the bundle, so
+		// needs to be run for every ID.
+		wInCid := makeWindowedValueCoder(t, global, comps, coders)
+		_, ok := sis[local]
 		if !ok {
 			// this is the main input
-			transforms[parallelInputID] = sourceTransform(parallelInputID, portFor(wInCid, wk), inPID)
 			mainInputPCol = global
-			continue
+			transforms[parallelInputID] = sourceTransform(parallelInputID, portFor(wInCid, wk), mainInputPCol)
+			continue // We need to process all inputs, so we must continue.
 		}
+	}
 
-		// this is a side input
-		switch si.GetAccessPattern().GetUrn() {
-		case urnSideInputIterable:
-			V(2).Logf("urnSideInputIterable key? src %v, local %v, global %v", local, global)
-			col := comps.GetPcollections()[global]
-			cID := lpUnknownCoders(col.GetCoderId(), coders, comps.GetCoders())
-			ec := coders[cID]
-			ed := pullDecoder(ec, coders)
-
-			ws := comps.GetWindowingStrategies()[col.GetWindowingStrategyId()]
-			wcID := lpUnknownCoders(ws.GetWindowCoderId(), coders, comps.GetCoders())
-			wDec, wEnc := makeWindowCoders(coders[wcID])
-			// May be of zero length, but that's OK. Side inputs can be empty.
-
-			data := wk.data.GetData(global, gen)
-			iterSides[local] = collateByWindows(data, wDec, wEnc,
-				func(r io.Reader) [][]byte {
-					return [][]byte{ed(r)}
-				}, func(a, b [][]byte) [][]byte {
-					return append(a, b...)
-				})
-
-		case urnSideInputMultiMap:
-			V(2).Logf("urnSideInputMultiMap key? %v, %v", local, global)
-			col := comps.GetPcollections()[global]
-
-			kvc := comps.GetCoders()[col.GetCoderId()]
-			if kvc.GetSpec().GetUrn() != urnCoderKV {
-				logger.Fatalf("multimap side inputs needs KV coder, got %v", kvc.GetSpec().GetUrn())
-			}
-			kcID := lpUnknownCoders(kvc.GetComponentCoderIds()[0], coders, comps.GetCoders())
-			vcID := lpUnknownCoders(kvc.GetComponentCoderIds()[1], coders, comps.GetCoders())
-
-			reconcileCoders(coders, comps.GetCoders())
-
-			kc := coders[kcID]
-			vc := coders[vcID]
-
-			kd := pullDecoder(kc, coders)
-			vd := pullDecoder(vc, coders)
-
-			ws := comps.GetWindowingStrategies()[col.GetWindowingStrategyId()]
-			wcID := lpUnknownCoders(ws.GetWindowCoderId(), coders, comps.GetCoders())
-			wDec, wEnc := makeWindowCoders(coders[wcID])
-
-			// May be of zero length, but that's OK. Side inputs can be empty.
-			data := wk.data.GetData(global, gen)
-
-			multiMapSides[local] = collateByWindows(data, wDec, wEnc,
-				func(r io.Reader) map[string][][]byte {
-					kb := kd(r)
-					return map[string][][]byte{
-						string(kb): {vd(r)},
-					}
-				}, func(a, b map[string][][]byte) map[string][][]byte {
-					if len(a) == 0 {
-						return b
-					}
-					for k, vs := range b {
-						a[k] = append(a[k], vs...)
-					}
-					return a
-				})
-		default:
-			logger.Fatalf("local input %v (global %v) for transform %v uses accesspattern %v", local, global, tid, si.GetAccessPattern().GetUrn())
-		}
+	prepareSides, err := handleSideInputs(t, comps, coders, wk, gen)
+	if err != nil {
+		logger.Fatalf("for transform %v: %v", tid, err)
 	}
 
 	// TODO: We need a new logical PCollection to represent the source
@@ -296,10 +227,10 @@ func buildProcessBundle(tid string, t *pipepb.PTransform, comps *pipepb.Componen
 	// But this also means replacing the ID for the input in the bundle.
 	sink2Col := map[string]string{}
 	for local, global := range t.GetOutputs() {
-		outPID, wOutCid := makeWindowedValueCoder(t, global, comps, coders)
+		wOutCid := makeWindowedValueCoder(t, global, comps, coders)
 		sinkID := tid + "_" + local
 		sink2Col[sinkID] = global
-		transforms[sinkID] = sinkTransform(sinkID, portFor(wOutCid, wk), outPID)
+		transforms[sinkID] = sinkTransform(sinkID, portFor(wOutCid, wk), global)
 	}
 
 	reconcileCoders(coders, comps.GetCoders())
@@ -323,19 +254,133 @@ func buildProcessBundle(tid string, t *pipepb.PTransform, comps *pipepb.Componen
 
 		// TODO Here's where we can split data for processing in multiple bundles.
 		InputData: wk.data.GetData(mainInputPCol, gen),
-		IterableSideInputData: map[string]map[string]map[string][][]byte{
-			tid: iterSides,
-		},
-		MultiMapSideInputData: map[string]map[string]map[string]map[string][][]byte{
-			tid: multiMapSides,
-		},
-		Resp: make(chan *fnpb.ProcessBundleResponse, 1),
+		Resp:      make(chan *fnpb.ProcessBundleResponse, 1),
 
 		SinkToPCollection: sink2Col,
 	}
+
+	// TODO move this data to the stage for read only purposes on new bundles.
 	b.OutputCount = len(t.Outputs)
+	prepareSides(b, tid, gen)
 	b.DataWait.Add(b.OutputCount)
 	return b, desc
+}
+
+func getSideInputs(t *pipepb.PTransform) (map[string]*pipepb.SideInput, error) {
+	if t.GetSpec().GetUrn() != urnTransformParDo {
+		return nil, nil
+	}
+	pardo := &pipepb.ParDoPayload{}
+	if err := (proto.UnmarshalOptions{}).Unmarshal(t.GetSpec().GetPayload(), pardo); err != nil {
+		return nil, fmt.Errorf("unable to decode ParDoPayload")
+	}
+	return pardo.GetSideInputs(), nil
+}
+
+func handleSideInputs(t *pipepb.PTransform, comps *pipepb.Components, coders map[string]*pipepb.Coder, wk *worker, gen int) (func(b *bundle, tid string, gen int), error) {
+	sis, err := getSideInputs(t)
+	if err != nil {
+		return nil, err
+	}
+	var prepSides []func(b *bundle, tid string, gen int)
+
+	// Get WindowedValue Coders for the transform's input and output PCollections.
+	for local, global := range t.GetInputs() {
+		si, ok := sis[local]
+		if !ok {
+			continue // This is the main input.
+		}
+
+		// this is a side input
+		switch si.GetAccessPattern().GetUrn() {
+		case urnSideInputIterable:
+			V(2).Logf("urnSideInputIterable key? src %v, local %v, global %v", local, global)
+			col := comps.GetPcollections()[global]
+			cID := lpUnknownCoders(col.GetCoderId(), coders, comps.GetCoders())
+			ec := coders[cID]
+			ed := pullDecoder(ec, coders)
+
+			ws := comps.GetWindowingStrategies()[col.GetWindowingStrategyId()]
+			wcID := lpUnknownCoders(ws.GetWindowCoderId(), coders, comps.GetCoders())
+			wDec, wEnc := makeWindowCoders(coders[wcID])
+			// May be of zero length, but that's OK. Side inputs can be empty.
+
+			global, local := global, local
+			prepSides = append(prepSides, func(b *bundle, tid string, gen int) {
+				data := wk.data.GetData(global, gen)
+
+				if b.IterableSideInputData == nil {
+					b.IterableSideInputData = map[string]map[string]map[string][][]byte{}
+				}
+				if _, ok := b.IterableSideInputData[tid]; !ok {
+					b.IterableSideInputData[tid] = map[string]map[string][][]byte{}
+				}
+				b.IterableSideInputData[tid][local] = collateByWindows(data, wDec, wEnc,
+					func(r io.Reader) [][]byte {
+						return [][]byte{ed(r)}
+					}, func(a, b [][]byte) [][]byte {
+						return append(a, b...)
+					})
+			})
+
+		case urnSideInputMultiMap:
+			V(2).Logf("urnSideInputMultiMap key? %v, %v", local, global)
+			col := comps.GetPcollections()[global]
+
+			kvc := comps.GetCoders()[col.GetCoderId()]
+			if kvc.GetSpec().GetUrn() != urnCoderKV {
+				return nil, fmt.Errorf("multimap side inputs needs KV coder, got %v", kvc.GetSpec().GetUrn())
+			}
+			kcID := lpUnknownCoders(kvc.GetComponentCoderIds()[0], coders, comps.GetCoders())
+			vcID := lpUnknownCoders(kvc.GetComponentCoderIds()[1], coders, comps.GetCoders())
+
+			reconcileCoders(coders, comps.GetCoders())
+
+			kc := coders[kcID]
+			vc := coders[vcID]
+
+			kd := pullDecoder(kc, coders)
+			vd := pullDecoder(vc, coders)
+
+			ws := comps.GetWindowingStrategies()[col.GetWindowingStrategyId()]
+			wcID := lpUnknownCoders(ws.GetWindowCoderId(), coders, comps.GetCoders())
+			wDec, wEnc := makeWindowCoders(coders[wcID])
+
+			global, local := global, local
+			prepSides = append(prepSides, func(b *bundle, tid string, gen int) {
+				// May be of zero length, but that's OK. Side inputs can be empty.
+				data := wk.data.GetData(global, gen)
+				if b.MultiMapSideInputData == nil {
+					b.MultiMapSideInputData = map[string]map[string]map[string]map[string][][]byte{}
+				}
+				if _, ok := b.MultiMapSideInputData[tid]; !ok {
+					b.MultiMapSideInputData[tid] = map[string]map[string]map[string][][]byte{}
+				}
+				b.MultiMapSideInputData[tid][local] = collateByWindows(data, wDec, wEnc,
+					func(r io.Reader) map[string][][]byte {
+						kb := kd(r)
+						return map[string][][]byte{
+							string(kb): {vd(r)},
+						}
+					}, func(a, b map[string][][]byte) map[string][][]byte {
+						if len(a) == 0 {
+							return b
+						}
+						for k, vs := range b {
+							a[k] = append(a[k], vs...)
+						}
+						return a
+					})
+			})
+		default:
+			return nil, fmt.Errorf("local input %v (global %v) uses accesspattern %v", local, global, si.GetAccessPattern().GetUrn())
+		}
+	}
+	return func(b *bundle, tid string, gen int) {
+		for _, prep := range prepSides {
+			prep(b, tid, gen)
+		}
+	}, nil
 }
 
 func sourceTransform(parentID string, sourcePortBytes []byte, outPID string) *pipepb.PTransform {
@@ -489,4 +534,19 @@ func collateByWindows[T any](data [][]byte, wDec exec.WindowDecoder, wEnc exec.W
 		buf.Reset()
 	}
 	return output
+}
+
+type dataDep struct {
+	Gen int
+}
+
+// HandleStage must be run as a goroutine.
+//
+// It prepares and sends bundles for the stage to the worker.
+// In particular it needs to handle all side inputs for the current stage of the current generation of data.
+//
+// TODO If it's unable to determine how to project the primary PCollection to the SideInput PCollection, it can
+// ask the SDK with a map windows transform.
+func (s *stage) HandleStage(wk *worker, toProcess <-chan dataDep, processed chan<- dataDep) {
+
 }

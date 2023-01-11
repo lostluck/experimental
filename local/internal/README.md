@@ -60,6 +60,23 @@ linearly.
 Also, it looks like the old pre register bundle descriptor approach is deprecated
 in the FnAPI, so time to make those registrations work properly.
 
+-------
+
+The big trick with this refactor is preparing the ProcessBundleDescriptors in advance
+and also amortizing any repeat work in preparing the data. This happens with Side inputs
+in particular, where we need to ensure coder & pcollection IDs are properly populated in
+the descriptors components.
+
+Data needs to be done for every bundle. However, each stage will have the same descriptor.
+Side inputs will often be the same for each stage, at best vary by available windows.
+Basically, the flow for HandleStage should be ->
+  1. Be told a stage can run.
+  2. Assemble a *bundle.
+  3. Prepare the data for the bundle.
+  4. Send off to worker for processing.
+  5. Receive response for post-processing.
+  6. Send signal downstream.
+
 # Notes to myself: 2023-01-08
 
 After a bit of a struggle, I was able to get a global window process continuation
