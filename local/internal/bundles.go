@@ -26,6 +26,7 @@ import (
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/typex"
 	fnpb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/fnexecution_v1"
 	pipepb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/pipeline_v1"
+	"golang.org/x/exp/maps"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -64,67 +65,6 @@ func executePipeline(wk *worker, j *job) {
 		}
 	}
 
-	// We're going to do something fun with channels for this,
-	// and do a "Generator" pattern to get the bundles we need
-	// to process.
-	// Ultimately, we'd want some pre-processing of the pipeline
-	// which will determine dependency relationshion ships, and
-	// when it's safe to GC bundle results.
-	// The key idea is that we have a goroutine that will block on
-	// channels, and emit the next bundle to process.
-	toProcess, processed := make(chan *bundle), make(chan *bundle)
-
-	// Goroutine for executing bundles on the worker.
-	go func() {
-		// Send nil to start, Impulses won't require parental translation.
-		processed <- nil
-		for b := range toProcess {
-			V(1).Logf("processing %v", b.PBDID)
-			b.ProcessOn(wk) // Blocks until finished.
-
-			resp := <-b.Resp
-			V(1).Logf("got response for %v", b.PBDID)
-			// Tentative Data is ready, commit it to the main datastore.
-			wk.data.Commit(b.Generation, b.OutputData)
-			b.OutputData = tentativeData{} // Clear the data.
-			j.metrics.contributeMetrics(resp)
-
-			// Basic attempt at Process Continuations.
-			// Goal 1: Process applications to completion, then start the next bundle.
-			if len(resp.GetResidualRoots()) > 0 {
-				var data [][]byte
-				for _, rr := range resp.GetResidualRoots() {
-					ba := rr.GetApplication()
-					data = append(data, ba.GetElement())
-
-					if len(ba.GetElement()) == 0 {
-						logger.Fatalf("bundle %v returned empty residual application", b.PBDID)
-					}
-				}
-				// Technically we also grab the read index,
-				// then we use that against the original data set by input elements for the remaining residual,
-				// to avoid the extra round trip back from the SDK when we already have the data.
-
-				b.InputData = data
-				if len(b.InputData) == 0 {
-					logger.Fatalf("bundle %v returned empty residual application", b.PBDID)
-				}
-
-				b.DataWait.Add(b.OutputCount)
-				go func() {
-					toProcess <- b
-					V(1).Logf("residuals %v sent", b.PBDID)
-				}()
-
-				continue
-			}
-
-			// Send back for dependency handling afterwards.
-			processed <- b
-		}
-		close(processed)
-	}()
-
 	topo := prepro.preProcessGraph(comps)
 	ts := comps.GetTransforms()
 
@@ -139,15 +79,15 @@ func executePipeline(wk *worker, j *job) {
 		tid := stage.transforms[0]
 		t := ts[tid]
 		urn := t.GetSpec().GetUrn()
-		exe := proc.transformExecuters[urn]
+		stage.exe = proc.transformExecuters[urn]
 
 		// Stopgap until everythinng's moved to handlers.
-		envID := t.GetEnvironmentId()
-		if exe != nil {
-			envID = exe.ExecuteWith(t)
+		stage.envID = t.GetEnvironmentId()
+		if stage.exe != nil {
+			stage.envID = stage.exe.ExecuteWith(t)
 		}
 
-		switch envID {
+		switch stage.envID {
 		case "": // Runner Transforms
 		case wk.ID:
 			// Great! this is for this environment. // Broken abstraction.
@@ -158,52 +98,18 @@ func executePipeline(wk *worker, j *job) {
 	}
 
 	// Execute stages here
-	for i, stage := range topo {
-		// Block until the previous bundle is done.
-		prevBundle := <-processed
-		var gen int
-		if prevBundle != nil {
-			gen = prevBundle.Generation
-		}
-		// Stopgap until everythinng's moved to handlers.
-		if len(stage.transforms) != 1 {
-			V(0).Fatalf("unsupported stage[%d]: contains multiple transforms: %v", i, stage.transforms)
-		}
-		tid := stage.transforms[0]
-		t := ts[tid]
-		urn := t.GetSpec().GetUrn()
-		exe := proc.transformExecuters[urn]
-		envID := t.GetEnvironmentId()
-		if exe != nil {
-			envID = exe.ExecuteWith(t)
-		}
 
-		var sendBundle func()
-		switch envID {
-		case "": // Runner Transforms
-			// Runner transforms are processed immeadiately.
-			b := exe.ExecuteTransform(tid, t, comps, wk, gen)
-			sendBundle = func() {
-				go func() {
-					processed <- b
-				}()
-			}
-		case wk.ID:
-			bs := stage.makeBundles(wk.data, gen)
-			// FnAPI instructions need to be sent to the SDK.
-			sendBundle = func() {
-				toProcess <- bs[0]
-			}
-		default:
-			logger.Fatalf("unknown environment[%v]", t.GetEnvironmentId())
-		}
-		sendBundle()
+	first := make(chan dataDep)
+	cur := first
+	for _, stage := range topo {
+		next := make(chan dataDep)
+		go stage.HandleStage(j, wk, comps, cur, next)
+		cur = next
 	}
-
-	// We're done with the pipeline!
-	close(toProcess)
-	b := <-processed // Drain the final bundle.
-	V(1).Logf("pipeline done! Final Bundle: %v", b.InstID)
+	first <- dataDep{Gen: 0}
+	close(first)
+	<-cur // drain the final one.
+	V(1).Logf("pipeline done!")
 }
 
 func buildStage(s *stage, tid string, t *pipepb.PTransform, comps *pipepb.Components, wk *worker) {
@@ -316,7 +222,7 @@ func handleSideInputs(t *pipepb.PTransform, comps *pipepb.Components, coders map
 
 			global, local := global, local
 			prepSides = append(prepSides, func(b *bundle, tid string, gen int) {
-				data := wk.data.GetData(global, gen)
+				data := wk.data.GetAllData(global)
 
 				if b.IterableSideInputData == nil {
 					b.IterableSideInputData = map[string]map[string]map[string][][]byte{}
@@ -358,7 +264,7 @@ func handleSideInputs(t *pipepb.PTransform, comps *pipepb.Components, coders map
 			global, local := global, local
 			prepSides = append(prepSides, func(b *bundle, tid string, gen int) {
 				// May be of zero length, but that's OK. Side inputs can be empty.
-				data := wk.data.GetData(global, gen)
+				data := wk.data.GetAllData(global)
 				if b.MultiMapSideInputData == nil {
 					b.MultiMapSideInputData = map[string]map[string]map[string]map[string][][]byte{}
 				}
@@ -554,6 +460,8 @@ type stage struct {
 	ID         string
 	transforms []string
 
+	envID            string
+	exe              transformExecuter
 	outputCount      int
 	inputTransformID string
 	mainInputPCol    string
@@ -595,6 +503,70 @@ type dataDep struct {
 //
 // TODO If it's unable to determine how to project the primary PCollection to the SideInput PCollection, it can
 // ask the SDK with a map windows transform.
-func (s *stage) HandleStage(wk *worker, toProcess <-chan dataDep, processed chan<- dataDep) {
+func (s *stage) HandleStage(j *job, wk *worker, comps *pipepb.Components, toProcess chan dataDep, processed chan<- dataDep) {
+chanLoop:
+	for dd := range toProcess {
+		tid := s.transforms[0]
 
+		for gen := dd.Gen; ; gen++ {
+			var b *bundle
+			switch s.envID {
+			case "": // Runner Transforms
+				// Runner transforms are processed immeadiately.
+				s.exe.ExecuteTransform(tid, comps.GetTransforms()[tid], comps, wk, gen)
+
+				// Done, send down the line.
+				processed <- dataDep{Gen: 0}
+				continue chanLoop
+			case wk.ID:
+				bs := s.makeBundles(wk.data, gen)
+				// FnAPI instructions need to be sent to the SDK.
+				b = bs[0]
+			default:
+				logger.Fatalf("unknown environment[%v]", s.envID)
+			}
+
+			// Check for NoOP ?
+			if len(b.InputData) == 0 {
+				V(2).Logf("no-op for stage %v, sending down the line", s.ID)
+				processed <- dd
+				continue chanLoop
+			}
+
+			V(1).Logf("processing %v", b.PBDID)
+			b.ProcessOn(wk) // Blocks until finished.
+
+			resp := <-b.Resp
+			V(1).Logf("got response for %v", b.PBDID)
+			// Tentative Data is ready, commit it to the main datastore.
+			V(3).Logf("committing data for %v, gen %v or %v", maps.Keys(b.OutputData.raw), b.Generation, gen)
+			wk.data.Commit(b.Generation, b.OutputData)
+			b.OutputData = tentativeData{} // Clear the data.
+			j.metrics.contributeMetrics(resp)
+
+			// Basic attempt at Process Continuations.
+			// Goal 1: Process applications to completion, then start the next bundle.
+			if len(resp.GetResidualRoots()) == 0 {
+				break // out of the inner loop, since we don't need to iterate residuals here.
+			}
+			var data [][]byte
+			for _, rr := range resp.GetResidualRoots() {
+				ba := rr.GetApplication()
+				data = append(data, ba.GetElement())
+				if len(ba.GetElement()) == 0 {
+					logger.Fatalf("bundle %v returned empty residual application", b.PBDID)
+				}
+			}
+			// Write the residual data to the next generation so the next bundle will have it.
+			nextGen := gen + 1
+			for _, d := range data {
+				wk.data.WriteData(s.mainInputPCol, nextGen, d)
+			}
+		}
+
+		// Send initial generation down the line
+		// TODO move to post every generation once proper blocks are in.
+		processed <- dd
+	}
+	close(processed)
 }

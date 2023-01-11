@@ -79,3 +79,13 @@ func (d *dataService) WriteData(colID string, gen int, data []byte) {
 func (d *dataService) GetData(colID string, gen int) [][]byte {
 	return d.raw[colID][gen]
 }
+
+// Hack for GBK and Side Inputs until watermarks are sorted out.
+func (d *dataService) GetAllData(colID string) [][]byte {
+	var ret [][]byte
+	for gen, data := range d.raw[colID] {
+		V(3).Logf("getting All data for %v, gen %v", colID, gen)
+		ret = append(ret, data...)
+	}
+	return ret
+}

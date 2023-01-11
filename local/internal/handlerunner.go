@@ -88,7 +88,7 @@ func (h *runner) ExecuteTransform(tid string, t *pipepb.PTransform, comps *pipep
 		// Hmmm, tricky, since we'd need to extract the earlier ones.
 		// But is this something we should just have the data service manage?
 		for _, globalID := range t.GetInputs() {
-			data = append(data, wk.data.GetData(globalID, gen)...)
+			data = append(data, wk.data.GetAllData(globalID)...)
 		}
 
 	case urnTransformGBK:
@@ -112,7 +112,8 @@ func (h *runner) ExecuteTransform(tid string, t *pipepb.PTransform, comps *pipep
 		kc := coders[kcID]
 		ec := coders[ecID]
 
-		data = append(data, gbkBytes(ws, wc, kc, ec, wk.data.GetData(inCol, gen), coders))
+		V(3).Logf("reading gbk data from %v, gen %v", inCol, gen)
+		data = append(data, gbkBytes(ws, wc, kc, ec, wk.data.GetAllData(inCol), coders))
 	default:
 		logger.Fatalf("unimplemented runner transform[%v]", urn)
 	}
