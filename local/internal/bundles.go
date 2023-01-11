@@ -131,21 +131,12 @@ func executePipeline(wk *worker, j *job) {
 	// This is where the Batch -> Streaming tension exists.
 	// We don't *pre* do this, and we need a different mechanism
 	// to sort out processing order.
+	// Prepare stage here.
 	for i, stage := range topo {
-		// Block until the previous bundle is done.
-		prevBundle := <-processed
-		var gen int
-		if prevBundle != nil {
-			gen = prevBundle.Generation
-		}
-
 		if len(stage.transforms) != 1 {
 			V(0).Fatalf("unsupported stage[%d]: contains multiple transforms: %v", i, stage.transforms)
 		}
 		tid := stage.transforms[0]
-
-		V(2).Logf("making bundle for %v", tid)
-
 		t := ts[tid]
 		urn := t.GetSpec().GetUrn()
 		exe := proc.transformExecuters[urn]
@@ -156,25 +147,52 @@ func executePipeline(wk *worker, j *job) {
 			envID = exe.ExecuteWith(t)
 		}
 
-		var sendBundle func()
-		var b *bundle
 		switch envID {
 		case "": // Runner Transforms
-			b = exe.ExecuteTransform(tid, t, comps, wk, gen)
+		case wk.ID:
+			// Great! this is for this environment. // Broken abstraction.
+			buildStage(stage, tid, t, comps, wk)
+		default:
+			logger.Fatalf("unknown environment[%v]", t.GetEnvironmentId())
+		}
+	}
+
+	// Execute stages here
+	for i, stage := range topo {
+		// Block until the previous bundle is done.
+		prevBundle := <-processed
+		var gen int
+		if prevBundle != nil {
+			gen = prevBundle.Generation
+		}
+		// Stopgap until everythinng's moved to handlers.
+		if len(stage.transforms) != 1 {
+			V(0).Fatalf("unsupported stage[%d]: contains multiple transforms: %v", i, stage.transforms)
+		}
+		tid := stage.transforms[0]
+		t := ts[tid]
+		urn := t.GetSpec().GetUrn()
+		exe := proc.transformExecuters[urn]
+		envID := t.GetEnvironmentId()
+		if exe != nil {
+			envID = exe.ExecuteWith(t)
+		}
+
+		var sendBundle func()
+		switch envID {
+		case "": // Runner Transforms
 			// Runner transforms are processed immeadiately.
+			b := exe.ExecuteTransform(tid, t, comps, wk, gen)
 			sendBundle = func() {
 				go func() {
 					processed <- b
 				}()
 			}
 		case wk.ID:
-			// Great! this is for this environment. // Broken abstraction.
-			b, stage.desc = buildProcessBundle(tid, t, comps, wk, gen)
-			// TODO Fix descriptor disemnination.
-			wk.stages[b.PBDID] = stage
+			bs := stage.makeBundles(wk.data, gen)
 			// FnAPI instructions need to be sent to the SDK.
 			sendBundle = func() {
-				toProcess <- b
+				toProcess <- bs[0]
 			}
 		default:
 			logger.Fatalf("unknown environment[%v]", t.GetEnvironmentId())
@@ -188,10 +206,10 @@ func executePipeline(wk *worker, j *job) {
 	V(1).Logf("pipeline done! Final Bundle: %v", b.InstID)
 }
 
-func buildProcessBundle(tid string, t *pipepb.PTransform, comps *pipepb.Components, wk *worker, gen int) (*bundle, *fnpb.ProcessBundleDescriptor) {
-	bundID := wk.nextBund()
+func buildStage(s *stage, tid string, t *pipepb.PTransform, comps *pipepb.Components, wk *worker) {
+	pbdID := wk.nextBund()
 
-	parallelInputID := tid + "_source"
+	s.inputTransformID = tid + "_source"
 
 	coders := map[string]*pipepb.Coder{}
 	transforms := map[string]*pipepb.PTransform{
@@ -212,12 +230,12 @@ func buildProcessBundle(tid string, t *pipepb.PTransform, comps *pipepb.Componen
 		if !ok {
 			// this is the main input
 			mainInputPCol = global
-			transforms[parallelInputID] = sourceTransform(parallelInputID, portFor(wInCid, wk), mainInputPCol)
-			continue // We need to process all inputs, so we must continue.
+			transforms[s.inputTransformID] = sourceTransform(s.inputTransformID, portFor(wInCid, wk), mainInputPCol)
 		}
+		// We need to process all inputs to ensure we have all input coders, so we must continue.
 	}
 
-	prepareSides, err := handleSideInputs(t, comps, coders, wk, gen)
+	prepareSides, err := handleSideInputs(t, comps, coders, wk)
 	if err != nil {
 		logger.Fatalf("for transform %v: %v", tid, err)
 	}
@@ -236,7 +254,7 @@ func buildProcessBundle(tid string, t *pipepb.PTransform, comps *pipepb.Componen
 	reconcileCoders(coders, comps.GetCoders())
 
 	desc := &fnpb.ProcessBundleDescriptor{
-		Id:                  bundID,
+		Id:                  pbdID,
 		Transforms:          transforms,
 		WindowingStrategies: comps.GetWindowingStrategies(),
 		Pcollections:        comps.GetPcollections(),
@@ -246,24 +264,14 @@ func buildProcessBundle(tid string, t *pipepb.PTransform, comps *pipepb.Componen
 		},
 	}
 
-	b := &bundle{
-		PBDID:      bundID,
-		Generation: gen,
+	s.ID = pbdID
+	s.desc = desc
+	s.outputCount = len(t.Outputs)
+	s.prepareSides = prepareSides
+	s.SinkToPCollection = sink2Col
+	s.mainInputPCol = mainInputPCol
 
-		InputTransformID: parallelInputID,
-
-		// TODO Here's where we can split data for processing in multiple bundles.
-		InputData: wk.data.GetData(mainInputPCol, gen),
-		Resp:      make(chan *fnpb.ProcessBundleResponse, 1),
-
-		SinkToPCollection: sink2Col,
-	}
-
-	// TODO move this data to the stage for read only purposes on new bundles.
-	b.OutputCount = len(t.Outputs)
-	prepareSides(b, tid, gen)
-	b.DataWait.Add(b.OutputCount)
-	return b, desc
+	wk.stages[s.ID] = s
 }
 
 func getSideInputs(t *pipepb.PTransform) (map[string]*pipepb.SideInput, error) {
@@ -277,7 +285,8 @@ func getSideInputs(t *pipepb.PTransform) (map[string]*pipepb.SideInput, error) {
 	return pardo.GetSideInputs(), nil
 }
 
-func handleSideInputs(t *pipepb.PTransform, comps *pipepb.Components, coders map[string]*pipepb.Coder, wk *worker, gen int) (func(b *bundle, tid string, gen int), error) {
+// handleSideInputs ensures appropriate coders are available to the bundle, and prepares a function to stage the data.
+func handleSideInputs(t *pipepb.PTransform, comps *pipepb.Components, coders map[string]*pipepb.Coder, wk *worker) (func(b *bundle, tid string, gen int), error) {
 	sis, err := getSideInputs(t)
 	if err != nil {
 		return nil, err
@@ -534,6 +543,45 @@ func collateByWindows[T any](data [][]byte, wDec exec.WindowDecoder, wEnc exec.W
 		buf.Reset()
 	}
 	return output
+}
+
+// stage represents a fused subgraph.
+//
+// TODO: do we guarantee that they are all
+// the same environment at this point, or
+// should that be handled later?
+type stage struct {
+	ID         string
+	transforms []string
+
+	outputCount      int
+	inputTransformID string
+	mainInputPCol    string
+	desc             *fnpb.ProcessBundleDescriptor
+	prepareSides     func(b *bundle, tid string, gen int)
+
+	SinkToPCollection map[string]string
+}
+
+// makeBundles handles initial splitting among bundles.
+func (s *stage) makeBundles(data *dataService, gen int) []*bundle {
+	b := &bundle{
+		PBDID:      s.ID,
+		Generation: gen,
+
+		InputTransformID: s.inputTransformID,
+
+		// TODO Here's where we can split data for processing in multiple bundles.
+		InputData: data.GetData(s.mainInputPCol, gen),
+		Resp:      make(chan *fnpb.ProcessBundleResponse, 1),
+
+		SinkToPCollection: s.SinkToPCollection,
+		OutputCount:       s.outputCount,
+	}
+	b.DataWait.Add(b.OutputCount)
+	s.prepareSides(b, s.transforms[0], gen)
+
+	return []*bundle{b}
 }
 
 type dataDep struct {
