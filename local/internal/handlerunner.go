@@ -75,9 +75,13 @@ func (h *runner) ExecuteWith(t *pipepb.PTransform) string {
 }
 
 // ExecTransform handles special processing with respect to runner specific transforms
-func (h *runner) ExecuteTransform(tid string, t *pipepb.PTransform, comps *pipepb.Components, wk *worker, gen int) *bundle {
+func (h *runner) ExecuteTransform(tid string, t *pipepb.PTransform, comps *pipepb.Components, wk *worker, gen int, wms map[string]mtime.Time) *bundle {
 	urn := t.GetSpec().GetUrn()
 	var data [][]byte
+	var onlyOut string
+	for _, out := range t.GetOutputs() {
+		onlyOut = out
+	}
 	switch urn {
 	case urnTransformImpulse:
 		// These will be subbed out by the pardo stage.
@@ -113,13 +117,13 @@ func (h *runner) ExecuteTransform(tid string, t *pipepb.PTransform, comps *pipep
 		ec := coders[ecID]
 
 		V(3).Logf("reading gbk data from %v, gen %v", inCol, gen)
-		data = append(data, gbkBytes(ws, wc, kc, ec, wk.data.GetAllData(inCol), coders))
+		data = append(data, gbkBytes(ws, wc, kc, ec, wk.data.GetAllData(inCol), coders, wms[inCol]))
+		if len(data[0]) == 0 {
+			logger.Fatalf("no data for GBK")
+		}
+		wms[onlyOut] = wms[inCol]
 	default:
 		logger.Fatalf("unimplemented runner transform[%v]", urn)
-	}
-	var onlyOut string
-	for _, out := range t.GetOutputs() {
-		onlyOut = out
 	}
 
 	// To avoid conflicts with these single transform
@@ -182,7 +186,7 @@ func windowingStrategy(comps *pipepb.Components, tid string) *pipepb.WindowingSt
 }
 
 // gbkBytes re-encodes gbk inputs in a gbk result.
-func gbkBytes(ws *pipepb.WindowingStrategy, wc, kc, vc *pipepb.Coder, toAggregate [][]byte, coders map[string]*pipepb.Coder) []byte {
+func gbkBytes(ws *pipepb.WindowingStrategy, wc, kc, vc *pipepb.Coder, toAggregate [][]byte, coders map[string]*pipepb.Coder, watermark mtime.Time) []byte {
 	var outputTime func(typex.Window, mtime.Time) mtime.Time
 	switch ws.GetOutputTime() {
 	case pipepb.OutputTime_END_OF_WINDOW:
@@ -228,6 +232,10 @@ func gbkBytes(ws *pipepb.WindowingStrategy, wc, kc, vc *pipepb.Coder, toAggregat
 			key := string(keyByt)
 			value := vd(buf)
 			for _, w := range ws {
+				if w.MaxTimestamp() > watermark {
+					logger.Logf("window not yet closed, skipping %v > %v", w.MaxTimestamp(), watermark)
+					continue
+				}
 				ft := outputTime(w, tm)
 				wk, ok := windows[w]
 				if !ok {

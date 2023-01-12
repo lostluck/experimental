@@ -15,6 +15,14 @@
 
 package internal
 
+import (
+	"bytes"
+	"io"
+
+	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/graph/mtime"
+	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/runtime/exec"
+)
+
 // data.go homes the data management handler for all data that comes and goes
 // from the SDKs. If there were a place to add reliability & restart persistence
 // it would be here.
@@ -40,6 +48,37 @@ func (d *tentativeData) WriteData(colID string, data []byte) {
 		d.raw = map[string][][]byte{}
 	}
 	d.raw[colID] = append(d.raw[colID], data)
+}
+
+func (d *tentativeData) Watermarks(col2Coders map[string]PColInfo) map[string]mtime.Time {
+	wms := map[string]mtime.Time{}
+	for output, data := range d.raw {
+		wm := mtime.EndOfGlobalWindowTime
+		info := col2Coders[output]
+		for _, datum := range data {
+			buf := bytes.NewBuffer(datum)
+			if len(datum) == 0 {
+				logger.Fatalf("zero length data for %v: ", output)
+			}
+			for {
+				// TODO prepackage windows & elements?
+				_, et, _, err := exec.DecodeWindowedValueHeader(info.wDec, buf)
+				if err != nil {
+					if err == io.EOF {
+						break
+					}
+					logger.Fatalf("error decoding watermarks for %v: %v", output, err)
+				}
+				if et < wm {
+					wm = et
+				}
+				// TODO prepackage windows & elements?
+				info.eDec(buf)
+			}
+		}
+		wms[output] = wm
+	}
+	return wms
 }
 
 type dataService struct {

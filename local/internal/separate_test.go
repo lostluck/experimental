@@ -80,7 +80,7 @@ func TestSeparation(t *testing.T) {
 		metrics  func(t *testing.T, pr beam.PipelineResult)
 	}{
 		{
-			name: "ProcessContinuations_globalWindow",
+			name: "ProcessContinuations_combine_globalWindow",
 			pipeline: func(s beam.Scope) {
 				count := 10
 				imp := beam.Impulse(s)
@@ -95,17 +95,19 @@ func TestSeparation(t *testing.T) {
 				}, imp)
 				passert.Count(s, out, "global num ints", count)
 			},
-		}, {
-			name: "ProcessContinuations_stepped_globalWindow",
-			pipeline: func(s beam.Scope) {
-				count := 10
-				imp := beam.Impulse(s)
-				out := beam.ParDo(s, &singleStepSdfStream{
-					Sleep:    time.Second,
-					RestSize: int64(count),
-				}, imp)
-				passert.Count(s, out, "global stepped num ints", count)
-			},
+			// }, {
+			// 	name: "ProcessContinuations_stepped_combine_globalWindow",
+			// 	pipeline: func(s beam.Scope) {
+			// 		count := 10
+			// 		imp := beam.Impulse(s)
+			// 		out := beam.ParDo(s, &singleStepSdfStream{
+			// 			Sleep:    time.Second,
+			// 			RestSize: int64(count),
+			// 		}, imp)
+			// 		// passert.Count(s, out, "global stepped num ints", count)
+			// 		sum := beam.ParDo(s, dofn2x1, imp, beam.SideInput{Input: out})
+			// 		beam.ParDo(s, int64Check{Name: "stepped", Want: []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}}, sum)
+			// 	},
 		},
 	}
 

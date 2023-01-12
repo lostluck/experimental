@@ -22,6 +22,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/graph/mtime"
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/runtime/exec"
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/typex"
 	fnpb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/fnexecution_v1"
@@ -150,10 +151,20 @@ func buildStage(s *stage, tid string, t *pipepb.PTransform, comps *pipepb.Compon
 	// so we can avoid double counting PCollection metrics later.
 	// But this also means replacing the ID for the input in the bundle.
 	sink2Col := map[string]string{}
+	col2Coders := map[string]PColInfo{}
 	for local, global := range t.GetOutputs() {
 		wOutCid := makeWindowedValueCoder(t, global, comps, coders)
 		sinkID := tid + "_" + local
+		col := comps.GetPcollections()[global]
+		ed := collectionPullDecoder(col.GetCoderId(), coders, comps)
+		wDec, wEnc := getWindowValueCoders(comps, col, coders)
 		sink2Col[sinkID] = global
+		col2Coders[global] = PColInfo{
+			GlobalID: global,
+			wDec:     wDec,
+			wEnc:     wEnc,
+			eDec:     ed,
+		}
 		transforms[sinkID] = sinkTransform(sinkID, portFor(wOutCid, wk), global)
 	}
 
@@ -175,6 +186,7 @@ func buildStage(s *stage, tid string, t *pipepb.PTransform, comps *pipepb.Compon
 	s.outputCount = len(t.Outputs)
 	s.prepareSides = prepareSides
 	s.SinkToPCollection = sink2Col
+	s.OutputsToCoders = col2Coders
 	s.mainInputPCol = mainInputPCol
 
 	wk.stages[s.ID] = s
@@ -192,12 +204,12 @@ func getSideInputs(t *pipepb.PTransform) (map[string]*pipepb.SideInput, error) {
 }
 
 // handleSideInputs ensures appropriate coders are available to the bundle, and prepares a function to stage the data.
-func handleSideInputs(t *pipepb.PTransform, comps *pipepb.Components, coders map[string]*pipepb.Coder, wk *worker) (func(b *bundle, tid string, gen int), error) {
+func handleSideInputs(t *pipepb.PTransform, comps *pipepb.Components, coders map[string]*pipepb.Coder, wk *worker) (func(b *bundle, tid string, gen int, wms map[string]mtime.Time), error) {
 	sis, err := getSideInputs(t)
 	if err != nil {
 		return nil, err
 	}
-	var prepSides []func(b *bundle, tid string, gen int)
+	var prepSides []func(b *bundle, tid string, gen int, wms map[string]mtime.Time)
 
 	// Get WindowedValue Coders for the transform's input and output PCollections.
 	for local, global := range t.GetInputs() {
@@ -211,17 +223,12 @@ func handleSideInputs(t *pipepb.PTransform, comps *pipepb.Components, coders map
 		case urnSideInputIterable:
 			V(2).Logf("urnSideInputIterable key? src %v, local %v, global %v", local, global)
 			col := comps.GetPcollections()[global]
-			cID := lpUnknownCoders(col.GetCoderId(), coders, comps.GetCoders())
-			ec := coders[cID]
-			ed := pullDecoder(ec, coders)
-
-			ws := comps.GetWindowingStrategies()[col.GetWindowingStrategyId()]
-			wcID := lpUnknownCoders(ws.GetWindowCoderId(), coders, comps.GetCoders())
-			wDec, wEnc := makeWindowCoders(coders[wcID])
+			ed := collectionPullDecoder(col.GetCoderId(), coders, comps)
+			wDec, wEnc := getWindowValueCoders(comps, col, coders)
 			// May be of zero length, but that's OK. Side inputs can be empty.
 
 			global, local := global, local
-			prepSides = append(prepSides, func(b *bundle, tid string, gen int) {
+			prepSides = append(prepSides, func(b *bundle, tid string, gen int, wms map[string]mtime.Time) {
 				data := wk.data.GetAllData(global)
 
 				if b.IterableSideInputData == nil {
@@ -230,7 +237,7 @@ func handleSideInputs(t *pipepb.PTransform, comps *pipepb.Components, coders map
 				if _, ok := b.IterableSideInputData[tid]; !ok {
 					b.IterableSideInputData[tid] = map[string]map[string][][]byte{}
 				}
-				b.IterableSideInputData[tid][local] = collateByWindows(data, wDec, wEnc,
+				b.IterableSideInputData[tid][local] = collateByWindows(data, wms[global], wDec, wEnc,
 					func(r io.Reader) [][]byte {
 						return [][]byte{ed(r)}
 					}, func(a, b [][]byte) [][]byte {
@@ -246,23 +253,13 @@ func handleSideInputs(t *pipepb.PTransform, comps *pipepb.Components, coders map
 			if kvc.GetSpec().GetUrn() != urnCoderKV {
 				return nil, fmt.Errorf("multimap side inputs needs KV coder, got %v", kvc.GetSpec().GetUrn())
 			}
-			kcID := lpUnknownCoders(kvc.GetComponentCoderIds()[0], coders, comps.GetCoders())
-			vcID := lpUnknownCoders(kvc.GetComponentCoderIds()[1], coders, comps.GetCoders())
 
-			reconcileCoders(coders, comps.GetCoders())
-
-			kc := coders[kcID]
-			vc := coders[vcID]
-
-			kd := pullDecoder(kc, coders)
-			vd := pullDecoder(vc, coders)
-
-			ws := comps.GetWindowingStrategies()[col.GetWindowingStrategyId()]
-			wcID := lpUnknownCoders(ws.GetWindowCoderId(), coders, comps.GetCoders())
-			wDec, wEnc := makeWindowCoders(coders[wcID])
+			kd := collectionPullDecoder(kvc.GetComponentCoderIds()[0], coders, comps)
+			vd := collectionPullDecoder(kvc.GetComponentCoderIds()[1], coders, comps)
+			wDec, wEnc := getWindowValueCoders(comps, col, coders)
 
 			global, local := global, local
-			prepSides = append(prepSides, func(b *bundle, tid string, gen int) {
+			prepSides = append(prepSides, func(b *bundle, tid string, gen int, wms map[string]mtime.Time) {
 				// May be of zero length, but that's OK. Side inputs can be empty.
 				data := wk.data.GetAllData(global)
 				if b.MultiMapSideInputData == nil {
@@ -271,7 +268,7 @@ func handleSideInputs(t *pipepb.PTransform, comps *pipepb.Components, coders map
 				if _, ok := b.MultiMapSideInputData[tid]; !ok {
 					b.MultiMapSideInputData[tid] = map[string]map[string]map[string][][]byte{}
 				}
-				b.MultiMapSideInputData[tid][local] = collateByWindows(data, wDec, wEnc,
+				b.MultiMapSideInputData[tid][local] = collateByWindows(data, wms[global], wDec, wEnc,
 					func(r io.Reader) map[string][][]byte {
 						kb := kd(r)
 						return map[string][][]byte{
@@ -291,11 +288,22 @@ func handleSideInputs(t *pipepb.PTransform, comps *pipepb.Components, coders map
 			return nil, fmt.Errorf("local input %v (global %v) uses accesspattern %v", local, global, si.GetAccessPattern().GetUrn())
 		}
 	}
-	return func(b *bundle, tid string, gen int) {
+	return func(b *bundle, tid string, gen int, wms map[string]mtime.Time) {
 		for _, prep := range prepSides {
-			prep(b, tid, gen)
+			prep(b, tid, gen, wms)
 		}
 	}, nil
+}
+
+func collectionPullDecoder(coldCId string, coders map[string]*pipepb.Coder, comps *pipepb.Components) func(io.Reader) []byte {
+	cID := lpUnknownCoders(coldCId, coders, comps.GetCoders())
+	return pullDecoder(coders[cID], coders)
+}
+
+func getWindowValueCoders(comps *pipepb.Components, col *pipepb.PCollection, coders map[string]*pipepb.Coder) (exec.WindowDecoder, exec.WindowEncoder) {
+	ws := comps.GetWindowingStrategies()[col.GetWindowingStrategyId()]
+	wcID := lpUnknownCoders(ws.GetWindowCoderId(), coders, comps.GetCoders())
+	return makeWindowCoders(coders[wcID])
 }
 
 func sourceTransform(parentID string, sourcePortBytes []byte, outPID string) *pipepb.PTransform {
@@ -343,7 +351,7 @@ func portFor(wInCid string, wk *worker) []byte {
 type transformExecuter interface {
 	ExecuteUrns() []string
 	ExecuteWith(t *pipepb.PTransform) string
-	ExecuteTransform(tid string, t *pipepb.PTransform, comps *pipepb.Components, wk *worker, gen int) *bundle
+	ExecuteTransform(tid string, t *pipepb.PTransform, comps *pipepb.Components, wk *worker, gen int, wms map[string]mtime.Time) *bundle
 }
 
 type processor struct {
@@ -352,9 +360,8 @@ type processor struct {
 
 // bundle represents an extant ProcessBundle instruction sent to an SDK worker.
 type bundle struct {
-	InstID     string // ID for the instruction processing this bundle.
-	PBDID      string // ID for the ProcessBundleDescriptor
-	Generation int    // Which generation this is related to.
+	InstID string // ID for the instruction processing this bundle.
+	PBDID  string // ID for the ProcessBundleDescriptor
 
 	// InputTransformID is data being sent to the SDK.
 	InputTransformID string
@@ -391,7 +398,7 @@ func (b *bundle) ProcessOn(wk *worker) {
 	wk.bundles[b.InstID] = b
 	wk.mu.Unlock()
 
-	V(2).Logf("processing %v %v %v on %v", b.InstID, b.PBDID, b.Generation, wk)
+	V(2).Logf("processing %v %v on %v", b.InstID, b.PBDID, wk)
 
 	// Tell the SDK to start processing the bundle.
 	wk.InstReqs <- &fnpb.InstructionRequest{
@@ -425,7 +432,7 @@ func (b *bundle) ProcessOn(wk *worker) {
 
 // collateByWindows takes the data and collates them into string keyed window maps.
 // Uses generics to consolidate the repetitive window loops.
-func collateByWindows[T any](data [][]byte, wDec exec.WindowDecoder, wEnc exec.WindowEncoder, ed func(io.Reader) T, join func(T, T) T) map[string]T {
+func collateByWindows[T any](data [][]byte, watermark mtime.Time, wDec exec.WindowDecoder, wEnc exec.WindowEncoder, ed func(io.Reader) T, join func(T, T) T) map[string]T {
 	windowed := map[typex.Window]T{}
 	for _, datum := range data {
 		inBuf := bytes.NewBuffer(datum)
@@ -437,6 +444,10 @@ func collateByWindows[T any](data [][]byte, wDec exec.WindowDecoder, wEnc exec.W
 			// Get the element out, and window them properly.
 			e := ed(inBuf)
 			for _, w := range ws {
+				if w.MaxTimestamp() > watermark {
+					logger.Logf("window not yet closed, skipping %v > %v", w.MaxTimestamp(), watermark)
+					continue
+				}
 				windowed[w] = join(windowed[w], e)
 			}
 		}
@@ -466,16 +477,24 @@ type stage struct {
 	inputTransformID string
 	mainInputPCol    string
 	desc             *fnpb.ProcessBundleDescriptor
-	prepareSides     func(b *bundle, tid string, gen int)
+	prepareSides     func(b *bundle, tid string, gen int, wms map[string]mtime.Time)
 
 	SinkToPCollection map[string]string
+	OutputsToCoders   map[string]PColInfo
+}
+
+type PColInfo struct {
+	GlobalID string
+	wDec     exec.WindowDecoder
+	wEnc     exec.WindowEncoder
+	eDec     func(io.Reader) []byte
 }
 
 // makeBundles handles initial splitting among bundles.
-func (s *stage) makeBundles(data *dataService, gen int) []*bundle {
+func (s *stage) makeBundles(data *dataService, gen int, wms map[string]mtime.Time) []*bundle {
+	V(2).Logf("making bundle for %v gen %v input %v", s.ID, gen, s.mainInputPCol)
 	b := &bundle{
-		PBDID:      s.ID,
-		Generation: gen,
+		PBDID: s.ID,
 
 		InputTransformID: s.inputTransformID,
 
@@ -487,13 +506,38 @@ func (s *stage) makeBundles(data *dataService, gen int) []*bundle {
 		OutputCount:       s.outputCount,
 	}
 	b.DataWait.Add(b.OutputCount)
-	s.prepareSides(b, s.transforms[0], gen)
+	s.prepareSides(b, s.transforms[0], gen, wms)
 
 	return []*bundle{b}
 }
 
 type dataDep struct {
-	Gen int
+	Gen              int
+	OutputWatermarks map[string]mtime.Time
+}
+
+func (dd *dataDep) SetWatermarks(wms map[string]mtime.Time) {
+	defer func() { V(2).Logf("watermarks: %v", dd.OutputWatermarks) }()
+	if dd.OutputWatermarks == nil {
+		dd.OutputWatermarks = wms
+		return
+	}
+	for output, wm := range wms {
+		cur := dd.OutputWatermarks[output]
+		if wm < cur {
+			cur = wm
+		}
+		dd.OutputWatermarks[output] = cur
+	}
+}
+
+func (dd *dataDep) AdvanceToEndOfGlobalWindow(outputs []string) {
+	if dd.OutputWatermarks == nil {
+		dd.OutputWatermarks = map[string]mtime.Time{}
+	}
+	for _, output := range outputs {
+		dd.OutputWatermarks[output] = mtime.MaxTimestamp
+	}
 }
 
 // HandleStage must be run as a goroutine.
@@ -507,46 +551,46 @@ func (s *stage) HandleStage(j *job, wk *worker, comps *pipepb.Components, toProc
 chanLoop:
 	for dd := range toProcess {
 		tid := s.transforms[0]
+		V(2).Logf("starting %v - %v: %+v", s.ID, tid, dd)
 
 		for gen := dd.Gen; ; gen++ {
 			var b *bundle
 			switch s.envID {
 			case "": // Runner Transforms
 				// Runner transforms are processed immeadiately.
-				s.exe.ExecuteTransform(tid, comps.GetTransforms()[tid], comps, wk, gen)
-
-				// Done, send down the line.
-				processed <- dataDep{Gen: 0}
+				s.exe.ExecuteTransform(tid, comps.GetTransforms()[tid], comps, wk, gen, dd.OutputWatermarks)
+				dd.Gen = 0
+				processed <- dd
 				continue chanLoop
 			case wk.ID:
-				bs := s.makeBundles(wk.data, gen)
+				bs := s.makeBundles(wk.data, gen, dd.OutputWatermarks)
 				// FnAPI instructions need to be sent to the SDK.
 				b = bs[0]
 			default:
 				logger.Fatalf("unknown environment[%v]", s.envID)
 			}
 
-			// Check for NoOP ?
-			if len(b.InputData) == 0 {
-				V(2).Logf("no-op for stage %v, sending down the line", s.ID)
-				processed <- dd
-				continue chanLoop
-			}
-
 			V(1).Logf("processing %v", b.PBDID)
 			b.ProcessOn(wk) // Blocks until finished.
-
-			resp := <-b.Resp
-			V(1).Logf("got response for %v", b.PBDID)
 			// Tentative Data is ready, commit it to the main datastore.
-			V(3).Logf("committing data for %v, gen %v or %v", maps.Keys(b.OutputData.raw), b.Generation, gen)
-			wk.data.Commit(b.Generation, b.OutputData)
+			V(3).Logf("committing data for %v %v, gen %v", s.ID, maps.Keys(b.OutputData.raw), gen)
+			wk.data.Commit(gen, b.OutputData)
+			wms := b.OutputData.Watermarks(s.OutputsToCoders)
 			b.OutputData = tentativeData{} // Clear the data.
+			dd.SetWatermarks(wms)
+
+			V(1).Logf("waiting for %v response", b.PBDID)
+			resp := <-b.Resp
+			V(1).Logf("got %v response", b.PBDID)
 			j.metrics.contributeMetrics(resp)
 
 			// Basic attempt at Process Continuations.
 			// Goal 1: Process applications to completion, then start the next bundle.
 			if len(resp.GetResidualRoots()) == 0 {
+				V(2).Logf("done with %v - %v: sending down the line %+v", s.ID, tid, dd)
+				dd.AdvanceToEndOfGlobalWindow(maps.Keys(s.OutputsToCoders))
+				processed <- dd
+				V(2).Logf("no residuals %v - %v: gen %v", s.ID, tid, gen)
 				break // out of the inner loop, since we don't need to iterate residuals here.
 			}
 			var data [][]byte
@@ -562,11 +606,18 @@ chanLoop:
 			for _, d := range data {
 				wk.data.WriteData(s.mainInputPCol, nextGen, d)
 			}
+			dd.Gen = nextGen
+			V(2).Logf("iterating %v - %v: gen %v", s.ID, tid, nextGen)
 		}
 
-		// Send initial generation down the line
-		// TODO move to post every generation once proper blocks are in.
-		processed <- dd
+		// V(2).Logf("done with %v - %v: sending down the line %+v", s.ID, tid, dd)
+		// // Send initial generation down the line
+		// // TODO move to post every generation once proper blocks are in.
+		// dd.AdvanceToEndOfGlobalWindow(maps.Keys(s.OutputsToCoders))
+		// processed <- dd
 	}
+	// dd := dataDep{}
+	// dd.AdvanceToEndOfGlobalWindow(maps.Keys(s.OutputsToCoders))
+	// processed <- dd
 	close(processed)
 }

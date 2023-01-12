@@ -268,6 +268,7 @@ func (wk *worker) State(state fnpb.BeamFnState_StateServer) error {
 				// TODO: move data handling to be pcollection based.
 				b := wk.bundles[resp.GetInstructionId()]
 				key := resp.GetStateKey()
+				V(3).Logf("StateRequest_Get: %v", prototext.Format(resp))
 
 				var data [][]byte
 				switch key.GetType().(type) {
@@ -292,6 +293,7 @@ func (wk *worker) State(state fnpb.BeamFnState_StateServer) error {
 				for _, value := range data {
 					buf.Write(value)
 				}
+				V(3).Logf("StateRequest_Get: data len - %v", buf.Len())
 
 				responses <- &fnpb.StateResponse{
 					Id: resp.GetId(),
