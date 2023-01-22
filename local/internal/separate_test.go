@@ -36,6 +36,9 @@ import (
 // separate_test.go is retains structures and tests to ensure the runner can
 // perform separation, and terminate checkpoints.
 
+// Global variable, so only one is registered with the OS.
+var ws = &Watchers{}
+
 // TestSeparation validates that the runner is able to split
 // elements in time and space. Beam has a few mechanisms to
 // do this.
@@ -71,7 +74,6 @@ import (
 func TestSeparation(t *testing.T) {
 	initRunner(t)
 
-	ws := &Watchers{}
 	ws.initRPCServer()
 
 	tests := []struct {
@@ -105,8 +107,8 @@ func TestSeparation(t *testing.T) {
 					RestSize: int64(count),
 				}, imp)
 				passert.Count(s, out, "global stepped num ints", count)
-				// sum := beam.ParDo(s, dofn2x1, imp, beam.SideInput{Input: out})
-				// beam.ParDo(s, &int64Check{Name: "stepped", Want: []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}}, sum)
+				sum := beam.ParDo(s, dofn2x1, imp, beam.SideInput{Input: out})
+				beam.ParDo(s, &int64Check{Name: "stepped", Want: []int{45}}, sum)
 			},
 		},
 	}
