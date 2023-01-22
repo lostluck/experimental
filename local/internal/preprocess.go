@@ -16,6 +16,8 @@
 package internal
 
 import (
+	"sort"
+
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/runtime/pipelinex"
 	pipepb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/pipeline_v1"
 	"golang.org/x/exp/maps"
@@ -112,6 +114,7 @@ func (p *preprocessor) preProcessGraph(comps *pipepb.Components) []*stage {
 	// Extract URNs for the given transform.
 
 	keptLeaves := maps.Keys(leaves)
+	sort.Strings(keptLeaves)
 	topological := pipelinex.TopologicalSort(ts, keptLeaves)
 	V(2).Logf("TOPO:\n%+v", topological)
 

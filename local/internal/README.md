@@ -17,6 +17,38 @@
   * []byte avoidance -> To io.Reader/Writer streams
   * Error plumbing rather than log.Fatals or panics.
 
+# Notes to myself: 2023-01-21
+
+Switching things to use watermarks is the first thing about authoring
+a runner vs an SDK that I think leans towards the difficulty on the runner
+side. It's taken over two weeks to wrap my head around how things are
+supposed to update. I'm not yet satisfied, with this, but at least
+all the old batch focused tests are now passing, so I could get rid
+of the sillier approach I was heading towards.
+
+The big problem now is I don't have a satisfying state machine to simply
+trigger things as the watermarks advance. Right now there's effectively a
+busy wait loop that can occur when side inputs aren't yet ready. What I
+want is to trigger a state machine transition to all stages blocked by
+that input when the watermark for the input stage ticks.
+This would be cleaner than endlessly iterating...
+
+So far I've loosely emulated the approach the Java Direct runner has taken, but
+with several layers of abstraction stripped out. It's hard to follow
+and I'd like to not end up with callback soup.
+
+I suspect I'm doing something wrong with side inputs at the moment. 
+When it comes to advancing a stage's input watermark, only the 
+parallel input matters. But, the stage isn't ready execute until the
+side input producer's output watermarks have advanced passed the input.
+
+The last thing I need to do in this stretch is getting the process
+continuations working again, + 1 test. I just need to add the 
+returned residuals back into the pending queue, and that should
+sort itself out. I just need to hold onto the input coders too.
+
+But that's a tomorrow task. Along with making any of this legible.
+
 # Notes to myself: 2023-01-10
 
  A stage is ready to compute if it's data dependencies are available.

@@ -82,6 +82,7 @@ func (h *runner) ExecuteTransform(tid string, t *pipepb.PTransform, comps *pipep
 	for _, out := range t.GetOutputs() {
 		onlyOut = out
 	}
+
 	switch urn {
 	case urnTransformImpulse:
 		// These will be subbed out by the pardo stage.
@@ -117,11 +118,11 @@ func (h *runner) ExecuteTransform(tid string, t *pipepb.PTransform, comps *pipep
 		ec := coders[ecID]
 
 		V(3).Logf("reading gbk data from %v, gen %v", inCol, gen)
-		data = append(data, gbkBytes(ws, wc, kc, ec, wk.data.GetAllData(inCol), coders, wms[inCol]))
+		// TODO fix data piping for GBKs.
+		data = append(data, gbkBytes(ws, wc, kc, ec, wk.data.GetAllData(inCol), coders, mtime.MaxTimestamp))
 		if len(data[0]) == 0 {
 			logger.Fatalf("no data for GBK")
 		}
-		wms[onlyOut] = wms[inCol]
 	default:
 		logger.Fatalf("unimplemented runner transform[%v]", urn)
 	}
@@ -136,9 +137,11 @@ func (h *runner) ExecuteTransform(tid string, t *pipepb.PTransform, comps *pipep
 	if localID == "" {
 		V(1).Fatalf("bad transform: %v", prototext.Format(t))
 	}
+	output := tentativeData{}
 	for _, d := range data {
 		// Runner transforms reset the generation to 0.
 		wk.data.WriteData(onlyOut, 0, d)
+		output.WriteData(onlyOut, d)
 	}
 
 	dataID := tid + "_" + localID // The ID from which the consumer will read from.
@@ -147,6 +150,7 @@ func (h *runner) ExecuteTransform(tid string, t *pipepb.PTransform, comps *pipep
 		SinkToPCollection: map[string]string{
 			dataID: onlyOut,
 		},
+		OutputData: output,
 	}
 	return b
 }

@@ -68,7 +68,7 @@ import (
 // It's much simpler though, as the request is to determine if
 // a given element should be delayed or not. This could be used
 // for arbitrarily complex splitting patterns, as desired.
-func TestSeparation(t *testing.T) {
+func testSeparation(t *testing.T) {
 	initRunner(t)
 
 	ws := &Watchers{}

@@ -206,6 +206,21 @@ func pullDecoder(c *pipepb.Coder, coders map[string]*pipepb.Coder) func(io.Reade
 			coder.DecodeDouble(tr)
 			return buf.Bytes()
 		}
+	case urnCoderIterable:
+		ccids := c.GetComponentCoderIds()
+		ed := pullDecoder(coders[ccids[0]], coders)
+		// TODO-rejigger all of these to avoid all the wasteful byte copies.
+		// The utility of the io interfaces strike again!
+		return func(r io.Reader) []byte {
+			var buf bytes.Buffer
+			tr := io.TeeReader(r, &buf)
+			l, _ := coder.DecodeInt32(tr)
+			for i := int32(0); i < l; i++ {
+				ed(tr)
+			}
+			return buf.Bytes()
+		}
+
 	case urnCoderKV:
 		ccids := c.GetComponentCoderIds()
 		kd := pullDecoder(coders[ccids[0]], coders)
@@ -220,7 +235,7 @@ func pullDecoder(c *pipepb.Coder, coders map[string]*pipepb.Coder) func(io.Reade
 			return buf.Bytes()
 		}
 	case urnCoderRow:
-		logger.Fatalf("Runner forgot to LP this Row Coder.")
+		panic(fmt.Sprintf("Runner forgot to LP this Row Coder. %v", prototext.Format(c)))
 	default:
 		panic(fmt.Sprintf("unknown coder urn key: %v", urn))
 	}

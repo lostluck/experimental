@@ -115,11 +115,11 @@ func (wk *worker) Stop() {
 }
 
 func (wk *worker) nextInst() string {
-	return fmt.Sprintf("inst%05d", atomic.AddUint64(&wk.inst, 1))
+	return fmt.Sprintf("inst%03d", atomic.AddUint64(&wk.inst, 1))
 }
 
-func (wk *worker) nextBund() string {
-	return fmt.Sprintf("bundle%05d", atomic.AddUint64(&wk.bund, 1))
+func (wk *worker) nextStage() string {
+	return fmt.Sprintf("stage%03d", atomic.AddUint64(&wk.bund, 1))
 }
 
 // TODO set logging level.
@@ -274,14 +274,14 @@ func (wk *worker) State(state fnpb.BeamFnState_StateServer) error {
 				switch key.GetType().(type) {
 				case *fnpb.StateKey_IterableSideInput_:
 					ikey := key.GetIterableSideInput()
-					wKey := string(ikey.GetWindow())
-					data = b.IterableSideInputData[ikey.GetTransformId()][ikey.GetSideInputId()][wKey]
+					wKey := ikey.GetWindow()
+					data = b.IterableSideInputData[ikey.GetTransformId()][ikey.GetSideInputId()][string(wKey)]
 
 				case *fnpb.StateKey_MultimapSideInput_:
 					mmkey := key.GetMultimapSideInput()
-					wKey := string(mmkey.GetWindow())
-					dKey := string(mmkey.GetKey())
-					data = b.MultiMapSideInputData[mmkey.GetTransformId()][mmkey.GetSideInputId()][wKey][dKey]
+					wKey := mmkey.GetWindow()
+					dKey := mmkey.GetKey()
+					data = b.MultiMapSideInputData[mmkey.GetTransformId()][mmkey.GetSideInputId()][string(wKey)][string(dKey)]
 
 				default:
 					logger.Fatalf("unsupported StateKey Access type: %T: %v", key.GetType(), prototext.Format(key))

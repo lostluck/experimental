@@ -343,19 +343,32 @@ func TestRunner_Pipelines(t *testing.T) {
 				}, in)
 			},
 		}, {
+			name:     "WindowedSideInputs",
+			pipeline: primitives.ValidateWindowedSideInputs,
+		}, {
 			name:     "WindowSums_GBK",
 			pipeline: primitives.WindowSums_GBK,
 		}, {
 			name:     "WindowSums_Lifted",
 			pipeline: primitives.WindowSums_Lifted,
 		}, {
-			name:     "WindowedSideInputs",
-			pipeline: primitives.ValidateWindowedSideInputs,
-		}, {
 			name: "ProcessContinuations_globalCombine",
 			pipeline: func(s beam.Scope) {
 				out := beam.ParDo(s, &selfCheckpointingDoFn{}, beam.Impulse(s))
 				passert.Count(s, out, "num ints", 10)
+			},
+		}, {
+			name: "flatten_to_sideInput",
+			pipeline: func(s beam.Scope) {
+				imp := beam.Impulse(s)
+				col1 := beam.ParDo(s, dofn1, imp)
+				col2 := beam.ParDo(s, dofn1, imp)
+				flat := beam.Flatten(s, col1, col2)
+				beam.ParDo(s, &int64Check{
+					Name: "flatten check",
+					Want: []int{1, 1, 2, 2, 3, 3},
+				}, flat)
+				passert.NonEmpty(s, flat)
 			},
 		},
 	}
