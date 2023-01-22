@@ -68,7 +68,7 @@ import (
 // It's much simpler though, as the request is to determine if
 // a given element should be delayed or not. This could be used
 // for arbitrarily complex splitting patterns, as desired.
-func testSeparation(t *testing.T) {
+func TestSeparation(t *testing.T) {
 	initRunner(t)
 
 	ws := &Watchers{}
@@ -95,19 +95,19 @@ func testSeparation(t *testing.T) {
 				}, imp)
 				passert.Count(s, out, "global num ints", count)
 			},
-			// }, {
-			// 	name: "ProcessContinuations_stepped_combine_globalWindow",
-			// 	pipeline: func(s beam.Scope) {
-			// 		count := 10
-			// 		imp := beam.Impulse(s)
-			// 		out := beam.ParDo(s, &singleStepSdfStream{
-			// 			Sleep:    time.Second,
-			// 			RestSize: int64(count),
-			// 		}, imp)
-			// 		// passert.Count(s, out, "global stepped num ints", count)
-			// 		sum := beam.ParDo(s, dofn2x1, imp, beam.SideInput{Input: out})
-			// 		beam.ParDo(s, int64Check{Name: "stepped", Want: []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}}, sum)
-			// 	},
+		}, {
+			name: "ProcessContinuations_stepped_combine_globalWindow",
+			pipeline: func(s beam.Scope) {
+				count := 10
+				imp := beam.Impulse(s)
+				out := beam.ParDo(s, &singleStepSdfStream{
+					Sleep:    time.Second,
+					RestSize: int64(count),
+				}, imp)
+				passert.Count(s, out, "global stepped num ints", count)
+				// sum := beam.ParDo(s, dofn2x1, imp, beam.SideInput{Input: out})
+				// beam.ParDo(s, &int64Check{Name: "stepped", Want: []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}}, sum)
+			},
 		},
 	}
 

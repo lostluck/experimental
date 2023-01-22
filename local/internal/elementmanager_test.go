@@ -325,7 +325,7 @@ func TestElementManager(t *testing.T) {
 		if !ok {
 			t.Error("Bundles channel unexpectedly closed")
 		}
-		em.PersistBundle("dofn", b.bundleID, nil, tentativeData{})
+		em.PersistBundle("dofn", b.bundleID, nil, tentativeData{}, PColInfo{}, nil)
 
 		_, ok = <-ch
 		if ok {

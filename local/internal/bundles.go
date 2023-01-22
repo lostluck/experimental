@@ -177,7 +177,7 @@ func buildStage(s *stage, tid string, t *pipepb.PTransform, comps *pipepb.Compon
 	if err != nil {
 		logger.Fatalf("for transform %v: %v", tid, err)
 	}
-	var mainInputPCol string
+	var inputInfo PColInfo
 	var sides []string
 	for local, global := range t.GetInputs() {
 		// This id is directly used for the source, but this also copies
@@ -189,8 +189,16 @@ func buildStage(s *stage, tid string, t *pipepb.PTransform, comps *pipepb.Compon
 			sides = append(sides, global)
 		} else {
 			// this is the main input
-			mainInputPCol = global
-			transforms[s.inputTransformID] = sourceTransform(s.inputTransformID, portFor(wInCid, wk), mainInputPCol)
+			transforms[s.inputTransformID] = sourceTransform(s.inputTransformID, portFor(wInCid, wk), global)
+			col := comps.GetPcollections()[global]
+			ed := collectionPullDecoder(col.GetCoderId(), coders, comps)
+			wDec, wEnc := getWindowValueCoders(comps, col, coders)
+			inputInfo = PColInfo{
+				GlobalID: global,
+				wDec:     wDec,
+				wEnc:     wEnc,
+				eDec:     ed,
+			}
 		}
 		// We need to process all inputs to ensure we have all input coders, so we must continue.
 	}
@@ -240,7 +248,8 @@ func buildStage(s *stage, tid string, t *pipepb.PTransform, comps *pipepb.Compon
 	s.sides = sides
 	s.SinkToPCollection = sink2Col
 	s.OutputsToCoders = col2Coders
-	s.mainInputPCol = mainInputPCol
+	s.mainInputPCol = inputInfo.GlobalID
+	s.inputInfo = inputInfo
 
 	wk.stages[s.ID] = s
 }
@@ -528,6 +537,7 @@ type stage struct {
 	outputCount      int
 	inputTransformID string
 	mainInputPCol    string
+	inputInfo        PColInfo
 	desc             *fnpb.ProcessBundleDescriptor
 	sides            []string
 	prepareSides     func(b *bundle, tid string, gen int, wms map[string]mtime.Time)
@@ -586,37 +596,28 @@ func (s *stage) Execute(j *job, wk *worker, comps *pipepb.Components, em *elemen
 	// Tentative Data is ready, commit it to the main datastore.
 	V(3).Logf("Execute: committing data for %v %v of %v\n%v", s.ID, maps.Keys(b.OutputData.raw), maps.Keys(s.OutputsToCoders), prototext.Format(comps.Transforms[tid]))
 
+	resp := &fnpb.ProcessBundleResponse{}
+	if send {
+		V(1).Logf("Execute: got %v response", b.PBDID)
+		resp = <-b.Resp
+	}
 	// TODO handle side input data properly.
 	wk.data.Commit(gen, b.OutputData)
-	em.PersistBundle(s.ID, b.InstID, s.OutputsToCoders, b.OutputData)
-	b.OutputData = tentativeData{} // Clear the data.
-
-	// If we don't send this out, we simply end here.
-	if !send {
-		return
-	}
-	V(1).Logf("Execute: waiting for %v response", b.PBDID)
-	resp := <-b.Resp
-	V(1).Logf("Execute: got %v response", b.PBDID)
-	j.metrics.contributeMetrics(resp)
-
-	// Basic attempt at Process Continuations.
-	// Goal 1: Process applications to completion, then start the next bundle.
-	if len(resp.GetResidualRoots()) == 0 {
-		return // out of the inner loop, since we don't need to iterate residuals here.
-	}
-	var data [][]byte
+	var residualData [][]byte
 	for _, rr := range resp.GetResidualRoots() {
 		ba := rr.GetApplication()
-		data = append(data, ba.GetElement())
+		residualData = append(residualData, ba.GetElement())
 		if len(ba.GetElement()) == 0 {
 			logger.Fatalf("bundle %v returned empty residual application", b.PBDID)
 		}
+		wk.data.WriteData(s.mainInputPCol, gen, ba.GetElement())
 	}
-	nextGen := gen
-	for _, d := range data {
-		wk.data.WriteData(s.mainInputPCol, nextGen, d)
+	if l := len(residualData); l > 0 {
+		logger.Logf("%v %v returned %v residuals back to %v", b.PBDID, b.InstID, l, s.mainInputPCol)
 	}
-	V(2).Logf("iterating %v - %v: gen %v", s.ID, tid, nextGen)
+	em.PersistBundle(s.ID, b.InstID, s.OutputsToCoders, b.OutputData, s.inputInfo, residualData)
+	b.OutputData = tentativeData{} // Clear the data.
 
+	// If we don't send this out, we simply end here.
+	j.metrics.contributeMetrics(resp)
 }

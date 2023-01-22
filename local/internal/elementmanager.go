@@ -321,7 +321,7 @@ func (em *elementManager) processReadyBundles(ctx context.Context, runStageCh ch
 		em.stageMu.Lock()
 		if em.readyStages.Len() == 0 {
 			em.stageMu.Unlock()
-			break // escape from ready loop.
+			return // escape from ready loop.
 		}
 		rb := heap.Pop(&em.readyStages).(runBundle)
 		rb.bundleID = nextBundID()
@@ -354,7 +354,10 @@ func (em *elementManager) Bundles(nextBundID func() string) <-chan runBundle {
 		cancelFn()
 	}()
 	go func() {
-		defer close(runStageCh)
+		defer func() {
+			close(runStageCh)
+			logger.Logf("closing stage channel")
+		}()
 		// repeats is a failsafe to avoid infinite loops in testing.
 		repeats := map[string]int{}
 		repeatCap := 1000
@@ -372,6 +375,7 @@ func (em *elementManager) Bundles(nextBundID func() string) <-chan runBundle {
 			for {
 				select {
 				case <-ctx.Done():
+					em.stageMu.Unlock()
 					logger.Logf("Bundles: loop canceled (pre pending)")
 					return
 				default:
@@ -466,7 +470,7 @@ func (em *elementManager) Bundles(nextBundID func() string) <-chan runBundle {
 //
 // PersistBundle takes in the stage ID, ID of the bundle associated with the pending
 // input elements, and the committed output elements.
-func (em *elementManager) PersistBundle(stageID string, bundID string, col2Coders map[string]PColInfo, d tentativeData) {
+func (em *elementManager) PersistBundle(stageID string, bundID string, col2Coders map[string]PColInfo, d tentativeData, inputInfo PColInfo, residuals [][]byte) {
 	stage := em.stages[stageID]
 	for output, data := range d.raw {
 		info := col2Coders[output]
@@ -510,6 +514,35 @@ func (em *elementManager) PersistBundle(stageID string, bundID string, col2Coder
 			boundedWindowEnd := mtime.EndOfGlobalWindowTime
 			em.addPendingStage(runBundle{stageID: sID, watermark: boundedWindowEnd})
 		}
+	}
+
+	// Return unprocessed to this stage's pending
+	var unprocessedElements []element
+	var buf bytes.Buffer
+	for _, residual := range residuals {
+		buf.Reset()
+		buf.Write(residual)
+		ws, et, pn, err := exec.DecodeWindowedValueHeader(inputInfo.wDec, &buf)
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			logger.Fatalf("error decoding header for residual  for %v: %v", stage.ID, err)
+		}
+		unprocessedElements = append(unprocessedElements,
+			element{
+				windows:   ws,
+				timestamp: et,
+				pane:      pn,
+				rawbytes:  residual,
+			})
+	}
+	// Add unprocessed back to the pending stack.
+	if len(unprocessedElements) > 0 {
+		em.pendingElements.Add(len(unprocessedElements))
+		stage.AddPending(unprocessedElements)
+		boundedWindowEnd := mtime.EndOfGlobalWindowTime
+		em.addPendingStage(runBundle{stageID: stageID, watermark: boundedWindowEnd})
 	}
 	// Clear out the inprogress elements associated with the completed bundle.
 	// Must be done after adding the new pending elements to avoid an incorrect
