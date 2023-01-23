@@ -239,5 +239,4 @@ func pullDecoder(c *pipepb.Coder, coders map[string]*pipepb.Coder) func(io.Reade
 	default:
 		panic(fmt.Sprintf("unknown coder urn key: %v", urn))
 	}
-	return nil
 }

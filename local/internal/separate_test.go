@@ -145,7 +145,6 @@ type watcher struct {
 	id                         int
 	mu                         sync.Mutex
 	sentinelCount, sentinelCap int
-	once                       sync.Once
 }
 
 // Watchers is a "net/rpc" service.
@@ -312,9 +311,7 @@ func (fn *sepHarnessBase) block() {
 	sepClientMu.Unlock()
 
 	// Block until the watcher closes the channel.
-	select {
-	case <-c:
-	}
+	<-c
 }
 
 // delay inform the DoFn whether or not to return a delayed Processing continuation for this position.
@@ -339,7 +336,7 @@ func (fn *sepHarness) Setup() error {
 	return fn.Base.setup()
 }
 
-func (fn *sepHarness) ProcessEleemnt(v beam.T) beam.T {
+func (fn *sepHarness) ProcessElement(v beam.T) beam.T {
 	if fn.Base.IsSentinelEncoded.Fn.Call([]any{v})[0].(bool) {
 		V(2).Logf("%v is a sentinel, blocking", v)
 		fn.Base.block()

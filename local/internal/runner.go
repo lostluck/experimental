@@ -142,10 +142,8 @@ func externalEnvironment(ctx context.Context, ep *pipepb.ExternalPayload, wk *wo
 	})
 
 	// Job processing happens here, but orchestrated by other goroutines?
-	select {
-	case <-ctx.Done():
-		V(1).Logf("context canceled! stopping workers")
-	}
+	<-ctx.Done()
+	V(1).Logf("context canceled! stopping workers")
 
 	// Previous context cancelled so we need a new one.
 	pool.StopWorker(context.Background(), &fnpb.StopWorkerRequest{

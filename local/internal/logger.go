@@ -43,12 +43,6 @@ type logIface interface {
 	Fatalf(format string, v ...any)
 }
 
-type noopLogger struct{}
-
-func (noopLogger) Printf(format string, v ...any) {}
-func (noopLogger) Println(v ...any)               {}
-func (noopLogger) Fatalf(format string, v ...any) {}
-
 // V indicates the level of the log.
 //
 // Higher levels indicate finer granularity of detail.
