@@ -187,11 +187,11 @@ func (ss *stageState) OutputWatermark() mtime.Time {
 }
 
 type element struct {
-	windows   []typex.Window
+	window    typex.Window
 	timestamp mtime.Time
 	pane      typex.PaneInfo
 
-	rawbytes []byte
+	elmBytes []byte
 }
 
 type elements struct {
@@ -202,7 +202,7 @@ type elements struct {
 func (es elements) ToData() [][]byte {
 	var ret [][]byte
 	for _, e := range es.es {
-		ret = append(ret, e.rawbytes)
+		ret = append(ret, e.elmBytes)
 	}
 	return ret
 }
@@ -254,10 +254,10 @@ func (h *runBundleHeap) Pop() any {
 func (em *elementManager) Impulse(stageID string) {
 	stage := em.stages[stageID]
 	newPending := []element{{
-		windows:   window.SingleGlobalWindow,
+		window:    window.GlobalWindow{},
 		timestamp: mtime.Now(),
 		pane:      typex.NoFiringPane(),
-		rawbytes:  impulseBytes(),
+		elmBytes:  impulseBytes(),
 	}}
 
 	consumers := em.consumers[stage.outputIDs[0]]
@@ -289,30 +289,41 @@ func (rb runBundle) String() string {
 	return fmt.Sprintf("{%v %v %v}", rb.stageID, rb.bundleID, rb.watermark)
 }
 
-func (ss *stageState) startBundle(bID string) bool {
+func (ss *stageState) startBundle(rb runBundle) bool {
 	defer func() {
 		if e := recover(); e != nil {
-			panic(fmt.Sprintf("stage %v bundle %v panicked\n%v", ss.ID, bID, e))
+			panic(fmt.Sprintf("stage %v bundle %v at %v panicked\n%v", ss.ID, rb.bundleID, rb.watermark, e))
 		}
 	}()
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
-	logger.Logf("startBundle: %v %v - %v pending elements", ss.ID, bID, len(ss.pending))
+	logger.Logf("startBundle: %v %v - %v pending elements at %v", ss.ID, rb.bundleID, len(ss.pending), rb.watermark)
 
-	if len(ss.pending) == 0 {
+	var toProcess, notYet []element
+	for _, e := range ss.pending {
+		if e.window.MaxTimestamp() <= rb.watermark {
+			toProcess = append(toProcess, e)
+		} else {
+			notYet = append(notYet, e)
+		}
+	}
+	ss.pending = notYet
+	heap.Init(&ss.pending)
+
+	if len(toProcess) == 0 {
+		logger.Logf("startBundle: %v %v - no elements at %v", ss.ID, rb.bundleID, rb.watermark)
 		return false
 	}
-	// THIS is where basic splits should happen/per element processing.
+	// Is THIS is where basic splits should happen/per element processing?
 	es := elements{
-		es:           ss.pending,
-		minTimestamp: ss.pending[0].timestamp,
+		es:           toProcess,
+		minTimestamp: toProcess[0].timestamp,
 	}
 	if ss.inprogress == nil {
 		ss.inprogress = make(map[string]elements)
 	}
-	ss.inprogress[bID] = es
-	ss.pending = nil
-	logger.Logf("startBundle: %v %v - %v elements", ss.ID, bID, len(es.es))
+	ss.inprogress[rb.bundleID] = es
+	logger.Logf("startBundle: %v %v - %v elements at %v", ss.ID, rb.bundleID, len(es.es), rb.watermark)
 	return true
 }
 
@@ -327,7 +338,7 @@ func (em *elementManager) processReadyBundles(ctx context.Context, runStageCh ch
 		rb.bundleID = nextBundID()
 		em.stageMu.Unlock()
 
-		ok := em.stages[rb.stageID].startBundle(rb.bundleID)
+		ok := em.stages[rb.stageID].startBundle(rb)
 		if !ok {
 			continue
 		}
@@ -359,6 +370,8 @@ func (em *elementManager) Bundles(nextBundID func() string) <-chan runBundle {
 			logger.Logf("closing stage channel")
 		}()
 		// repeats is a failsafe to avoid infinite loops in testing.
+		// Once we have condition stage scheduling, this shouldn't be
+		// necessary.
 		repeats := map[string]int{}
 		repeatCap := 1000
 		for {
@@ -389,7 +402,7 @@ func (em *elementManager) Bundles(nextBundID func() string) <-chan runBundle {
 				ready := true
 				ss := em.stages[rb.stageID]
 
-				if pcol, wm := ss.UpstreamWatermark(); rb.watermark >= wm {
+				if pcol, wm := ss.UpstreamWatermark(); rb.watermark > wm {
 					logger.Logf("Bundles: stage %v insufficient upstream watermark; requires %q %v > %v", rb.stageID, pcol, wm, rb.watermark)
 					ready = false
 				}
@@ -423,6 +436,10 @@ func (em *elementManager) Bundles(nextBundID func() string) <-chan runBundle {
 					sort.Strings(waitingOnSides)
 					bundles := maps.Keys(em.inprogressBundles)
 					sort.Strings(bundles)
+					if len(bundles) > 0 {
+						// reset the cap while there are extant bundles.
+						repeats[rb.stageID] = 1
+					}
 
 					if repeats[rb.stageID] > repeatCap {
 						var b strings.Builder
@@ -473,6 +490,7 @@ func (em *elementManager) Bundles(nextBundID func() string) <-chan runBundle {
 func (em *elementManager) PersistBundle(stageID string, bundID string, col2Coders map[string]PColInfo, d tentativeData, inputInfo PColInfo, residuals [][]byte) {
 	stage := em.stages[stageID]
 	for output, data := range d.raw {
+		uniqueWindows := map[typex.Window]struct{}{}
 		info := col2Coders[output]
 		var newPending []element
 		logger.Logf("PersistBundle: processing output for stage %v bundle %v output: %v", stageID, bundID, output)
@@ -492,14 +510,22 @@ func (em *elementManager) PersistBundle(stageID string, bundID string, col2Coder
 					logger.Fatalf("error decoding watermarks for %v: %v", output, err)
 				}
 				// TODO: Optimize unnecessary copies. This is doubleteeing.
-				info.eDec(tee)
-				newPending = append(newPending,
-					element{
-						windows:   ws,
-						timestamp: et,
-						pane:      pn,
-						rawbytes:  rawBytes.Bytes(),
-					})
+				elmBytes := info.eDec(tee)
+				for _, w := range ws {
+					var buf bytes.Buffer
+					if err := exec.EncodeWindowedValueHeader(info.wEnc, []typex.Window{w}, et, typex.NoFiringPane(), &buf); err != nil {
+						logger.Fatalf("error decoding watermarks for %v: %v", output, err)
+					}
+					buf.Write(elmBytes)
+					newPending = append(newPending,
+						element{
+							window:    w,
+							timestamp: et,
+							pane:      pn,
+							elmBytes:  buf.Bytes(),
+						})
+					uniqueWindows[w] = struct{}{}
+				}
 			}
 		}
 		consumers := em.consumers[output]
@@ -510,14 +536,16 @@ func (em *elementManager) PersistBundle(stageID string, bundID string, col2Coder
 			consumer.AddPending(newPending)
 
 			logger.Logf("PersistBundle: setting downstream stage %v, with %v new elements", sID, len(newPending))
-			// TODO, base on elements bounded window termination.
-			boundedWindowEnd := mtime.EndOfGlobalWindowTime
-			em.addPendingStage(runBundle{stageID: sID, watermark: boundedWindowEnd})
+			// Schedule downstream for each unique window in the pending elements.
+			for w := range uniqueWindows {
+				em.addPendingStage(runBundle{stageID: sID, watermark: w.MaxTimestamp()})
+			}
 		}
 	}
 
 	// Return unprocessed to this stage's pending
 	var unprocessedElements []element
+	uniqueWindows := map[typex.Window]struct{}{}
 	var buf bytes.Buffer
 	for _, residual := range residuals {
 		buf.Reset()
@@ -529,20 +557,27 @@ func (em *elementManager) PersistBundle(stageID string, bundID string, col2Coder
 			}
 			logger.Fatalf("error decoding header for residual  for %v: %v", stage.ID, err)
 		}
-		unprocessedElements = append(unprocessedElements,
-			element{
-				windows:   ws,
-				timestamp: et,
-				pane:      pn,
-				rawbytes:  residual,
-			})
+
+		// TODO recode for each window.
+		for _, w := range ws {
+			unprocessedElements = append(unprocessedElements,
+				element{
+					window:    w,
+					timestamp: et,
+					pane:      pn,
+					elmBytes:  residual,
+				})
+			uniqueWindows[w] = struct{}{}
+		}
 	}
 	// Add unprocessed back to the pending stack.
 	if len(unprocessedElements) > 0 {
 		em.pendingElements.Add(len(unprocessedElements))
 		stage.AddPending(unprocessedElements)
-		boundedWindowEnd := mtime.EndOfGlobalWindowTime
-		em.addPendingStage(runBundle{stageID: stageID, watermark: boundedWindowEnd})
+
+		for w := range uniqueWindows {
+			em.addPendingStage(runBundle{stageID: stageID, watermark: w.MaxTimestamp()})
+		}
 	}
 	// Clear out the inprogress elements associated with the completed bundle.
 	// Must be done after adding the new pending elements to avoid an incorrect

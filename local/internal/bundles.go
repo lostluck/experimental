@@ -20,7 +20,6 @@ import (
 	"fmt"
 	"io"
 	"sort"
-	"strings"
 	"sync"
 
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/graph/mtime"
@@ -150,7 +149,7 @@ func executePipeline(wk *worker, j *job) {
 	// Execute stages here
 	for rb := range em.Bundles(wk.nextInst) {
 		s := wk.stages[rb.stageID]
-		s.Execute(j, wk, comps, em, rb.bundleID)
+		s.Execute(j, wk, comps, em, rb.bundleID, rb.watermark)
 	}
 	V(1).Logf("pipeline done!")
 }
@@ -266,12 +265,12 @@ func getSideInputs(t *pipepb.PTransform) (map[string]*pipepb.SideInput, error) {
 }
 
 // handleSideInputs ensures appropriate coders are available to the bundle, and prepares a function to stage the data.
-func handleSideInputs(t *pipepb.PTransform, comps *pipepb.Components, coders map[string]*pipepb.Coder, wk *worker) (func(b *bundle, tid string, gen int, wms map[string]mtime.Time), error) {
+func handleSideInputs(t *pipepb.PTransform, comps *pipepb.Components, coders map[string]*pipepb.Coder, wk *worker) (func(b *bundle, tid string, gen int, watermark mtime.Time), error) {
 	sis, err := getSideInputs(t)
 	if err != nil {
 		return nil, err
 	}
-	var prepSides []func(b *bundle, tid string, gen int, wms map[string]mtime.Time)
+	var prepSides []func(b *bundle, tid string, gen int, watermark mtime.Time)
 
 	// Get WindowedValue Coders for the transform's input and output PCollections.
 	for local, global := range t.GetInputs() {
@@ -290,16 +289,16 @@ func handleSideInputs(t *pipepb.PTransform, comps *pipepb.Components, coders map
 			// May be of zero length, but that's OK. Side inputs can be empty.
 
 			global, local := global, local
-			prepSides = append(prepSides, func(b *bundle, tid string, gen int, wms map[string]mtime.Time) {
+			prepSides = append(prepSides, func(b *bundle, tid string, gen int, watermark mtime.Time) {
 				data := wk.data.GetAllData(global)
 
 				if b.IterableSideInputData == nil {
-					b.IterableSideInputData = map[string]map[string]map[string][][]byte{}
+					b.IterableSideInputData = map[string]map[string]map[typex.Window][][]byte{}
 				}
 				if _, ok := b.IterableSideInputData[tid]; !ok {
-					b.IterableSideInputData[tid] = map[string]map[string][][]byte{}
+					b.IterableSideInputData[tid] = map[string]map[typex.Window][][]byte{}
 				}
-				b.IterableSideInputData[tid][local] = collateByWindows(data, mtime.MaxTimestamp, wDec, wEnc,
+				b.IterableSideInputData[tid][local] = collateByWindows(data, watermark, wDec, wEnc,
 					func(r io.Reader) [][]byte {
 						return [][]byte{ed(r)}
 					}, func(a, b [][]byte) [][]byte {
@@ -321,16 +320,16 @@ func handleSideInputs(t *pipepb.PTransform, comps *pipepb.Components, coders map
 			wDec, wEnc := getWindowValueCoders(comps, col, coders)
 
 			global, local := global, local
-			prepSides = append(prepSides, func(b *bundle, tid string, gen int, wms map[string]mtime.Time) {
+			prepSides = append(prepSides, func(b *bundle, tid string, gen int, watermark mtime.Time) {
 				// May be of zero length, but that's OK. Side inputs can be empty.
 				data := wk.data.GetAllData(global)
 				if b.MultiMapSideInputData == nil {
-					b.MultiMapSideInputData = map[string]map[string]map[string]map[string][][]byte{}
+					b.MultiMapSideInputData = map[string]map[string]map[typex.Window]map[string][][]byte{}
 				}
 				if _, ok := b.MultiMapSideInputData[tid]; !ok {
-					b.MultiMapSideInputData[tid] = map[string]map[string]map[string][][]byte{}
+					b.MultiMapSideInputData[tid] = map[string]map[typex.Window]map[string][][]byte{}
 				}
-				b.MultiMapSideInputData[tid][local] = collateByWindows(data, mtime.MaxTimestamp, wDec, wEnc,
+				b.MultiMapSideInputData[tid][local] = collateByWindows(data, watermark, wDec, wEnc,
 					func(r io.Reader) map[string][][]byte {
 						kb := kd(r)
 						return map[string][][]byte{
@@ -350,9 +349,9 @@ func handleSideInputs(t *pipepb.PTransform, comps *pipepb.Components, coders map
 			return nil, fmt.Errorf("local input %v (global %v) uses accesspattern %v", local, global, si.GetAccessPattern().GetUrn())
 		}
 	}
-	return func(b *bundle, tid string, gen int, wms map[string]mtime.Time) {
+	return func(b *bundle, tid string, gen int, watermark mtime.Time) {
 		for _, prep := range prepSides {
-			prep(b, tid, gen, wms)
+			prep(b, tid, gen, watermark)
 		}
 	}, nil
 }
@@ -413,7 +412,7 @@ func portFor(wInCid string, wk *worker) []byte {
 type transformExecuter interface {
 	ExecuteUrns() []string
 	ExecuteWith(t *pipepb.PTransform) string
-	ExecuteTransform(tid string, t *pipepb.PTransform, comps *pipepb.Components, wk *worker, gen int, wms map[string]mtime.Time) *bundle
+	ExecuteTransform(tid string, t *pipepb.PTransform, comps *pipepb.Components, watermark mtime.Time, data [][]byte) *bundle
 }
 
 type processor struct {
@@ -431,9 +430,9 @@ type bundle struct {
 
 	// TODO change to a single map[tid] -> map[input] -> map[window] -> struct { Iter data, MultiMap data } instead of all maps.
 	// IterableSideInputData is a map from transformID, to inputID, to window, to data.
-	IterableSideInputData map[string]map[string]map[string][][]byte
+	IterableSideInputData map[string]map[string]map[typex.Window][][]byte
 	// MultiMapSideInputData is a map from transformID, to inputID, to window, to data key, to data values.
-	MultiMapSideInputData map[string]map[string]map[string]map[string][][]byte
+	MultiMapSideInputData map[string]map[string]map[typex.Window]map[string][][]byte
 
 	// OutputCount is the number of data outputs this bundle has.
 	// We need to see this many closed data channels before the bundle is complete.
@@ -491,9 +490,9 @@ func (b *bundle) ProcessOn(wk *worker) {
 	b.DataWait.Wait() // Wait until data is ready.
 }
 
-// collateByWindows takes the data and collates them into string keyed window maps.
+// collateByWindows takes the data and collates them into window keyed maps.
 // Uses generics to consolidate the repetitive window loops.
-func collateByWindows[T any](data [][]byte, watermark mtime.Time, wDec exec.WindowDecoder, wEnc exec.WindowEncoder, ed func(io.Reader) T, join func(T, T) T) map[string]T {
+func collateByWindows[T any](data [][]byte, watermark mtime.Time, wDec exec.WindowDecoder, wEnc exec.WindowEncoder, ed func(io.Reader) T, join func(T, T) T) map[typex.Window]T {
 	windowed := map[typex.Window]T{}
 	for _, datum := range data {
 		inBuf := bytes.NewBuffer(datum)
@@ -505,22 +504,16 @@ func collateByWindows[T any](data [][]byte, watermark mtime.Time, wDec exec.Wind
 			// Get the element out, and window them properly.
 			e := ed(inBuf)
 			for _, w := range ws {
-				if w.MaxTimestamp() > watermark {
-					logger.Logf("window not yet closed, skipping %v > %v", w.MaxTimestamp(), watermark)
-					continue
-				}
+				// if w.MaxTimestamp() > watermark {
+				// 	var t T
+				// 	logger.Logf("collateByWindows[%T]: window not yet closed, skipping %v > %v", t, w.MaxTimestamp(), watermark)
+				// 	continue
+				// }
 				windowed[w] = join(windowed[w], e)
 			}
 		}
 	}
-	output := make(map[string]T, len(windowed))
-	var buf strings.Builder
-	for w, v := range windowed {
-		wEnc.EncodeSingle(w, &buf)
-		output[buf.String()] = v
-		buf.Reset()
-	}
-	return output
+	return windowed
 }
 
 // stage represents a fused subgraph.
@@ -540,7 +533,7 @@ type stage struct {
 	inputInfo        PColInfo
 	desc             *fnpb.ProcessBundleDescriptor
 	sides            []string
-	prepareSides     func(b *bundle, tid string, gen int, wms map[string]mtime.Time)
+	prepareSides     func(b *bundle, tid string, gen int, watermark mtime.Time)
 
 	SinkToPCollection map[string]string
 	OutputsToCoders   map[string]PColInfo
@@ -553,22 +546,22 @@ type PColInfo struct {
 	eDec     func(io.Reader) []byte
 }
 
-func (s *stage) Execute(j *job, wk *worker, comps *pipepb.Components, em *elementManager, bundID string) {
+func (s *stage) Execute(j *job, wk *worker, comps *pipepb.Components, em *elementManager, bundID string, watermark mtime.Time) {
 	tid := s.transforms[0]
 	gen := 0
-	V(2).Logf("Execute: starting %v - %v", s.ID, tid)
+	V(2).Logf("Execute: starting %v %v - %v at %v", s.ID, bundID, tid, watermark)
 
 	var b *bundle
 	var send bool
+	ss := em.stages[s.ID]
 	switch s.envID {
 	case "": // Runner Transforms
 		// Runner transforms are processed immeadiately.
-		b = s.exe.ExecuteTransform(tid, comps.GetTransforms()[tid], comps, wk, gen, nil)
+		b = s.exe.ExecuteTransform(tid, comps.GetTransforms()[tid], comps, watermark, ss.inprogress[bundID].ToData())
 		b.InstID = bundID
-		logger.Logf("Execute: runner transform: stage %v - tid %v", s.ID, tid)
+		logger.Logf("Execute: runner transform: stage %v %v - tid %v", s.ID, bundID, tid)
 	case wk.ID:
 		send = true
-		ss := em.stages[s.ID]
 		b = &bundle{
 			PBDID:  s.ID,
 			InstID: bundID,
@@ -584,7 +577,7 @@ func (s *stage) Execute(j *job, wk *worker, comps *pipepb.Components, em *elemen
 		}
 		b.DataWait.Add(b.OutputCount)
 
-		s.prepareSides(b, s.transforms[0], gen, nil)
+		s.prepareSides(b, s.transforms[0], gen, watermark)
 	default:
 		logger.Fatalf("unknown environment[%v]", s.envID)
 	}
@@ -594,11 +587,10 @@ func (s *stage) Execute(j *job, wk *worker, comps *pipepb.Components, em *elemen
 		b.ProcessOn(wk) // Blocks until finished.
 	}
 	// Tentative Data is ready, commit it to the main datastore.
-	V(3).Logf("Execute: committing data for %v %v of %v\n%v", s.ID, maps.Keys(b.OutputData.raw), maps.Keys(s.OutputsToCoders), prototext.Format(comps.Transforms[tid]))
+	V(3).Logf("Execute: committing data for %v %v %v of %v\n%v", s.ID, bundID, maps.Keys(b.OutputData.raw), maps.Keys(s.OutputsToCoders), prototext.Format(comps.Transforms[tid]))
 
 	resp := &fnpb.ProcessBundleResponse{}
 	if send {
-		V(1).Logf("Execute: got %v response", b.PBDID)
 		resp = <-b.Resp
 	}
 	// TODO handle side input data properly.
@@ -608,9 +600,8 @@ func (s *stage) Execute(j *job, wk *worker, comps *pipepb.Components, em *elemen
 		ba := rr.GetApplication()
 		residualData = append(residualData, ba.GetElement())
 		if len(ba.GetElement()) == 0 {
-			logger.Fatalf("bundle %v returned empty residual application", b.PBDID)
+			logger.Fatalf("bundle %v %v returned empty residual application", b.PBDID, b.InstID)
 		}
-		wk.data.WriteData(s.mainInputPCol, gen, ba.GetElement())
 	}
 	if l := len(residualData); l > 0 {
 		logger.Logf("%v %v returned %v residuals back to %v", b.PBDID, b.InstID, l, s.mainInputPCol)

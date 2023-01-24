@@ -62,25 +62,7 @@ func (d *dataService) Commit(gen int, tent tentativeData) {
 	}
 }
 
-// WriteData adds data to a given global collectionID.
-// Currently only used directly by runner based transforms.
-func (d *dataService) WriteData(colID string, gen int, data []byte) {
-	if d.raw == nil {
-		d.raw = map[string]map[int][][]byte{}
-	}
-	c, ok := d.raw[colID]
-	if !ok {
-		c = map[int][][]byte{}
-		d.raw[colID] = c
-	}
-	c[gen] = append(c[gen], data)
-}
-
-func (d *dataService) GetData(colID string, gen int) [][]byte {
-	return d.raw[colID][gen]
-}
-
-// Hack for GBK and Side Inputs until watermarks are sorted out.
+// Hack for Side Inputs until watermarks are sorted out.
 func (d *dataService) GetAllData(colID string) [][]byte {
 	var ret [][]byte
 	for gen, data := range d.raw[colID] {

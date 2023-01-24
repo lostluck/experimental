@@ -26,6 +26,10 @@ import (
 	"io"
 	"path"
 
+	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/graph/coder"
+	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/graph/window"
+	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/runtime/exec"
+	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/typex"
 	fnpb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/fnexecution_v1"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/encoding/prototext"
@@ -250,7 +254,7 @@ func (wk *worker) State(state fnpb.BeamFnState_StateServer) error {
 		// so we want to close the State handler when it's all done.
 		defer close(responses)
 		for {
-			resp, err := state.Recv()
+			req, err := state.Recv()
 			if err == io.EOF {
 				return
 			}
@@ -263,25 +267,56 @@ func (wk *worker) State(state fnpb.BeamFnState_StateServer) error {
 					V(0).Fatalf("state.Recv error: %v", err)
 				}
 			}
-			switch resp.GetRequest().(type) {
+			switch req.GetRequest().(type) {
 			case *fnpb.StateRequest_Get:
 				// TODO: move data handling to be pcollection based.
-				b := wk.bundles[resp.GetInstructionId()]
-				key := resp.GetStateKey()
-				V(3).Logf("StateRequest_Get: %v", prototext.Format(resp))
+				b := wk.bundles[req.GetInstructionId()]
+				key := req.GetStateKey()
+				V(3).Logf("StateRequest_Get: %v", prototext.Format(req))
 
 				var data [][]byte
 				switch key.GetType().(type) {
 				case *fnpb.StateKey_IterableSideInput_:
 					ikey := key.GetIterableSideInput()
 					wKey := ikey.GetWindow()
-					data = b.IterableSideInputData[ikey.GetTransformId()][ikey.GetSideInputId()][string(wKey)]
+					var w typex.Window
+					if len(wKey) == 0 {
+						w = window.GlobalWindow{}
+					} else {
+						w, err = exec.MakeWindowDecoder(coder.NewIntervalWindow()).DecodeSingle(bytes.NewBuffer(wKey))
+						if err != nil {
+							logger.Fatalf("error decoding iterable side input window key %v: %v", wKey, err)
+						}
+					}
+					winMap := b.IterableSideInputData[ikey.GetTransformId()][ikey.GetSideInputId()]
+					var wins []typex.Window
+					for w := range winMap {
+						wins = append(wins, w)
+					}
+					logger.Logf("side input[%v][%v] I Key: %v Windows: %v", req.GetId(), req.GetInstructionId(), w, wins)
+					data = winMap[w]
 
 				case *fnpb.StateKey_MultimapSideInput_:
 					mmkey := key.GetMultimapSideInput()
 					wKey := mmkey.GetWindow()
+					var w typex.Window
+					if len(wKey) == 0 {
+						w = window.GlobalWindow{}
+					} else {
+						w, err = exec.MakeWindowDecoder(coder.NewIntervalWindow()).DecodeSingle(bytes.NewBuffer(wKey))
+						if err != nil {
+							logger.Fatalf("error decoding iterable side input window key %v: %v", wKey, err)
+						}
+					}
 					dKey := mmkey.GetKey()
-					data = b.MultiMapSideInputData[mmkey.GetTransformId()][mmkey.GetSideInputId()][string(wKey)][string(dKey)]
+					winMap := b.MultiMapSideInputData[mmkey.GetTransformId()][mmkey.GetSideInputId()]
+					var wins []typex.Window
+					for w := range winMap {
+						wins = append(wins, w)
+					}
+					logger.Logf("side input[%v][%v] MM Key: %v Windows: %v", req.GetId(), req.GetInstructionId(), w, wins)
+
+					data = winMap[w][string(dKey)]
 
 				default:
 					logger.Fatalf("unsupported StateKey Access type: %T: %v", key.GetType(), prototext.Format(key))
@@ -293,10 +328,10 @@ func (wk *worker) State(state fnpb.BeamFnState_StateServer) error {
 				for _, value := range data {
 					buf.Write(value)
 				}
-				V(3).Logf("StateRequest_Get: data len - %v", buf.Len())
+				V(3).Logf("StateRequest_Get[%v][%v]: data len - %v", req.GetId(), req.GetInstructionId(), buf.Len())
 
 				responses <- &fnpb.StateResponse{
-					Id: resp.GetId(),
+					Id: req.GetId(),
 					Response: &fnpb.StateResponse_Get{
 						Get: &fnpb.StateGetResponse{
 							Data: buf.Bytes(),
@@ -304,7 +339,7 @@ func (wk *worker) State(state fnpb.BeamFnState_StateServer) error {
 					},
 				}
 			default:
-				logger.Fatalf("unsupported StateRequest kind %T: %v", resp.GetRequest(), prototext.Format(resp))
+				logger.Fatalf("unsupported StateRequest kind %T: %v", req.GetRequest(), prototext.Format(req))
 			}
 		}
 	}()

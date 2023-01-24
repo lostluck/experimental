@@ -75,7 +75,7 @@ func (h *runner) ExecuteWith(t *pipepb.PTransform) string {
 }
 
 // ExecTransform handles special processing with respect to runner specific transforms
-func (h *runner) ExecuteTransform(tid string, t *pipepb.PTransform, comps *pipepb.Components, wk *worker, gen int, wms map[string]mtime.Time) *bundle {
+func (h *runner) ExecuteTransform(tid string, t *pipepb.PTransform, comps *pipepb.Components, watermark mtime.Time, inputData [][]byte) *bundle {
 	urn := t.GetSpec().GetUrn()
 	var data [][]byte
 	var onlyOut string
@@ -89,12 +89,8 @@ func (h *runner) ExecuteTransform(tid string, t *pipepb.PTransform, comps *pipep
 		data = append(data, impulseBytes())
 
 	case urnTransformFlatten:
-		// Extract the data from the parents, by generation of the inputs...
-		// Hmmm, tricky, since we'd need to extract the earlier ones.
-		// But is this something we should just have the data service manage?
-		for _, globalID := range t.GetInputs() {
-			data = append(data, wk.data.GetAllData(globalID)...)
-		}
+		// Allready done and collated.
+		data = inputData
 
 	case urnTransformGBK:
 		var inCol string
@@ -117,9 +113,9 @@ func (h *runner) ExecuteTransform(tid string, t *pipepb.PTransform, comps *pipep
 		kc := coders[kcID]
 		ec := coders[ecID]
 
-		V(3).Logf("reading gbk data from %v, gen %v", inCol, gen)
+		V(3).Logf("reading gbk data from %v", inCol)
 		// TODO fix data piping for GBKs.
-		data = append(data, gbkBytes(ws, wc, kc, ec, wk.data.GetAllData(inCol), coders, mtime.MaxTimestamp))
+		data = append(data, gbkBytes(ws, wc, kc, ec, inputData, coders, watermark))
 		if len(data[0]) == 0 {
 			logger.Fatalf("no data for GBK")
 		}
@@ -139,8 +135,6 @@ func (h *runner) ExecuteTransform(tid string, t *pipepb.PTransform, comps *pipep
 	}
 	output := tentativeData{}
 	for _, d := range data {
-		// Runner transforms reset the generation to 0.
-		wk.data.WriteData(onlyOut, 0, d)
 		output.WriteData(onlyOut, d)
 	}
 
@@ -236,10 +230,6 @@ func gbkBytes(ws *pipepb.WindowingStrategy, wc, kc, vc *pipepb.Coder, toAggregat
 			key := string(keyByt)
 			value := vd(buf)
 			for _, w := range ws {
-				if w.MaxTimestamp() > watermark {
-					logger.Logf("window not yet closed, skipping %v > %v", w.MaxTimestamp(), watermark)
-					continue
-				}
 				ft := outputTime(w, tm)
 				wk, ok := windows[w]
 				if !ok {
@@ -259,6 +249,7 @@ func gbkBytes(ws *pipepb.WindowingStrategy, wc, kc, vc *pipepb.Coder, toAggregat
 	// If the strategy is session windows, then we need to get all the windows, sort them
 	// and see which ones need to be merged together.
 	if ws.GetWindowFn().GetUrn() == urnWindowFnSession {
+		logger.Log("sorting by session window")
 		session := &pipepb.SessionWindowsPayload{}
 		if err := (proto.UnmarshalOptions{}).Unmarshal(ws.GetWindowFn().GetPayload(), session); err != nil {
 			panic("unable to decode SessionWindowsPayload")

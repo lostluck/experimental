@@ -17,6 +17,30 @@
   * []byte avoidance -> To io.Reader/Writer streams
   * Error plumbing rather than log.Fatals or panics.
 
+# Notes to myself: 2023-01-23
+
+Success in getting watermark handling largely complete!
+
+Now I'm in the middle of fixing the GBK and Side Inputs to
+handle their data dependencies properly.
+
+GBKs are fine for now, but session windows need some work.
+The trick should be as simple as delaying the processing of a 
+session window by End + Gap size, which will let us handle 
+merging as needed down the road by the GBK. 
+
+I'm certainly overdoing things when data doesn't *need* to
+be processed or aggregated. But for now, it'll have to do.
+
+Side inputs seem to be working successfully, but don't pull
+the data from the correct place. This prevents being able to
+garbage collect the state or similar. It's just more difficult
+since it also needs to keep all values around until the window
+it needs to use isn't necessary any more.
+
+But resolving that, will get rid of the now vestigial data layer
+instead of having everything be live state.
+
 # Notes to myself: 2023-01-21
 
 Switching things to use watermarks is the first thing about authoring
