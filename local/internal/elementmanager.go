@@ -67,10 +67,10 @@ type elementManager struct {
 	stageMu           sync.Mutex
 	pendingStages     runBundleHeap
 	readyStages       runBundleHeap
-	inprogressBundles map[string]struct{}
+	inprogressBundles set[string] // Active bundleIDs
 
 	refreshMu          sync.Mutex
-	watermarkRefreshes map[string]struct{}
+	watermarkRefreshes set[string] // Scheduled stageID watermark refreshes
 
 	pendingElements sync.WaitGroup
 }
@@ -81,8 +81,8 @@ func newElementManager() *elementManager {
 		consumers:          map[string][]string{},
 		sideConsumers:      map[string][]string{},
 		pcolParents:        map[string]string{},
-		watermarkRefreshes: map[string]struct{}{},
-		inprogressBundles:  map[string]struct{}{},
+		watermarkRefreshes: set[string]{},
+		inprogressBundles:  set[string]{},
 	}
 }
 
@@ -343,7 +343,7 @@ func (em *elementManager) processReadyBundles(ctx context.Context, runStageCh ch
 			continue
 		}
 		em.stageMu.Lock()
-		em.inprogressBundles[rb.bundleID] = struct{}{}
+		em.inprogressBundles.insert(rb.bundleID)
 		em.stageMu.Unlock()
 
 		logger.Log("Bundles: ready", rb)
@@ -490,6 +490,7 @@ func (em *elementManager) Bundles(nextBundID func() string) <-chan runBundle {
 func (em *elementManager) PersistBundle(stageID string, bundID string, col2Coders map[string]PColInfo, d tentativeData, inputInfo PColInfo, residuals [][]byte) {
 	stage := em.stages[stageID]
 	for output, data := range d.raw {
+		// Can't use set[typex.Window] until go1.20
 		uniqueWindows := map[typex.Window]struct{}{}
 		info := col2Coders[output]
 		var newPending []element
@@ -588,7 +589,7 @@ func (em *elementManager) PersistBundle(stageID string, bundID string, col2Coder
 	delete(stage.inprogress, bundID)
 	stage.mu.Unlock()
 	em.stageMu.Lock()
-	delete(em.inprogressBundles, bundID)
+	em.inprogressBundles.remove(bundID)
 	em.stageMu.Unlock()
 
 	logger.Logf("PersistBundle: removed pending bundle %v, with %v processed elements", bundID, -len(completed.es))
@@ -619,40 +620,34 @@ func (ss *stageState) String() string {
 	return fmt.Sprintf("[%v] IN: %v OUT: %v UP: %q %v", ss.ID, ss.input, ss.output, pcol, up)
 }
 
-func (em *elementManager) addRefreshes(stages map[string]struct{}) {
+func (em *elementManager) addRefreshes(stages set[string]) {
 	em.refreshMu.Lock()
 	defer em.refreshMu.Unlock()
-	for stageID := range stages {
-		em.watermarkRefreshes[stageID] = struct{}{}
-	}
+	em.watermarkRefreshes.merge(stages)
 }
 
 func (em *elementManager) addRefresh(stageID string) {
 	em.refreshMu.Lock()
 	defer em.refreshMu.Unlock()
-	em.watermarkRefreshes[stageID] = struct{}{}
+	em.watermarkRefreshes.insert(stageID)
 }
 
 func (em *elementManager) refreshWatermarks() {
 	// Need to have at least one refresh signal.
 	em.refreshMu.Lock()
 	defer em.refreshMu.Unlock()
-	nextUpdates := map[string]struct{}{}
+	nextUpdates := set[string]{}
 	for stageID := range em.watermarkRefreshes {
 		// clear out old one.
-		delete(em.watermarkRefreshes, stageID)
+		em.watermarkRefreshes.remove(stageID)
 		ss := em.stages[stageID]
 
 		dummyStateHold := mtime.MaxTimestamp
 
 		refreshes := ss.updateWatermarks(ss.minPendingTimestamp(), dummyStateHold, em)
-		for sID, v := range refreshes {
-			nextUpdates[sID] = v
-		}
+		nextUpdates.merge(refreshes)
 	}
-	for sID, v := range nextUpdates {
-		nextUpdates[sID] = v
-	}
+	em.watermarkRefreshes.merge(nextUpdates)
 }
 
 // updateWatermarks performs the following operations:
@@ -660,7 +655,7 @@ func (em *elementManager) refreshWatermarks() {
 // Watermark_In'  = MAX(Watermark_In, MIN(U(TS_Pending), U(Watermark_InputPCollection)))
 // Watermark_Out' = MAX(Watermark_Out, MIN(Watermark_In', U(StateHold)))
 // Watermark_PCollection = Watermark_Out_ProducingPTransform
-func (ss *stageState) updateWatermarks(minPending, minStateHold mtime.Time, em *elementManager) map[string]struct{} {
+func (ss *stageState) updateWatermarks(minPending, minStateHold mtime.Time, em *elementManager) set[string] {
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
 
@@ -685,7 +680,7 @@ func (ss *stageState) updateWatermarks(minPending, minStateHold mtime.Time, em *
 	if minStateHold < newOut {
 		newOut = minStateHold
 	}
-	refreshes := map[string]struct{}{}
+	refreshes := set[string]{}
 	// If bigger, advance the output watermark
 	if newOut > ss.output {
 		logger.Logf("updateWatermarks[%v]: advancing output watermark from %v to %v", ss.ID, ss.output, newOut)
@@ -698,13 +693,29 @@ func (ss *stageState) updateWatermarks(minPending, minStateHold mtime.Time, em *
 			}
 			for _, sID := range em.consumers[outputCol] {
 				em.stages[sID].updateUpstreamWatermark(outputCol, ss.output)
-				refreshes[sID] = struct{}{}
+				refreshes.insert(sID)
 			}
 			// Inform side input consumers, but don't update the upstream watermark.
 			for _, sID := range em.sideConsumers[outputCol] {
-				refreshes[sID] = struct{}{}
+				refreshes.insert(sID)
 			}
 		}
 	}
 	return refreshes
+}
+
+type set[K comparable] map[K]struct{}
+
+func (s set[K]) remove(k K) {
+	delete(s, k)
+}
+
+func (s set[K]) insert(k K) {
+	s[k] = struct{}{}
+}
+
+func (s set[K]) merge(o set[K]) {
+	for k := range o {
+		s.insert(k)
+	}
 }
