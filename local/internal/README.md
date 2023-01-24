@@ -19,6 +19,22 @@
 
 # Notes to myself: 2023-01-23
 
+Basically, to fix sessions best I need to do the other optimization I was putting off
+which was to only schedule a stage to be ready to execute in the first place if *all*
+conditions blocking an execution are ready.
+
+First, at minimum, a session aggregation may only execute at Max Timestamp + Gap Size,
+but *only* if it's the most recent one. Which means execution isn't determined by
+upstream execution exactly...
+
+But this basically means I need a trigger sub system, which I didn't want to do yet.
+I shouldn't need that whole thing yet though, I just need to check if a set of pending elements
+need merging, and do that before scheduling a stage as well.
+
+*sigh* Well, when you want to bake an apple pie, you must first create the universe...
+
+# Notes to myself: 2023-01-23
+
 Success in getting watermark handling largely complete!
 
 Now I'm in the middle of fixing the GBK and Side Inputs to
