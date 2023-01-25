@@ -17,6 +17,47 @@
   * []byte avoidance -> To io.Reader/Writer streams
   * Error plumbing rather than log.Fatals or panics.
 
+# Notes to myself: 2023-01-25
+
+I think I'll need to use sync.Cond, since I'll have an arbitrary number of ways of
+"unlocking" to check pending stages, but only one thing waiting on them. The check
+loop can simply check both pending stages, and then ready bundles to know if it
+should wait or not?
+
+Maybe?
+
+[This](https://lukechampine.com/cond.html) seems to confirm the position that 
+sync.Cond is how you resolve busywait loops.
+
+The minor ideal would be to have each stage have one, but this is wasteful since
+then we have a wait loop per stage. It becomes harder to debug or reason about
+order of events. 
+
+I think we'll end up with two in the end. One for the "there are ready stages",
+`readyCond` and one for "watermarks + there are pending stages to examine" 
+`pendingCond`.  
+
+The `readyCond` is pretty simple, every time any are added for execution,
+we Broadcast, and that starts sending them to process.
+If there are none left, we loop back around and wait loop, exiting when the 
+condition is true. Goroutine exits when the context is canceled, checked in
+the wait loop, and the bottom of the loop, before sending down the channel.
+
+But we're probably better off with `readyCond` being it's
+own `readyChannel` since we can buffer work to do and the
+condition is a simple "there's stuff to execute" check.
+`len(readyChanel)` will work as a nice load metric for some
+future UI.
+
+The `pendingCond` has the harder job. I think I'm still going to keep the
+watermark refreshes, and pending stages together for now, sinnce the latter
+relies on the former. This will cycle through some watermark updates, then
+cycle through the conditions of pending stages adding them to the ready stages,
+sending+signalling the `readyCond` and the condition to check
+is the available watermark refreshes. 
+
+Then we broadcast against `pendingCond` any time there are any advanced watermarks.
+
 # Notes to myself: 2023-01-23
 
 Basically, to fix sessions best I need to do the other optimization I was putting off
