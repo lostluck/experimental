@@ -117,9 +117,35 @@ func executePipeline(wk *worker, j *job) {
 				eDec:     ed,
 			}
 
+			// There's either 0, 1 or many inputs, but they should be all the same
+			// so break after the first one.
+			for _, global := range t.GetInputs() {
+				col := comps.GetPcollections()[global]
+				ed := collectionPullDecoder(col.GetCoderId(), coders, comps)
+				wDec, wEnc := getWindowValueCoders(comps, col, coders)
+				stage.inputInfo = PColInfo{
+					GlobalID: global,
+					wDec:     wDec,
+					wEnc:     wEnc,
+					eDec:     ed,
+				}
+				break
+			}
+
 			switch urn {
 			case urnTransformGBK:
 				em.addStage(stage.ID, []string{getOnlyValue(t.GetInputs())}, nil, []string{getOnlyValue(t.GetOutputs())})
+				for _, global := range t.GetInputs() {
+					col := comps.GetPcollections()[global]
+					ed := collectionPullDecoder(col.GetCoderId(), coders, comps)
+					wDec, wEnc := getWindowValueCoders(comps, col, coders)
+					stage.inputInfo = PColInfo{
+						GlobalID: global,
+						wDec:     wDec,
+						wEnc:     wEnc,
+						eDec:     ed,
+					}
+				}
 			case urnTransformImpulse:
 				impulses = append(impulses, stage.ID)
 				em.addStage(stage.ID, nil, nil, []string{getOnlyValue(t.GetOutputs())})
@@ -265,12 +291,12 @@ func getSideInputs(t *pipepb.PTransform) (map[string]*pipepb.SideInput, error) {
 }
 
 // handleSideInputs ensures appropriate coders are available to the bundle, and prepares a function to stage the data.
-func handleSideInputs(t *pipepb.PTransform, comps *pipepb.Components, coders map[string]*pipepb.Coder, wk *worker) (func(b *bundle, tid string, gen int, watermark mtime.Time), error) {
+func handleSideInputs(t *pipepb.PTransform, comps *pipepb.Components, coders map[string]*pipepb.Coder, wk *worker) (func(b *bundle, tid string, watermark mtime.Time), error) {
 	sis, err := getSideInputs(t)
 	if err != nil {
 		return nil, err
 	}
-	var prepSides []func(b *bundle, tid string, gen int, watermark mtime.Time)
+	var prepSides []func(b *bundle, tid string, watermark mtime.Time)
 
 	// Get WindowedValue Coders for the transform's input and output PCollections.
 	for local, global := range t.GetInputs() {
@@ -289,7 +315,7 @@ func handleSideInputs(t *pipepb.PTransform, comps *pipepb.Components, coders map
 			// May be of zero length, but that's OK. Side inputs can be empty.
 
 			global, local := global, local
-			prepSides = append(prepSides, func(b *bundle, tid string, gen int, watermark mtime.Time) {
+			prepSides = append(prepSides, func(b *bundle, tid string, watermark mtime.Time) {
 				data := wk.data.GetAllData(global)
 
 				if b.IterableSideInputData == nil {
@@ -320,7 +346,7 @@ func handleSideInputs(t *pipepb.PTransform, comps *pipepb.Components, coders map
 			wDec, wEnc := getWindowValueCoders(comps, col, coders)
 
 			global, local := global, local
-			prepSides = append(prepSides, func(b *bundle, tid string, gen int, watermark mtime.Time) {
+			prepSides = append(prepSides, func(b *bundle, tid string, watermark mtime.Time) {
 				// May be of zero length, but that's OK. Side inputs can be empty.
 				data := wk.data.GetAllData(global)
 				if b.MultiMapSideInputData == nil {
@@ -349,9 +375,9 @@ func handleSideInputs(t *pipepb.PTransform, comps *pipepb.Components, coders map
 			return nil, fmt.Errorf("local input %v (global %v) uses accesspattern %v", local, global, si.GetAccessPattern().GetUrn())
 		}
 	}
-	return func(b *bundle, tid string, gen int, watermark mtime.Time) {
+	return func(b *bundle, tid string, watermark mtime.Time) {
 		for _, prep := range prepSides {
-			prep(b, tid, gen, watermark)
+			prep(b, tid, watermark)
 		}
 	}, nil
 }
@@ -533,7 +559,7 @@ type stage struct {
 	inputInfo        PColInfo
 	desc             *fnpb.ProcessBundleDescriptor
 	sides            []string
-	prepareSides     func(b *bundle, tid string, gen int, watermark mtime.Time)
+	prepareSides     func(b *bundle, tid string, watermark mtime.Time)
 
 	SinkToPCollection map[string]string
 	OutputsToCoders   map[string]PColInfo
@@ -548,7 +574,6 @@ type PColInfo struct {
 
 func (s *stage) Execute(j *job, wk *worker, comps *pipepb.Components, em *elementManager, bundID string, watermark mtime.Time) {
 	tid := s.transforms[0]
-	gen := 0
 	V(2).Logf("Execute: starting %v %v - %v at %v", s.ID, bundID, tid, watermark)
 
 	var b *bundle
@@ -557,7 +582,7 @@ func (s *stage) Execute(j *job, wk *worker, comps *pipepb.Components, em *elemen
 	switch s.envID {
 	case "": // Runner Transforms
 		// Runner transforms are processed immeadiately.
-		b = s.exe.ExecuteTransform(tid, comps.GetTransforms()[tid], comps, watermark, ss.inprogress[bundID].ToData())
+		b = s.exe.ExecuteTransform(tid, comps.GetTransforms()[tid], comps, watermark, ss.inprogress[bundID].ToData(s.inputInfo))
 		b.InstID = bundID
 		logger.Logf("Execute: runner transform: stage %v %v - tid %v", s.ID, bundID, tid)
 	case wk.ID:
@@ -569,7 +594,7 @@ func (s *stage) Execute(j *job, wk *worker, comps *pipepb.Components, em *elemen
 			InputTransformID: s.inputTransformID,
 
 			// TODO Here's where we can split data for processing in multiple bundles.
-			InputData: ss.inprogress[bundID].ToData(),
+			InputData: ss.inprogress[bundID].ToData(s.inputInfo),
 			Resp:      make(chan *fnpb.ProcessBundleResponse, 1),
 
 			SinkToPCollection: s.SinkToPCollection,
@@ -577,7 +602,7 @@ func (s *stage) Execute(j *job, wk *worker, comps *pipepb.Components, em *elemen
 		}
 		b.DataWait.Add(b.OutputCount)
 
-		s.prepareSides(b, s.transforms[0], gen, watermark)
+		s.prepareSides(b, s.transforms[0], watermark)
 	default:
 		logger.Fatalf("unknown environment[%v]", s.envID)
 	}
@@ -594,7 +619,7 @@ func (s *stage) Execute(j *job, wk *worker, comps *pipepb.Components, em *elemen
 		resp = <-b.Resp
 	}
 	// TODO handle side input data properly.
-	wk.data.Commit(gen, b.OutputData)
+	wk.data.Commit(b.OutputData)
 	var residualData [][]byte
 	for _, rr := range resp.GetResidualRoots() {
 		ba := rr.GetApplication()

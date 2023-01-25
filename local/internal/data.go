@@ -44,30 +44,20 @@ func (d *tentativeData) WriteData(colID string, data []byte) {
 
 type dataService struct {
 	// TODO actually quick process the data to windows here as well.
-	raw map[string]map[int][][]byte
+	raw map[string][][]byte
 }
 
 // Commit tentative data to the datastore.
-func (d *dataService) Commit(gen int, tent tentativeData) {
+func (d *dataService) Commit(tent tentativeData) {
 	if d.raw == nil {
-		d.raw = map[string]map[int][][]byte{}
+		d.raw = map[string][][]byte{}
 	}
 	for colID, data := range tent.raw {
-		c, ok := d.raw[colID]
-		if !ok {
-			c = map[int][][]byte{}
-			d.raw[colID] = c
-		}
-		c[gen] = append(c[gen], data...)
+		d.raw[colID] = append(d.raw[colID], data...)
 	}
 }
 
 // Hack for Side Inputs until watermarks are sorted out.
 func (d *dataService) GetAllData(colID string) [][]byte {
-	var ret [][]byte
-	for gen, data := range d.raw[colID] {
-		V(3).Logf("getting All data for %v, gen %v", colID, gen)
-		ret = append(ret, data...)
-	}
-	return ret
+	return d.raw[colID]
 }

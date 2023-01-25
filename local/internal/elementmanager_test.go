@@ -325,12 +325,15 @@ func TestElementManager(t *testing.T) {
 		if !ok {
 			t.Error("Bundles channel unexpectedly closed")
 		}
+		fmt.Println("persisting", b)
 		em.PersistBundle("dofn", b.bundleID, nil, tentativeData{}, PColInfo{}, nil)
+		fmt.Println("persisted", b)
 
 		_, ok = <-ch
 		if ok {
 			t.Error("Bundles channel expected to be closed")
 		}
+		t.Log("success")
 		// for b := range ch {
 		// 	t.Log("bundle received!", b)
 		// 	em.PersistBundle("dofn", b.bundleID, nil, tentativeData{})

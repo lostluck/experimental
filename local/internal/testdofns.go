@@ -103,10 +103,13 @@ func dofn1x5(imp []byte, emitA, emitB, emitC, emitD, emitE func(int64)) {
 }
 
 func dofn2x1(imp []byte, iter func(*int64) bool, emit func(int64)) {
-	var v, sum int64
+	var v, sum, c int64
 	for iter(&v) {
+		fmt.Println("dofn2x1 v", v, " c ", c)
 		sum += v
+		c++
 	}
+	fmt.Println("dofn2x1 sum", sum, "count", c)
 	emit(sum)
 }
 

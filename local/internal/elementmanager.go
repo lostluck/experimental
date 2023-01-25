@@ -21,15 +21,12 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"sort"
-	"strings"
 	"sync"
 
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/graph/mtime"
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/graph/window"
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/runtime/exec"
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/typex"
-	"golang.org/x/exp/maps"
 )
 
 // There comes a time in every Beam runner's life that they develop a type
@@ -64,12 +61,8 @@ type elementManager struct {
 
 	pcolParents map[string]string // Map from pcollectionID to stageIDs that produce the pcollection.
 
-	stageMu           sync.Mutex
-	pendingStages     runBundleHeap
-	readyStages       runBundleHeap
-	inprogressBundles set[string] // Active bundleIDs
-
-	refreshMu          sync.Mutex
+	refreshCond        sync.Cond
+	inprogressBundles  set[string] // Active bundleIDs
 	watermarkRefreshes set[string] // Scheduled stageID watermark refreshes
 
 	pendingElements sync.WaitGroup
@@ -83,6 +76,7 @@ func newElementManager() *elementManager {
 		pcolParents:        map[string]string{},
 		watermarkRefreshes: set[string]{},
 		inprogressBundles:  set[string]{},
+		refreshCond:        sync.Cond{L: &sync.Mutex{}},
 	}
 }
 
@@ -107,6 +101,7 @@ type stageState struct {
 	inputID   string   // PCollection ID of the parallel input
 	outputIDs []string // PCollection IDs of outputs to update consumers.
 	sides     []string // PCollection IDs of side inputs that can block execution.
+	strat     winStrat
 
 	mu                 sync.Mutex
 	upstreamWatermarks sync.Map   // watermark set from inputPCollection's parent.
@@ -123,6 +118,7 @@ func makeStageState(ID string, inputIDs, sides, outputIDs []string) *stageState 
 		ID:        ID,
 		outputIDs: outputIDs,
 		sides:     sides,
+		strat:     defaultStrat{},
 
 		input:  mtime.MinTimestamp,
 		output: mtime.MinTimestamp,
@@ -199,10 +195,13 @@ type elements struct {
 	minTimestamp mtime.Time
 }
 
-func (es elements) ToData() [][]byte {
+func (es elements) ToData(info PColInfo) [][]byte {
 	var ret [][]byte
 	for _, e := range es.es {
-		ret = append(ret, e.elmBytes)
+		var buf bytes.Buffer
+		exec.EncodeWindowedValueHeader(info.wEnc, []typex.Window{e.window}, e.timestamp, e.pane, &buf)
+		buf.Write(e.elmBytes)
+		ret = append(ret, buf.Bytes())
 	}
 	return ret
 }
@@ -229,35 +228,13 @@ func (h *elementHeap) Pop() any {
 	return x
 }
 
-// runBundle orders elements based on their watermark timestamps, so we
-// can pull pending bundles off the cue in processing order.
-type runBundleHeap []runBundle
-
-func (h runBundleHeap) Len() int           { return len(h) }
-func (h runBundleHeap) Less(i, j int) bool { return h[i].watermark < h[j].watermark }
-func (h runBundleHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
-
-func (h *runBundleHeap) Push(x any) {
-	// Push and Pop use pointer receivers because they modify the slice's length,
-	// not just its contents.
-	*h = append(*h, x.(runBundle))
-}
-
-func (h *runBundleHeap) Pop() any {
-	old := *h
-	n := len(old)
-	x := old[n-1]
-	*h = old[0 : n-1]
-	return x
-}
-
 func (em *elementManager) Impulse(stageID string) {
 	stage := em.stages[stageID]
 	newPending := []element{{
 		window:    window.GlobalWindow{},
-		timestamp: mtime.Now(),
+		timestamp: mtime.MinTimestamp,
 		pane:      typex.NoFiringPane(),
-		elmBytes:  impulseBytes(),
+		elmBytes:  []byte{0},
 	}}
 
 	consumers := em.consumers[stage.outputIDs[0]]
@@ -267,16 +244,9 @@ func (em *elementManager) Impulse(stageID string) {
 		consumer := em.stages[sID]
 		consumer.AddPending(newPending)
 		logger.Logf("Impulse: %v setting downstream stage %v, with %v new elements", stageID, sID, len(newPending))
-		em.addPendingStage(runBundle{stageID: sID, watermark: mtime.EndOfGlobalWindowTime})
 	}
 	refreshes := stage.updateWatermarks(mtime.MaxTimestamp, mtime.MaxTimestamp, em)
 	em.addRefreshes(refreshes)
-}
-
-func (em *elementManager) addPendingStage(rb runBundle) {
-	em.stageMu.Lock()
-	defer em.stageMu.Unlock()
-	heap.Push(&em.pendingStages, rb)
 }
 
 type runBundle struct {
@@ -327,35 +297,6 @@ func (ss *stageState) startBundle(rb runBundle) bool {
 	return true
 }
 
-func (em *elementManager) processReadyBundles(ctx context.Context, runStageCh chan runBundle, nextBundID func() string) {
-	for {
-		em.stageMu.Lock()
-		if em.readyStages.Len() == 0 {
-			em.stageMu.Unlock()
-			return // escape from ready loop.
-		}
-		rb := heap.Pop(&em.readyStages).(runBundle)
-		rb.bundleID = nextBundID()
-		em.stageMu.Unlock()
-
-		ok := em.stages[rb.stageID].startBundle(rb)
-		if !ok {
-			continue
-		}
-		em.stageMu.Lock()
-		em.inprogressBundles.insert(rb.bundleID)
-		em.stageMu.Unlock()
-
-		logger.Log("Bundles: ready", rb)
-		select {
-		case <-ctx.Done():
-			logger.Logf("Bundles: loop canceled")
-			return
-		case runStageCh <- rb:
-		}
-	}
-}
-
 func (em *elementManager) Bundles(nextBundID func() string) <-chan runBundle {
 	runStageCh := make(chan runBundle)
 	ctx, cancelFn := context.WithCancel(context.TODO())
@@ -363,110 +304,103 @@ func (em *elementManager) Bundles(nextBundID func() string) <-chan runBundle {
 		em.pendingElements.Wait()
 		logger.Logf("no more pending elements: terminating pipeline")
 		cancelFn()
+		// Ensure the watermark evaluation goroutine exits.
+		em.refreshCond.Broadcast()
 	}()
+	// Watermark evaluation goroutine.
 	go func() {
 		defer func() {
 			close(runStageCh)
-			logger.Logf("closing stage channel")
+			logger.Logf("closing Bundles channel")
 		}()
-		// repeats is a failsafe to avoid infinite loops in testing.
-		// Once we have condition stage scheduling, this shouldn't be
-		// necessary.
-		repeats := map[string]int{}
-		repeatCap := 1000
 		for {
-			// Process all ready bundles.
-			em.processReadyBundles(ctx, runStageCh, nextBundID)
-
-			// We've run out of ready bundles, so lets see if anything pending is ready.
-			em.refreshWatermarks()
-
-			var notReadyYet runBundleHeap
-			// Process all pending staging, and if they're ready by watermar, add them to the
-			// ready queue, otherwise, reset the heap.
-			em.stageMu.Lock()
-			for {
+			logger.Logf("Bundles: getting refreshCond lock")
+			em.refreshCond.L.Lock()
+			logger.Logf("Bundles: got refreshCond lock")
+			// If there are no watermark refreshes available, we wait until there are.
+			for len(em.watermarkRefreshes) == 0 {
 				select {
 				case <-ctx.Done():
-					em.stageMu.Unlock()
-					logger.Logf("Bundles: loop canceled (pre pending)")
+					em.refreshCond.L.Unlock()
+					logger.Logf("Bundles: loop canceled (pre wait)")
 					return
 				default:
 				}
-				if em.pendingStages.Len() == 0 {
-					break // escape from pending loop.
+				em.refreshCond.Wait()
+				select {
+				case <-ctx.Done():
+					em.refreshCond.L.Unlock()
+					logger.Logf("Bundles: loop canceled (pre post)")
+					return
+				default:
 				}
-				rb := heap.Pop(&em.pendingStages).(runBundle)
+			}
 
-				// TODO, check if the bundle is good to run by the watermark
-				ready := true
-				ss := em.stages[rb.stageID]
+			// We know there is some work we can do that may advance the watermarks,
+			// refresh them, and see which stages have advanced.
+			advanced := em.refreshWatermarks()
 
-				if pcol, wm := ss.UpstreamWatermark(); rb.watermark > wm {
-					logger.Logf("Bundles: stage %v insufficient upstream watermark; requires %q %v > %v", rb.stageID, pcol, wm, rb.watermark)
-					ready = false
+			// Check each advanced stage, to see if it's able to execute based on the watermark.
+			for stageID := range advanced {
+				ss := em.stages[stageID]
+				// TODO move the loop contents to a method to simplify lock handling.
+				ss.mu.Lock()
+
+				// If the upstream watermark and the input watermark are the same,
+				// then we can't yet process this stage.
+				inputW := ss.input
+				upstreamPcol, upstreamW := ss.UpstreamWatermark()
+				if inputW == upstreamW {
+					logger.Logf("Bundles: stage %v has insufficient upstream watermark; requires %q %v > %v", stageID, upstreamPcol, inputW, upstreamW)
+					ss.mu.Unlock()
+					continue
+				} else if inputW > upstreamW {
+					ss.mu.Unlock()
+					logger.Fatalf("%v has invariance violation, input watermark greater than upstream: %v", stageID, inputW, upstreamW)
 				}
+
+				// We know now that inputW < upstreamW, so we should be able to process any available inputs.
 				if len(ss.sides) > 0 {
-					logger.Logf("Bundles: stage %v has side inputs %v", rb.stageID, ss.sides)
+					logger.Logf("Bundles: stage %v has side inputs %v", stageID, ss.sides)
 				}
-				var waitingOnSides []string
+				ready := true
 				for _, side := range ss.sides {
 					pID := em.pcolParents[side]
 					parent := em.stages[pID]
 					// Possible lock inversion?
 					ow := parent.OutputWatermark()
-					logger.Logf("Bundles: stage %v parent[%v] side input %v watermark; requires %v >= %v", rb.stageID, pID, side, ow, rb.watermark)
+					logger.Logf("Bundles: stage %v parent[%v] side input %v watermark; requires %v >= %v", stageID, pID, side, ow, upstreamW)
 
-					if rb.watermark > ow {
-						logger.Logf("Bundles: stage %v side input %v from %v insufficient watermark; requires %v >= %v", rb.stageID, side, pID, ow, rb.watermark)
+					if upstreamW > ow {
+						logger.Logf("Bundles: stage %v side input %v from %v insufficient watermark; requires %v >= %v", stageID, side, pID, ow, upstreamW)
 						ready = false
-						waitingOnSides = append(waitingOnSides, side)
 					}
 				}
-				repeats[rb.stageID] = repeats[rb.stageID] + 1
+
+				ss.mu.Unlock()
 				if ready {
-					repeats[rb.stageID] = 0
+					rb := runBundle{stageID: stageID, bundleID: nextBundID(), watermark: upstreamW}
+					rb.bundleID = nextBundID()
+					ok := ss.startBundle(rb)
+					if !ok {
+						continue
+					}
+
+					em.inprogressBundles.insert(rb.bundleID)
+					em.refreshCond.L.Unlock()
+
 					logger.Logf("Bundles: %v is ready", rb)
-					heap.Push(&em.readyStages, rb)
-				} else {
-					em.refreshMu.Lock()
-					refs := maps.Keys(em.watermarkRefreshes)
-					em.refreshMu.Unlock()
-					sort.Strings(refs)
-					sort.Strings(waitingOnSides)
-					bundles := maps.Keys(em.inprogressBundles)
-					sort.Strings(bundles)
-					if len(bundles) > 0 {
-						// reset the cap while there are extant bundles.
-						repeats[rb.stageID] = 1
+					select {
+					case <-ctx.Done():
+						logger.Logf("Bundles: loop canceled (pre pending)")
+						return
+					case runStageCh <- rb:
 					}
-
-					if repeats[rb.stageID] > repeatCap {
-						var b strings.Builder
-						b.WriteString("TOO MANY ATTEMPTS for ")
-						b.WriteString(rb.String())
-						keys := maps.Keys(em.stages)
-						sort.Strings(keys)
-						for _, key := range keys {
-							b.WriteRune('\n')
-							ss := em.stages[key]
-							b.WriteString(ss.String())
-						}
-						b.WriteString("\nrefreshes pending: ")
-						b.WriteString(strings.Join(refs, ","))
-
-						b.WriteString("\nbundles inProgress: ")
-						b.WriteString(strings.Join(bundles, ","))
-						panic(b.String())
-					}
-
-					logger.Logf("Bundles:%v is still pending: refreshes %v; bundles %v; sides %v", rb, refs, bundles, waitingOnSides)
-					heap.Push(&notReadyYet, rb)
+					em.refreshCond.L.Lock()
 				}
 			}
+			em.refreshCond.L.Unlock()
 			// Reset the pendingStages queue with the not yet ready stages.
-			em.pendingStages = notReadyYet
-			em.stageMu.Unlock()
 			select {
 			case <-ctx.Done():
 				logger.Logf("Bundles: loop canceled (post pending)")
@@ -490,8 +424,6 @@ func (em *elementManager) Bundles(nextBundID func() string) <-chan runBundle {
 func (em *elementManager) PersistBundle(stageID string, bundID string, col2Coders map[string]PColInfo, d tentativeData, inputInfo PColInfo, residuals [][]byte) {
 	stage := em.stages[stageID]
 	for output, data := range d.raw {
-		// Can't use set[typex.Window] until go1.20
-		uniqueWindows := map[typex.Window]struct{}{}
 		info := col2Coders[output]
 		var newPending []element
 		logger.Logf("PersistBundle: processing output for stage %v bundle %v output: %v", stageID, bundID, output)
@@ -513,19 +445,13 @@ func (em *elementManager) PersistBundle(stageID string, bundID string, col2Coder
 				// TODO: Optimize unnecessary copies. This is doubleteeing.
 				elmBytes := info.eDec(tee)
 				for _, w := range ws {
-					var buf bytes.Buffer
-					if err := exec.EncodeWindowedValueHeader(info.wEnc, []typex.Window{w}, et, typex.NoFiringPane(), &buf); err != nil {
-						logger.Fatalf("error decoding watermarks for %v: %v", output, err)
-					}
-					buf.Write(elmBytes)
 					newPending = append(newPending,
 						element{
 							window:    w,
 							timestamp: et,
 							pane:      pn,
-							elmBytes:  buf.Bytes(),
+							elmBytes:  elmBytes,
 						})
-					uniqueWindows[w] = struct{}{}
 				}
 			}
 		}
@@ -537,21 +463,14 @@ func (em *elementManager) PersistBundle(stageID string, bundID string, col2Coder
 			consumer.AddPending(newPending)
 
 			logger.Logf("PersistBundle: setting downstream stage %v, with %v new elements", sID, len(newPending))
-			// Schedule downstream for each unique window in the pending elements.
-			for w := range uniqueWindows {
-				em.addPendingStage(runBundle{stageID: sID, watermark: w.MaxTimestamp()})
-			}
 		}
 	}
 
 	// Return unprocessed to this stage's pending
 	var unprocessedElements []element
-	uniqueWindows := map[typex.Window]struct{}{}
-	var buf bytes.Buffer
 	for _, residual := range residuals {
-		buf.Reset()
-		buf.Write(residual)
-		ws, et, pn, err := exec.DecodeWindowedValueHeader(inputInfo.wDec, &buf)
+		buf := bytes.NewBuffer(residual)
+		ws, et, pn, err := exec.DecodeWindowedValueHeader(inputInfo.wDec, buf)
 		if err != nil {
 			if err == io.EOF {
 				break
@@ -559,26 +478,20 @@ func (em *elementManager) PersistBundle(stageID string, bundID string, col2Coder
 			logger.Fatalf("error decoding header for residual  for %v: %v", stage.ID, err)
 		}
 
-		// TODO recode for each window.
 		for _, w := range ws {
 			unprocessedElements = append(unprocessedElements,
 				element{
 					window:    w,
 					timestamp: et,
 					pane:      pn,
-					elmBytes:  residual,
+					elmBytes:  buf.Bytes(),
 				})
-			uniqueWindows[w] = struct{}{}
 		}
 	}
 	// Add unprocessed back to the pending stack.
 	if len(unprocessedElements) > 0 {
 		em.pendingElements.Add(len(unprocessedElements))
 		stage.AddPending(unprocessedElements)
-
-		for w := range uniqueWindows {
-			em.addPendingStage(runBundle{stageID: stageID, watermark: w.MaxTimestamp()})
-		}
 	}
 	// Clear out the inprogress elements associated with the completed bundle.
 	// Must be done after adding the new pending elements to avoid an incorrect
@@ -588,14 +501,11 @@ func (em *elementManager) PersistBundle(stageID string, bundID string, col2Coder
 	em.pendingElements.Add(-len(completed.es))
 	delete(stage.inprogress, bundID)
 	stage.mu.Unlock()
-	em.stageMu.Lock()
-	em.inprogressBundles.remove(bundID)
-	em.stageMu.Unlock()
 
 	logger.Logf("PersistBundle: removed pending bundle %v, with %v processed elements", bundID, -len(completed.es))
 
 	// TODO support state/timer watermark holds.
-	em.addRefresh(stage.ID)
+	em.addRefreshAndClearBundle(stage.ID, bundID)
 }
 
 // minimumPendingTimestamp returns the minimum pending timestamp from all pending elements,
@@ -621,33 +531,47 @@ func (ss *stageState) String() string {
 }
 
 func (em *elementManager) addRefreshes(stages set[string]) {
-	em.refreshMu.Lock()
-	defer em.refreshMu.Unlock()
+	em.refreshCond.L.Lock()
+	defer em.refreshCond.L.Unlock()
 	em.watermarkRefreshes.merge(stages)
+	em.refreshCond.Broadcast()
 }
 
-func (em *elementManager) addRefresh(stageID string) {
-	em.refreshMu.Lock()
-	defer em.refreshMu.Unlock()
+func (em *elementManager) addRefreshAndClearBundle(stageID, bundID string) {
+	em.refreshCond.L.Lock()
+	defer em.refreshCond.L.Unlock()
+	delete(em.inprogressBundles, bundID)
 	em.watermarkRefreshes.insert(stageID)
+	em.refreshCond.Broadcast()
 }
 
-func (em *elementManager) refreshWatermarks() {
+// refreshWatermarks incrementally refreshes the watermarks, and returns the set of stages where the
+// the watermark may have advanced.
+// Must be called while holdeing em.refreshCond.L
+func (em *elementManager) refreshWatermarks() set[string] {
 	// Need to have at least one refresh signal.
-	em.refreshMu.Lock()
-	defer em.refreshMu.Unlock()
 	nextUpdates := set[string]{}
+	refreshed := set[string]{}
+	var i int
 	for stageID := range em.watermarkRefreshes {
 		// clear out old one.
 		em.watermarkRefreshes.remove(stageID)
 		ss := em.stages[stageID]
+		refreshed.insert(stageID)
 
 		dummyStateHold := mtime.MaxTimestamp
 
 		refreshes := ss.updateWatermarks(ss.minPendingTimestamp(), dummyStateHold, em)
 		nextUpdates.merge(refreshes)
+		// cap refreshes incrementally.
+		if i < 10 {
+			i++
+		} else {
+			break
+		}
 	}
 	em.watermarkRefreshes.merge(nextUpdates)
+	return refreshed
 }
 
 // updateWatermarks performs the following operations:
