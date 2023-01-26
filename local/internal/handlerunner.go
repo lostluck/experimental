@@ -84,10 +84,6 @@ func (h *runner) ExecuteTransform(tid string, t *pipepb.PTransform, comps *pipep
 	}
 
 	switch urn {
-	case urnTransformImpulse:
-		// These will be subbed out by the pardo stage.
-		data = append(data, impulseBytes())
-
 	case urnTransformFlatten:
 		// Allready done and collated.
 		data = inputData
@@ -153,24 +149,6 @@ var (
 	impOnce  sync.Once
 	impBytes []byte
 )
-
-func impulseBytes() []byte {
-	impOnce.Do(func() {
-		var buf bytes.Buffer
-		byt, _ := exec.EncodeElement(exec.MakeElementEncoder(coder.NewBytes()), []byte("lostluck"))
-
-		exec.EncodeWindowedValueHeader(
-			exec.MakeWindowEncoder(coder.NewGlobalWindow()),
-			window.SingleGlobalWindow,
-			mtime.Now(),
-			typex.NoFiringPane(),
-			&buf,
-		)
-		buf.Write(byt)
-		impBytes = buf.Bytes()
-	})
-	return impBytes
-}
 
 // windowingStrategy sources the transform's windowing strategy from a single parallel input.
 func windowingStrategy(comps *pipepb.Components, tid string) *pipepb.WindowingStrategy {

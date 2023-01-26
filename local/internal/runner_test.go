@@ -346,12 +346,12 @@ func TestRunner_Pipelines(t *testing.T) {
 			name:     "WindowedSideInputs",
 			pipeline: primitives.ValidateWindowedSideInputs,
 		}, {
-			// 	name:     "WindowSums_GBK",
-			// 	pipeline: primitives.WindowSums_GBK,
-			// }, {
-			// 	name:     "WindowSums_Lifted",
-			// 	pipeline: primitives.WindowSums_Lifted,
-			// }, {
+			name:     "WindowSums_GBK",
+			pipeline: primitives.WindowSums_GBK,
+		}, {
+			name:     "WindowSums_Lifted",
+			pipeline: primitives.WindowSums_Lifted,
+		}, {
 			name: "ProcessContinuations_globalCombine",
 			pipeline: func(s beam.Scope) {
 				out := beam.ParDo(s, &selfCheckpointingDoFn{}, beam.Impulse(s))
