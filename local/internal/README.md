@@ -8,7 +8,6 @@
   * Composite Handling
     * Real SplittableDoFns (split requests, etc)
       * Different split kinds (channel, residual, separation harness test)
-      * Process Continuations & Bundle Rescheduling
   * Stager Refactor
     * One PTransform : One Stage
     * Fusion Stager
@@ -16,6 +15,41 @@
   * pullDecoder refactor 
   * []byte avoidance -> To io.Reader/Writer streams
   * Error plumbing rather than log.Fatals or panics.
+
+
+# Notes to myself: 2023-01-25; evening
+
+I like this new approach a lot! It's predictable and understandable.
+
+The problem is that it works for Session windows without any special handling, 
+because the watermark advances clearly, and cleanly to MaxTimestamp, because 
+that's how the arithmetic works out.
+
+I need a streaming sessions based test, since I'm simply *automatically*
+getting session window processing for free because of advancing to the 
+usptream watermark when processing, since that's how it's propagated
+down the line.
+
+I need streaming windowing tests for this, rather than simply the batch ones.
+
+Those will be fun to write, since I kinda gloss over time for everything,
+eg. for rescheduling things. But that's the beauty of the Beam model. It's
+unified over batch and streaming, so it _doesn't matter_ as long as the 
+timestamps on the elements are appropriate.
+
+So, what I need is a DoFn that can produce outputs in a stepped fashion,
+with given time increments between elements. Then combined with the windowing
+transforms to ensure that the sums for each window are always what's expected.
+
+This will fail for session windows, since I'll need to handle that windowing
+strategy to perform the merges, and only conditionally send out the work
+which can also be done by each window.
+
+Then this will be out of my head enough that I should have a reasonable framework
+for handling the basics, and we could even begin to use the input watermark to
+weed out late data, based on the windowing strategy, as the data is coming in.
+
+It's edifying and annoying that this is all making much more sense now.
 
 # Notes to myself: 2023-01-25
 

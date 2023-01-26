@@ -148,7 +148,7 @@ func (em *elementManager) Impulse(stageID string) {
 		window:    window.GlobalWindow{},
 		timestamp: mtime.MinTimestamp,
 		pane:      typex.NoFiringPane(),
-		elmBytes:  []byte{0},
+		elmBytes:  []byte{0}, // Represents an encoded 0 length byte slice.
 	}}
 
 	consumers := em.consumers[stage.outputIDs[0]]
@@ -209,7 +209,6 @@ func (em *elementManager) Bundles(ctx context.Context, nextBundID func() string)
 			// Check each advanced stage, to see if it's able to execute based on the watermark.
 			for stageID := range advanced {
 				ss := em.stages[stageID]
-				// TODO move the loop contents to a method to simplify lock handling.
 				watermark, ready := ss.bundleReady(em)
 				if ready {
 					rb := runBundle{stageID: stageID, bundleID: nextBundID(), watermark: watermark}
@@ -593,6 +592,8 @@ func (ss *stageState) updateWatermarks(minPending, minStateHold mtime.Time, em *
 	return refreshes
 }
 
+// bundleReady returns the maximum allowed watermark for this stage, and whether
+// it's permitted to execute by side inputs.
 func (ss *stageState) bundleReady(em *elementManager) (mtime.Time, bool) {
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
