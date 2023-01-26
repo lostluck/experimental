@@ -65,6 +65,11 @@ var (
 	urnTransformProcessSizedElements = sdfUrn(pipepb.StandardPTransforms_PROCESS_SIZED_ELEMENTS_AND_RESTRICTIONS)
 	urnTransformTruncate             = sdfUrn(pipepb.StandardPTransforms_TRUNCATE_SIZED_RESTRICTION)
 
+	// Window Manipulation
+	urnTransformAssignWindows = ptUrn(pipepb.StandardPTransforms_ASSIGN_WINDOWS)
+	urnTransformMapWindows    = ptUrn(pipepb.StandardPTransforms_MAP_WINDOWS)
+	urnTransformMergeWindows  = ptUrn(pipepb.StandardPTransforms_MERGE_WINDOWS)
+
 	// Undocumented Urns
 	urnGoDoFn          = "beam:go:transform:dofn:v1" // Only used for Go DoFn.
 	urnTransformSource = "beam:runner:source:v1"     // The data source reading transform.
