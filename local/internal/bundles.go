@@ -17,6 +17,7 @@ package internal
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"sort"
@@ -32,7 +33,7 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-func executePipeline(wk *worker, j *job) {
+func executePipeline(ctx context.Context, wk *worker, j *job) {
 	pipeline := j.pipeline
 	comps := proto.Clone(pipeline.GetComponents()).(*pipepb.Components)
 
@@ -173,7 +174,7 @@ func executePipeline(wk *worker, j *job) {
 	}
 
 	// Execute stages here
-	for rb := range em.Bundles(wk.nextInst) {
+	for rb := range em.Bundles(ctx, wk.nextInst) {
 		s := wk.stages[rb.stageID]
 		s.Execute(j, wk, comps, em, rb.bundleID, rb.watermark)
 	}
@@ -617,6 +618,9 @@ func (s *stage) Execute(j *job, wk *worker, comps *pipepb.Components, em *elemen
 	resp := &fnpb.ProcessBundleResponse{}
 	if send {
 		resp = <-b.Resp
+		// Tally metrics immeadiately so they're available before
+		// pipeline termination.
+		j.metrics.contributeMetrics(resp)
 	}
 	// TODO handle side input data properly.
 	wk.data.Commit(b.OutputData)
@@ -633,7 +637,4 @@ func (s *stage) Execute(j *job, wk *worker, comps *pipepb.Components, em *elemen
 	}
 	em.PersistBundle(s.ID, b.InstID, s.OutputsToCoders, b.OutputData, s.inputInfo, residualData)
 	b.OutputData = tentativeData{} // Clear the data.
-
-	// If we don't send this out, we simply end here.
-	j.metrics.contributeMetrics(resp)
 }

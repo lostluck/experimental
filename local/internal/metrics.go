@@ -475,6 +475,8 @@ func (m *metricsStore) contributeMetrics(payloads *fnpb.ProcessBundleResponse) {
 }
 
 func (m *metricsStore) Results(d durability) []*pipepb.MonitoringInfo {
+	// m.mu.Lock()
+	// defer m.mu.Unlock()
 	// We don't gather tentative metrics yet.
 	if d == tentative {
 		return nil

@@ -17,6 +17,7 @@ package internal
 
 import (
 	"container/heap"
+	"context"
 	"fmt"
 	"testing"
 
@@ -317,7 +318,7 @@ func TestElementManager(t *testing.T) {
 		}
 
 		var i int
-		ch := em.Bundles(func() string {
+		ch := em.Bundles(context.Background(), func() string {
 			defer func() { i++ }()
 			return fmt.Sprintf("%v", i)
 		})

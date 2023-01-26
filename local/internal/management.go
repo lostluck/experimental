@@ -32,6 +32,8 @@ func (s *Server) nextId() string {
 func (s *Server) Prepare(ctx context.Context, req *jobpb.PrepareJobRequest) (*jobpb.PrepareJobResponse, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	rootCtx, cancelFn := context.WithCancel(context.Background())
 	job := &job{
 		key:      s.nextId(),
 		pipeline: req.GetPipeline(),
@@ -40,6 +42,8 @@ func (s *Server) Prepare(ctx context.Context, req *jobpb.PrepareJobRequest) (*jo
 
 		msgChan:   make(chan string, 100),
 		stateChan: make(chan jobpb.JobState_Enum),
+		rootCtx:   rootCtx,
+		cancelFn:  cancelFn,
 	}
 	if err := isSupported(job.pipeline.GetRequirements()); err != nil {
 		V(0).Logf("unable to run job %v: %v", req.GetJobName(), err)
@@ -60,8 +64,8 @@ func (s *Server) Run(ctx context.Context, req *jobpb.RunJobRequest) (*jobpb.RunJ
 	job := s.jobs[req.GetPreparationId()]
 	s.mu.Unlock()
 
-	// Do a thing to start the job execution!
-	go job.run(ctx)
+	// Bring up a background goroutine to allow the job to continue processing.
+	go job.run(job.rootCtx)
 
 	return &jobpb.RunJobResponse{
 		JobId: job.key,

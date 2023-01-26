@@ -173,9 +173,9 @@ func (rb runBundle) String() string {
 	return fmt.Sprintf("{%v %v %v}", rb.stageID, rb.bundleID, rb.watermark)
 }
 
-func (em *elementManager) Bundles(nextBundID func() string) <-chan runBundle {
+func (em *elementManager) Bundles(ctx context.Context, nextBundID func() string) <-chan runBundle {
 	runStageCh := make(chan runBundle)
-	ctx, cancelFn := context.WithCancel(context.TODO())
+	ctx, cancelFn := context.WithCancel(ctx)
 	go func() {
 		em.pendingElements.Wait()
 		logger.Logf("no more pending elements: terminating pipeline")
@@ -187,29 +187,19 @@ func (em *elementManager) Bundles(nextBundID func() string) <-chan runBundle {
 	go func() {
 		defer func() {
 			close(runStageCh)
-			logger.Logf("closing Bundles channel")
 		}()
 		for {
-			logger.Logf("Bundles: getting refreshCond lock")
 			em.refreshCond.L.Lock()
-			logger.Logf("Bundles: got refreshCond lock")
 			// If there are no watermark refreshes available, we wait until there are.
 			for len(em.watermarkRefreshes) == 0 {
+				// Check to see if we must exit
 				select {
 				case <-ctx.Done():
 					em.refreshCond.L.Unlock()
-					logger.Logf("Bundles: loop canceled (pre wait)")
 					return
 				default:
 				}
 				em.refreshCond.Wait()
-				select {
-				case <-ctx.Done():
-					em.refreshCond.L.Unlock()
-					logger.Logf("Bundles: loop canceled (pre post)")
-					return
-				default:
-				}
 			}
 
 			// We know there is some work we can do that may advance the watermarks,
@@ -232,7 +222,6 @@ func (em *elementManager) Bundles(nextBundID func() string) <-chan runBundle {
 					em.inprogressBundles.insert(rb.bundleID)
 					em.refreshCond.L.Unlock()
 
-					logger.Logf("Bundles: %v is ready", rb)
 					select {
 					case <-ctx.Done():
 						logger.Logf("Bundles: loop canceled (pre pending)")
@@ -243,13 +232,6 @@ func (em *elementManager) Bundles(nextBundID func() string) <-chan runBundle {
 				}
 			}
 			em.refreshCond.L.Unlock()
-			// Reset the pendingStages queue with the not yet ready stages.
-			select {
-			case <-ctx.Done():
-				logger.Logf("Bundles: loop canceled (post pending)")
-				return
-			default:
-			}
 		}
 	}()
 	return runStageCh

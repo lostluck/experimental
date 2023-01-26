@@ -60,6 +60,10 @@ type job struct {
 	msgChan   chan string
 	stateChan chan jobpb.JobState_Enum
 
+	// Context used to terminate this job.
+	rootCtx  context.Context
+	cancelFn context.CancelFunc
+
 	metrics metricsStore
 }
 
@@ -83,15 +87,17 @@ func (j *job) run(ctx context.Context) {
 	wk := newWorker(env) // Cheating by having the worker id match the environment id.
 	go wk.Serve()
 
-	wkctx, cancelFn := context.WithCancel(context.TODO())
-	defer cancelFn()
+	wkctx, cancelFn := context.WithCancel(ctx)
+	defer func() {
+		cancelFn()
+	}()
 	go j.runEnvironment(wkctx, env, wk)
 
 	j.msgChan <- "running " + j.String()
 	j.stateChan <- jobpb.JobState_RUNNING
 
 	// Lets see what the worker does.
-	executePipeline(wk, j)
+	executePipeline(wkctx, wk, j)
 	j.msgChan <- "pipeline completed " + j.String()
 
 	// Stop the worker.
@@ -141,11 +147,13 @@ func externalEnvironment(ctx context.Context, ep *pipepb.ExternalPayload, wk *wo
 		Params:            nil,
 	})
 
-	// Job processing happens here, but orchestrated by other goroutines?
+	// Job processing happens here, but orchestrated by other goroutines
+	// This goroutine blocks until the context is cancelled, signalling
+	// that the pool runner should stop the worker.
 	<-ctx.Done()
-	V(1).Logf("context canceled! stopping workers")
 
-	// Previous context cancelled so we need a new one.
+	// Previous context cancelled so we need a new one
+	// for this request.
 	pool.StopWorker(context.Background(), &fnpb.StopWorkerRequest{
 		WorkerId: wk.ID,
 	})
