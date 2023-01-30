@@ -73,7 +73,7 @@ func executePipeline(ctx context.Context, wk *worker, j *job) {
 	topo := prepro.preProcessGraph(comps)
 	ts := comps.GetTransforms()
 
-	em := newElementManager()
+	em := newElementManager(elementManagerConfig{})
 
 	// This is where the Batch -> Streaming tension exists.
 	// We don't *pre* do this, and we need a different mechanism

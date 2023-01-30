@@ -307,7 +307,7 @@ func TestStageState_updateWatermarks(t *testing.T) {
 
 func TestElementManager(t *testing.T) {
 	t.Run("impulse", func(t *testing.T) {
-		em := newElementManager()
+		em := newElementManager(elementManagerConfig{})
 		em.addStage("impulse", nil, nil, []string{"output"})
 		em.addStage("dofn", []string{"output"}, nil, nil)
 
@@ -334,23 +334,9 @@ func TestElementManager(t *testing.T) {
 		if ok {
 			t.Error("Bundles channel expected to be closed")
 		}
-		t.Log("success")
-		// for b := range ch {
-		// 	t.Log("bundle received!", b)
-		// 	em.PersistBundle("dofn", b.bundleID, nil, tentativeData{})
-		// }
-		// if i > 1 {
-		// 	t.Errorf("got %v bundles, want 1", i)
-		// }
-
-		// select {
-		// case b, ok := <-ch:
-		// 	if ok {
-		// 		t.Fatalf("got bundle %v, want closed channel", b)
-		// 	}
-		// default:
-		// 	t.Fatalf("bundles channel not closed")
-		// }
+		if i > 2 {
+			t.Errorf("got %v bundles, want 2", i)
+		}
 	})
 }
 

@@ -29,6 +29,12 @@ import (
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/typex"
 )
 
+type elementManagerConfig struct {
+	// MaxBundleSize caps the number of elements permitted in a bundle.
+	// 0 or less means this is ignored.
+	MaxBundleSize int
+}
+
 // There comes a time in every Beam runner's life that they develop a type
 // called a Watermark Manager, that becomes the core of the runner.
 // Given that handling the watermark is the core of the Beam model, this
@@ -54,22 +60,25 @@ import (
 //
 // Watermarks are always advanced based on consumed input.
 type elementManager struct {
-	stages map[string]*stageState
+	config elementManagerConfig
+
+	stages map[string]*stageState // The state for each stage.
 
 	consumers     map[string][]string // Map from pcollectionID to stageIDs that consumes them as primary input.
 	sideConsumers map[string][]string // Map from pcollectionID to stageIDs that consumes them as side input.
 
 	pcolParents map[string]string // Map from pcollectionID to stageIDs that produce the pcollection.
 
-	refreshCond        sync.Cond
+	refreshCond        sync.Cond   // refreshCond protects the following fields with it's lock, and unblocks bundle scheduling.
 	inprogressBundles  set[string] // Active bundleIDs
 	watermarkRefreshes set[string] // Scheduled stageID watermark refreshes
 
-	pendingElements sync.WaitGroup
+	pendingElements sync.WaitGroup // pendingElements counts all unprocessed elements in a job. Jobs with no pending elements terminate successfully.
 }
 
-func newElementManager() *elementManager {
+func newElementManager(config elementManagerConfig) *elementManager {
 	return &elementManager{
+		config:             config,
 		stages:             map[string]*stageState{},
 		consumers:          map[string][]string{},
 		sideConsumers:      map[string][]string{},
@@ -109,6 +118,7 @@ type elements struct {
 	minTimestamp mtime.Time
 }
 
+// ToData recodes the elements with their approprate windowed value header.
 func (es elements) ToData(info PColInfo) [][]byte {
 	var ret [][]byte
 	for _, e := range es.es {
@@ -185,9 +195,7 @@ func (em *elementManager) Bundles(ctx context.Context, nextBundID func() string)
 	}()
 	// Watermark evaluation goroutine.
 	go func() {
-		defer func() {
-			close(runStageCh)
-		}()
+		defer close(runStageCh)
 		for {
 			em.refreshCond.L.Lock()
 			// If there are no watermark refreshes available, we wait until there are.
@@ -302,6 +310,13 @@ func (em *elementManager) PersistBundle(stageID string, bundID string, col2Coder
 			logger.Fatalf("error decoding header for residual  for %v: %v", stage.ID, err)
 		}
 
+		// TODO set et (event time) to "now". This is safe for global windows without thought
+		// since we can reassign the window just fine here. Technically for fixed and sliding
+		// we could do this just fine too.
+		/// But otherwise we need to schedule a task to assign windows to the element's timestamp
+		// similar to how merge and map are used. We wouldn't even need to send elements over,
+		// just the windows along with the nonced set up.
+
 		for _, w := range ws {
 			unprocessedElements = append(unprocessedElements,
 				element{
@@ -349,7 +364,7 @@ func (em *elementManager) addRefreshAndClearBundle(stageID, bundID string) {
 
 // refreshWatermarks incrementally refreshes the watermarks, and returns the set of stages where the
 // the watermark may have advanced.
-// Must be called while holdeing em.refreshCond.L
+// Must be called while holding em.refreshCond.L
 func (em *elementManager) refreshWatermarks() set[string] {
 	// Need to have at least one refresh signal.
 	nextUpdates := set[string]{}
@@ -428,8 +443,6 @@ func makeStageState(ID string, inputIDs, sides, outputIDs []string) *stageState 
 		ss.inputID = inputIDs[0]
 	}
 	logger.Logf("makeStageState: %v input: %v sides: %v outputs: %v", ID, ss.inputID, ss.sides, ss.outputIDs)
-	// If this is zero, then it's an impulse, and will sort itself out.
-	// TODO, add initial pendings here?
 	return ss
 }
 

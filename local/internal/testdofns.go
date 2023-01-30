@@ -168,6 +168,8 @@ func (fn *int64Check) FinishBundle(_ func(int64)) error {
 // stringCheck validates that within a single bundle,
 // we received the expected string values.
 // Re-emits them downstream.
+// Invalid pattern for general testing, as it will fail
+// on other valid execution patterns, like single element bundles.
 type stringCheck struct {
 	Name string
 	Want []string

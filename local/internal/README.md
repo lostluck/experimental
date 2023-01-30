@@ -8,14 +8,34 @@
   * Composite Handling
     * Real SplittableDoFns (split requests, etc)
       * Different split kinds (channel, residual, separation harness test)
+  * Window Reprocessing/Manipulation -> Map, Assign, Merge
+    * Need to have additional synthetic stages to reprocess inputs, and then
+      target them to appropriate downstream stages.
+    * Can stopgap by having "known windowFns" be handled in runner.
   * Stager Refactor
     * One PTransform : One Stage
     * Fusion Stager
 * Perf or Infra changes (need to profile first)
   * pullDecoder refactor 
   * []byte avoidance -> To io.Reader/Writer streams
-  * Error plumbing rather than log.Fatals or panics.
 
+# Notes to myself: 2023-01-30
+
+OK, so couldn't focus on resolving the streaming issue WRT
+synthetically propagating watermarks in a streaming context.
+So instead, we'll do that after getting this into the repo,
+before it collapses under it's own weight.
+
+I'm going to move urns to their own package, since they're a nice leaf, and require no unit testing.
+This also allows for "urn." as a prefix to each which will be exported.
+
+The services will also be moved out to their own package. I'm biased to putting them into a submission
+package and a execution package, which is how they are
+chunked for use.
+
+Element manager and associated code can be in an "engine" package.
+
+The smaller package sizes should improve compiles a little too.
 
 # Notes to myself: 2023-01-25; evening
 
