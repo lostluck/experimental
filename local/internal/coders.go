@@ -24,20 +24,21 @@ import (
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/runtime/exec"
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/util/ioutilx"
 	pipepb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/pipeline_v1"
+	"github.com/lostluck/experimental/local/internal/urns"
 	"google.golang.org/protobuf/encoding/prototext"
 )
 
 // leafCoders lists coder urns the runner knows how to manipulate.
 // In particular, ones that won't be a problem to parse.
 var leafCoders = map[string]struct{}{
-	urnCoderBytes:          {},
-	urnCoderStringUTF8:     {},
-	urnCoderLengthPrefix:   {},
-	urnCoderVarInt:         {},
-	urnCoderDouble:         {},
-	urnCoderBool:           {},
-	urnCoderGlobalWindow:   {},
-	urnCoderIntervalWindow: {},
+	urns.CoderBytes:          {},
+	urns.CoderStringUTF8:     {},
+	urns.CoderLengthPrefix:   {},
+	urns.CoderVarInt:         {},
+	urns.CoderDouble:         {},
+	urns.CoderBool:           {},
+	urns.CoderGlobalWindow:   {},
+	urns.CoderIntervalWindow: {},
 }
 
 func isLeafCoder(c *pipepb.Coder) bool {
@@ -59,7 +60,7 @@ func makeWindowedValueCoder(t *pipepb.PTransform, pID string, comps *pipepb.Comp
 	wvcID := "cwv_" + pID
 	wInC := &pipepb.Coder{
 		Spec: &pipepb.FunctionSpec{
-			Urn: urnCoderWindowedValue,
+			Urn: urns.CoderWindowedValue,
 		},
 		ComponentCoderIds: []string{cID, wcID},
 	}
@@ -72,9 +73,9 @@ func makeWindowedValueCoder(t *pipepb.PTransform, pID string, comps *pipepb.Comp
 func makeWindowCoders(wc *pipepb.Coder) (exec.WindowDecoder, exec.WindowEncoder) {
 	var cwc *coder.WindowCoder
 	switch wc.GetSpec().GetUrn() {
-	case urnCoderGlobalWindow:
+	case urns.CoderGlobalWindow:
 		cwc = coder.NewGlobalWindow()
-	case urnCoderIntervalWindow:
+	case urns.CoderIntervalWindow:
 		cwc = coder.NewIntervalWindow()
 	default:
 		V(0).Fatalf("makeWindowCoders, unknown urn: %v", prototext.Format(wc))
@@ -109,7 +110,7 @@ func lpUnknownCoders(cID string, coders, base map[string]*pipepb.Coder) string {
 	if len(c.GetComponentCoderIds()) == 0 && !isLeafCoder(c) {
 		lpc := &pipepb.Coder{
 			Spec: &pipepb.FunctionSpec{
-				Urn: urnCoderLengthPrefix,
+				Urn: urns.CoderLengthPrefix,
 			},
 			ComponentCoderIds: []string{cID},
 		}
@@ -177,7 +178,7 @@ func pullDecoder(c *pipepb.Coder, coders map[string]*pipepb.Coder) func(io.Reade
 	urn := c.GetSpec().GetUrn()
 	switch urn {
 	// Anything length prefixed can be treated as opaque.
-	case urnCoderBytes, urnCoderStringUTF8, urnCoderLengthPrefix:
+	case urns.CoderBytes, urns.CoderStringUTF8, urns.CoderLengthPrefix:
 		return func(r io.Reader) []byte {
 			var buf bytes.Buffer
 			tr := io.TeeReader(r, &buf)
@@ -185,28 +186,28 @@ func pullDecoder(c *pipepb.Coder, coders map[string]*pipepb.Coder) func(io.Reade
 			ioutilx.ReadN(tr, int(l))
 			return buf.Bytes()
 		}
-	case urnCoderVarInt:
+	case urns.CoderVarInt:
 		return func(r io.Reader) []byte {
 			var buf bytes.Buffer
 			tr := io.TeeReader(r, &buf)
 			coder.DecodeVarInt(tr)
 			return buf.Bytes()
 		}
-	case urnCoderBool:
+	case urns.CoderBool:
 		return func(r io.Reader) []byte {
 			if v, _ := coder.DecodeBool(r); v {
 				return []byte{1}
 			}
 			return []byte{0}
 		}
-	case urnCoderDouble:
+	case urns.CoderDouble:
 		return func(r io.Reader) []byte {
 			var buf bytes.Buffer
 			tr := io.TeeReader(r, &buf)
 			coder.DecodeDouble(tr)
 			return buf.Bytes()
 		}
-	case urnCoderIterable:
+	case urns.CoderIterable:
 		ccids := c.GetComponentCoderIds()
 		ed := pullDecoder(coders[ccids[0]], coders)
 		// TODO-rejigger all of these to avoid all the wasteful byte copies.
@@ -221,7 +222,7 @@ func pullDecoder(c *pipepb.Coder, coders map[string]*pipepb.Coder) func(io.Reade
 			return buf.Bytes()
 		}
 
-	case urnCoderKV:
+	case urns.CoderKV:
 		ccids := c.GetComponentCoderIds()
 		kd := pullDecoder(coders[ccids[0]], coders)
 		vd := pullDecoder(coders[ccids[1]], coders)
@@ -234,7 +235,7 @@ func pullDecoder(c *pipepb.Coder, coders map[string]*pipepb.Coder) func(io.Reade
 			vd(tr)
 			return buf.Bytes()
 		}
-	case urnCoderRow:
+	case urns.CoderRow:
 		panic(fmt.Sprintf("Runner forgot to LP this Row Coder. %v", prototext.Format(c)))
 	default:
 		panic(fmt.Sprintf("unknown coder urn key: %v", urn))

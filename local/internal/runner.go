@@ -24,6 +24,7 @@ import (
 	fnpb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/fnexecution_v1"
 	jobpb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/jobmanagement_v1"
 	pipepb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/pipeline_v1"
+	"github.com/lostluck/experimental/local/internal/urns"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/proto"
@@ -31,7 +32,7 @@ import (
 )
 
 var capabilities = map[string]struct{}{
-	urnRequirementSplittableDoFn: {},
+	urns.RequirementSplittableDoFn: {},
 }
 
 func isSupported(requirements []string) error {
@@ -114,7 +115,7 @@ func (j *job) runEnvironment(ctx context.Context, env string, wk *worker) {
 	// a different flow from a provisioned docker container.
 	e := j.pipeline.GetComponents().GetEnvironments()[env]
 	switch e.GetUrn() {
-	case urnEnvExternal:
+	case urns.EnvExternal:
 		ep := &pipepb.ExternalPayload{}
 		if err := (proto.UnmarshalOptions{}).Unmarshal(e.GetPayload(), ep); err != nil {
 			V(1).Logf("unmarshalling environment payload %v: %v", wk.ID, err)

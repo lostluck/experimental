@@ -22,6 +22,7 @@ import (
 	pipepb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/pipeline_v1"
 	"golang.org/x/exp/maps"
 	"google.golang.org/protobuf/proto"
+	"github.com/lostluck/experimental/local/internal/urns"
 )
 
 // This file retains the logic for the pardo handler
@@ -52,7 +53,7 @@ func (*pardo) ConfigCharacteristic() reflect.Type {
 var _ transformPreparer = (*pardo)(nil)
 
 func (*pardo) PrepareUrns() []string {
-	return []string{urnTransformParDo}
+	return []string{urns.TransformParDo}
 }
 
 // PrepareTransform handles special processing with respect to ParDos, since their handling is dependant on supported features
@@ -163,9 +164,9 @@ func (h *pardo) PrepareTransform(tid string, t *pipepb.PTransform, comps *pipepb
 	}
 
 	coders := map[string]*pipepb.Coder{
-		ckvERID:  coder(urnCoderKV, cEID, cRID),
-		cSID:     coder(urnCoderDouble),
-		ckvERSID: coder(urnCoderKV, ckvERID, cSID),
+		ckvERID:  coder(urns.CoderKV, cEID, cRID),
+		cSID:     coder(urns.CoderDouble),
+		ckvERSID: coder(urns.CoderKV, ckvERID, cSID),
 	}
 
 	// PCollections only have two new ones.
@@ -219,12 +220,12 @@ func (h *pardo) PrepareTransform(tid string, t *pipepb.PTransform, comps *pipepb
 	newInputs[inputLocalID] = nSPLITnSIZEDID
 
 	tforms := map[string]*pipepb.PTransform{
-		ePWRID:         tform(ePWRID, urnTransformPairWithRestriction, pcolInID, nPWRID),
-		eSPLITnSIZEDID: tform(eSPLITnSIZEDID, urnTransformSplitAndSize, nPWRID, nSPLITnSIZEDID),
+		ePWRID:         tform(ePWRID, urns.TransformPairWithRestriction, pcolInID, nPWRID),
+		eSPLITnSIZEDID: tform(eSPLITnSIZEDID, urns.TransformSplitAndSize, nPWRID, nSPLITnSIZEDID),
 		eProcessID: {
 			UniqueName: eProcessID,
 			Spec: &pipepb.FunctionSpec{
-				Urn:     urnTransformProcessSizedElements,
+				Urn:     urns.TransformProcessSizedElements,
 				Payload: pardoPayload,
 			},
 			Inputs:        newInputs,

@@ -22,6 +22,7 @@ import (
 	pipepb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/pipeline_v1"
 	"google.golang.org/protobuf/encoding/prototext"
 	"google.golang.org/protobuf/proto"
+	"github.com/lostluck/experimental/local/internal/urns"
 )
 
 // This file retains the logic for the combine handler
@@ -54,7 +55,7 @@ func (*combine) ConfigCharacteristic() reflect.Type {
 var _ transformPreparer = (*combine)(nil)
 
 func (*combine) PrepareUrns() []string {
-	return []string{urnTransformCombinePerKey}
+	return []string{urns.TransformCombinePerKey}
 }
 
 // PrepareTransform returns lifted combines and removes the leaves if enabled. Otherwise returns nothing.
@@ -184,9 +185,9 @@ func (h *combine) PrepareTransform(tid string, t *pipepb.PTransform, comps *pipe
 
 	newComps := &pipepb.Components{
 		Coders: map[string]*pipepb.Coder{
-			iterACID:    coder(urnCoderIterable, aID),
-			kvkaCID:     coder(urnCoderKV, kID, aID),
-			kvkIterACID: coder(urnCoderKV, kID, iterACID),
+			iterACID:    coder(urns.CoderIterable, aID),
+			kvkaCID:     coder(urns.CoderKV, kID, aID),
+			kvkIterACID: coder(urns.CoderKV, kID, iterACID),
 		},
 		Pcollections: map[string]*pipepb.PCollection{
 			liftedNID:  pcol(liftedNID, kvkaCID),
@@ -194,10 +195,10 @@ func (h *combine) PrepareTransform(tid string, t *pipepb.PTransform, comps *pipe
 			mergedNID:  pcol(mergedNID, kvkaCID),
 		},
 		Transforms: map[string]*pipepb.PTransform{
-			liftEID:    tform(liftEID, urnTransformPreCombine, pcolInID, liftedNID, t.GetEnvironmentId()),
-			gbkEID:     tform(gbkEID, urnTransformGBK, liftedNID, groupedNID, ""),
-			mergeEID:   tform(mergeEID, urnTransformMerge, groupedNID, mergedNID, t.GetEnvironmentId()),
-			extractEID: tform(mergeEID, urnTransformExtract, mergedNID, pcolOutID, t.GetEnvironmentId()),
+			liftEID:    tform(liftEID, urns.TransformPreCombine, pcolInID, liftedNID, t.GetEnvironmentId()),
+			gbkEID:     tform(gbkEID, urns.TransformGBK, liftedNID, groupedNID, ""),
+			mergeEID:   tform(mergeEID, urns.TransformMerge, groupedNID, mergedNID, t.GetEnvironmentId()),
+			extractEID: tform(mergeEID, urns.TransformExtract, mergedNID, pcolOutID, t.GetEnvironmentId()),
 		},
 	}
 	V(2).Logf("new components from combine %v\n%v", tid, prototext.Format(newComps))

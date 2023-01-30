@@ -30,6 +30,7 @@ import (
 	pipepb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/pipeline_v1"
 	"google.golang.org/protobuf/encoding/prototext"
 	"google.golang.org/protobuf/proto"
+	"github.com/lostluck/experimental/local/internal/urns"
 )
 
 // This file retains the logic for the pardo handler
@@ -62,13 +63,13 @@ func (*runner) ConfigCharacteristic() reflect.Type {
 var _ transformExecuter = (*runner)(nil)
 
 func (*runner) ExecuteUrns() []string {
-	return []string{urnTransformImpulse, urnTransformFlatten, urnTransformGBK}
+	return []string{urns.TransformFlatten, urns.TransformGBK}
 }
 
 // ExecuteWith returns what environment the
 func (h *runner) ExecuteWith(t *pipepb.PTransform) string {
 	urn := t.GetSpec().GetUrn()
-	if urn == urnTransformFlatten && !h.config.SDKFlatten {
+	if urn == urns.TransformFlatten && !h.config.SDKFlatten {
 		return ""
 	}
 	return t.GetEnvironmentId()
@@ -84,11 +85,11 @@ func (h *runner) ExecuteTransform(tid string, t *pipepb.PTransform, comps *pipep
 	}
 
 	switch urn {
-	case urnTransformFlatten:
+	case urns.TransformFlatten:
 		// Allready done and collated.
 		data = inputData
 
-	case urnTransformGBK:
+	case urns.TransformGBK:
 		var inCol string
 		for _, in := range t.GetInputs() {
 			inCol = in
@@ -226,7 +227,7 @@ func gbkBytes(ws *pipepb.WindowingStrategy, wc, kc, vc *pipepb.Coder, toAggregat
 
 	// If the strategy is session windows, then we need to get all the windows, sort them
 	// and see which ones need to be merged together.
-	if ws.GetWindowFn().GetUrn() == urnWindowFnSession {
+	if ws.GetWindowFn().GetUrn() == urns.WindowFnSession {
 		logger.Log("sorting by session window")
 		session := &pipepb.SessionWindowsPayload{}
 		if err := (proto.UnmarshalOptions{}).Unmarshal(ws.GetWindowFn().GetPayload(), session); err != nil {

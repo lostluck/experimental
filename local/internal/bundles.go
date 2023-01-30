@@ -28,6 +28,7 @@ import (
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/typex"
 	fnpb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/fnexecution_v1"
 	pipepb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/pipeline_v1"
+	"github.com/lostluck/experimental/local/internal/urns"
 	"golang.org/x/exp/maps"
 	"google.golang.org/protobuf/encoding/prototext"
 	"google.golang.org/protobuf/proto"
@@ -134,7 +135,7 @@ func executePipeline(ctx context.Context, wk *worker, j *job) {
 			}
 
 			switch urn {
-			case urnTransformGBK:
+			case urns.TransformGBK:
 				em.addStage(stage.ID, []string{getOnlyValue(t.GetInputs())}, nil, []string{getOnlyValue(t.GetOutputs())})
 				for _, global := range t.GetInputs() {
 					col := comps.GetPcollections()[global]
@@ -147,10 +148,10 @@ func executePipeline(ctx context.Context, wk *worker, j *job) {
 						eDec:     ed,
 					}
 				}
-			case urnTransformImpulse:
+			case urns.TransformImpulse:
 				impulses = append(impulses, stage.ID)
 				em.addStage(stage.ID, nil, nil, []string{getOnlyValue(t.GetOutputs())})
-			case urnTransformFlatten:
+			case urns.TransformFlatten:
 				inputs := maps.Values(t.GetInputs())
 				sort.Strings(inputs)
 				em.addStage(stage.ID, inputs, nil, []string{getOnlyValue(t.GetOutputs())})
@@ -281,7 +282,7 @@ func buildStage(s *stage, tid string, t *pipepb.PTransform, comps *pipepb.Compon
 }
 
 func getSideInputs(t *pipepb.PTransform) (map[string]*pipepb.SideInput, error) {
-	if t.GetSpec().GetUrn() != urnTransformParDo {
+	if t.GetSpec().GetUrn() != urns.TransformParDo {
 		return nil, nil
 	}
 	pardo := &pipepb.ParDoPayload{}
@@ -308,7 +309,7 @@ func handleSideInputs(t *pipepb.PTransform, comps *pipepb.Components, coders map
 
 		// this is a side input
 		switch si.GetAccessPattern().GetUrn() {
-		case urnSideInputIterable:
+		case urns.SideInputIterable:
 			V(2).Logf("urnSideInputIterable key? src %v, local %v, global %v", t.GetUniqueName(), local, global)
 			col := comps.GetPcollections()[global]
 			ed := collectionPullDecoder(col.GetCoderId(), coders, comps)
@@ -333,12 +334,12 @@ func handleSideInputs(t *pipepb.PTransform, comps *pipepb.Components, coders map
 					})
 			})
 
-		case urnSideInputMultiMap:
+		case urns.SideInputMultiMap:
 			V(2).Logf("urnSideInputMultiMap key? %v, %v", local, global)
 			col := comps.GetPcollections()[global]
 
 			kvc := comps.GetCoders()[col.GetCoderId()]
-			if kvc.GetSpec().GetUrn() != urnCoderKV {
+			if kvc.GetSpec().GetUrn() != urns.CoderKV {
 				return nil, fmt.Errorf("multimap side inputs needs KV coder, got %v", kvc.GetSpec().GetUrn())
 			}
 
@@ -398,7 +399,7 @@ func sourceTransform(parentID string, sourcePortBytes []byte, outPID string) *pi
 	source := &pipepb.PTransform{
 		UniqueName: parentID,
 		Spec: &pipepb.FunctionSpec{
-			Urn:     urnTransformSource,
+			Urn:     urns.TransformSource,
 			Payload: sourcePortBytes,
 		},
 		Outputs: map[string]string{
@@ -412,7 +413,7 @@ func sinkTransform(sinkID string, sinkPortBytes []byte, inPID string) *pipepb.PT
 	source := &pipepb.PTransform{
 		UniqueName: sinkID,
 		Spec: &pipepb.FunctionSpec{
-			Urn:     urnTransformSink,
+			Urn:     urns.TransformSink,
 			Payload: sinkPortBytes,
 		},
 		Inputs: map[string]string{
