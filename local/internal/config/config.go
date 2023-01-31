@@ -133,9 +133,6 @@ func (r *HandlerRegistry) LoadFromYaml(in []byte) error {
 			buf := bytes.NewBuffer(hb)
 			dec := yaml.NewDecoder(buf)
 			dec.KnownFields(true)
-			if err != nil {
-				panic(fmt.Sprintf("error re-encoding characteristic for variant %v handler %v: %v", v, hk, err))
-			}
 			rt := md.ConfigCharacteristic()
 			rtv := reflect.New(rt)
 			if err := dec.Decode(rtv.Interface()); err != nil {
