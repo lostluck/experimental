@@ -13,9 +13,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package internal
+package engine
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/graph/mtime"
@@ -32,10 +33,18 @@ func (ws defaultStrat) EarliestCompletion(w typex.Window) mtime.Time {
 	return w.MaxTimestamp()
 }
 
+func (defaultStrat) String() string {
+	return "default"
+}
+
 type sessionStrat struct {
 	GapSize time.Duration
 }
 
-func (ws *sessionStrat) EarliestCompletion(w typex.Window) mtime.Time {
+func (ws sessionStrat) EarliestCompletion(w typex.Window) mtime.Time {
 	return w.MaxTimestamp().Add(ws.GapSize)
+}
+
+func (ws sessionStrat) String() string {
+	return fmt.Sprintf("session[GapSize:%v]", ws.GapSize)
 }

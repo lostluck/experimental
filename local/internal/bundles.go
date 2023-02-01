@@ -28,6 +28,7 @@ import (
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/typex"
 	fnpb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/fnexecution_v1"
 	pipepb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/pipeline_v1"
+	"github.com/lostluck/experimental/local/internal/engine"
 	"github.com/lostluck/experimental/local/internal/urns"
 	"golang.org/x/exp/maps"
 	"google.golang.org/protobuf/encoding/prototext"
@@ -74,7 +75,7 @@ func executePipeline(ctx context.Context, wk *worker, j *job) {
 	topo := prepro.preProcessGraph(comps)
 	ts := comps.GetTransforms()
 
-	em := newElementManager(elementManagerConfig{})
+	em := engine.NewElementManager(engine.Config{})
 
 	// This is where the Batch -> Streaming tension exists.
 	// We don't *pre* do this, and we need a different mechanism
@@ -104,7 +105,7 @@ func executePipeline(ctx context.Context, wk *worker, j *job) {
 			for _, out := range t.GetOutputs() {
 				onlyOut = out
 			}
-			stage.OutputsToCoders = map[string]PColInfo{}
+			stage.OutputsToCoders = map[string]engine.PColInfo{}
 			coders := map[string]*pipepb.Coder{}
 			makeWindowedValueCoder(t, onlyOut, comps, coders)
 
@@ -112,11 +113,11 @@ func executePipeline(ctx context.Context, wk *worker, j *job) {
 			ed := collectionPullDecoder(col.GetCoderId(), coders, comps)
 			wDec, wEnc := getWindowValueCoders(comps, col, coders)
 
-			stage.OutputsToCoders[onlyOut] = PColInfo{
+			stage.OutputsToCoders[onlyOut] = engine.PColInfo{
 				GlobalID: onlyOut,
-				wDec:     wDec,
-				wEnc:     wEnc,
-				eDec:     ed,
+				WDec:     wDec,
+				WEnc:     wEnc,
+				EDec:     ed,
 			}
 
 			// There's either 0, 1 or many inputs, but they should be all the same
@@ -125,36 +126,36 @@ func executePipeline(ctx context.Context, wk *worker, j *job) {
 				col := comps.GetPcollections()[global]
 				ed := collectionPullDecoder(col.GetCoderId(), coders, comps)
 				wDec, wEnc := getWindowValueCoders(comps, col, coders)
-				stage.inputInfo = PColInfo{
+				stage.inputInfo = engine.PColInfo{
 					GlobalID: global,
-					wDec:     wDec,
-					wEnc:     wEnc,
-					eDec:     ed,
+					WDec:     wDec,
+					WEnc:     wEnc,
+					EDec:     ed,
 				}
 				break
 			}
 
 			switch urn {
 			case urns.TransformGBK:
-				em.addStage(stage.ID, []string{getOnlyValue(t.GetInputs())}, nil, []string{getOnlyValue(t.GetOutputs())})
+				em.AddStage(stage.ID, []string{getOnlyValue(t.GetInputs())}, nil, []string{getOnlyValue(t.GetOutputs())})
 				for _, global := range t.GetInputs() {
 					col := comps.GetPcollections()[global]
 					ed := collectionPullDecoder(col.GetCoderId(), coders, comps)
 					wDec, wEnc := getWindowValueCoders(comps, col, coders)
-					stage.inputInfo = PColInfo{
+					stage.inputInfo = engine.PColInfo{
 						GlobalID: global,
-						wDec:     wDec,
-						wEnc:     wEnc,
-						eDec:     ed,
+						WDec:     wDec,
+						WEnc:     wEnc,
+						EDec:     ed,
 					}
 				}
 			case urns.TransformImpulse:
 				impulses = append(impulses, stage.ID)
-				em.addStage(stage.ID, nil, nil, []string{getOnlyValue(t.GetOutputs())})
+				em.AddStage(stage.ID, nil, nil, []string{getOnlyValue(t.GetOutputs())})
 			case urns.TransformFlatten:
 				inputs := maps.Values(t.GetInputs())
 				sort.Strings(inputs)
-				em.addStage(stage.ID, inputs, nil, []string{getOnlyValue(t.GetOutputs())})
+				em.AddStage(stage.ID, inputs, nil, []string{getOnlyValue(t.GetOutputs())})
 			}
 			wk.stages[stage.ID] = stage
 		case wk.ID:
@@ -163,7 +164,7 @@ func executePipeline(ctx context.Context, wk *worker, j *job) {
 			logger.Logf("pipelineBuild[%v]: %v", stage.ID, t.GetUniqueName())
 			outputs := maps.Keys(stage.OutputsToCoders)
 			sort.Strings(outputs)
-			em.addStage(stage.ID, []string{stage.mainInputPCol}, stage.sides, outputs)
+			em.AddStage(stage.ID, []string{stage.mainInputPCol}, stage.sides, outputs)
 		default:
 			logger.Fatalf("unknown environment[%v]", t.GetEnvironmentId())
 		}
@@ -176,8 +177,8 @@ func executePipeline(ctx context.Context, wk *worker, j *job) {
 
 	// Execute stages here
 	for rb := range em.Bundles(ctx, wk.nextInst) {
-		s := wk.stages[rb.stageID]
-		s.Execute(j, wk, comps, em, rb.bundleID, rb.watermark)
+		s := wk.stages[rb.StageID]
+		s.Execute(j, wk, comps, em, rb.BundleID, rb.Watermark)
 	}
 	V(1).Logf("pipeline done!")
 }
@@ -204,7 +205,7 @@ func buildStage(s *stage, tid string, t *pipepb.PTransform, comps *pipepb.Compon
 	if err != nil {
 		logger.Fatalf("for transform %v: %v", tid, err)
 	}
-	var inputInfo PColInfo
+	var inputInfo engine.PColInfo
 	var sides []string
 	for local, global := range t.GetInputs() {
 		// This id is directly used for the source, but this also copies
@@ -220,11 +221,11 @@ func buildStage(s *stage, tid string, t *pipepb.PTransform, comps *pipepb.Compon
 			col := comps.GetPcollections()[global]
 			ed := collectionPullDecoder(col.GetCoderId(), coders, comps)
 			wDec, wEnc := getWindowValueCoders(comps, col, coders)
-			inputInfo = PColInfo{
+			inputInfo = engine.PColInfo{
 				GlobalID: global,
-				wDec:     wDec,
-				wEnc:     wEnc,
-				eDec:     ed,
+				WDec:     wDec,
+				WEnc:     wEnc,
+				EDec:     ed,
 			}
 		}
 		// We need to process all inputs to ensure we have all input coders, so we must continue.
@@ -239,7 +240,7 @@ func buildStage(s *stage, tid string, t *pipepb.PTransform, comps *pipepb.Compon
 	// so we can avoid double counting PCollection metrics later.
 	// But this also means replacing the ID for the input in the bundle.
 	sink2Col := map[string]string{}
-	col2Coders := map[string]PColInfo{}
+	col2Coders := map[string]engine.PColInfo{}
 	for local, global := range t.GetOutputs() {
 		wOutCid := makeWindowedValueCoder(t, global, comps, coders)
 		sinkID := tid + "_" + local
@@ -247,11 +248,11 @@ func buildStage(s *stage, tid string, t *pipepb.PTransform, comps *pipepb.Compon
 		ed := collectionPullDecoder(col.GetCoderId(), coders, comps)
 		wDec, wEnc := getWindowValueCoders(comps, col, coders)
 		sink2Col[sinkID] = global
-		col2Coders[global] = PColInfo{
+		col2Coders[global] = engine.PColInfo{
 			GlobalID: global,
-			wDec:     wDec,
-			wEnc:     wEnc,
-			eDec:     ed,
+			WDec:     wDec,
+			WEnc:     wEnc,
+			EDec:     ed,
 		}
 		transforms[sinkID] = sinkTransform(sinkID, portFor(wOutCid, wk), global)
 	}
@@ -469,7 +470,7 @@ type bundle struct {
 	// a Bundle's DataSinks to produce their last output.
 	// After this point we can "commit" the bundle's output for downstream use.
 	DataWait   sync.WaitGroup
-	OutputData tentativeData
+	OutputData engine.TentativeData
 	Resp       chan *fnpb.ProcessBundleResponse
 
 	SinkToPCollection map[string]string
@@ -558,33 +559,26 @@ type stage struct {
 	outputCount      int
 	inputTransformID string
 	mainInputPCol    string
-	inputInfo        PColInfo
+	inputInfo        engine.PColInfo
 	desc             *fnpb.ProcessBundleDescriptor
 	sides            []string
 	prepareSides     func(b *bundle, tid string, watermark mtime.Time)
 
 	SinkToPCollection map[string]string
-	OutputsToCoders   map[string]PColInfo
+	OutputsToCoders   map[string]engine.PColInfo
 }
 
-type PColInfo struct {
-	GlobalID string
-	wDec     exec.WindowDecoder
-	wEnc     exec.WindowEncoder
-	eDec     func(io.Reader) []byte
-}
-
-func (s *stage) Execute(j *job, wk *worker, comps *pipepb.Components, em *elementManager, bundID string, watermark mtime.Time) {
+func (s *stage) Execute(j *job, wk *worker, comps *pipepb.Components, em *engine.ElementManager, bundID string, watermark mtime.Time) {
 	tid := s.transforms[0]
 	V(2).Logf("Execute: starting %v %v - %v at %v", s.ID, bundID, tid, watermark)
 
 	var b *bundle
 	var send bool
-	ss := em.stages[s.ID]
+	inputData := em.InputForBundle(s.ID, bundID, s.inputInfo)
 	switch s.envID {
 	case "": // Runner Transforms
 		// Runner transforms are processed immeadiately.
-		b = s.exe.ExecuteTransform(tid, comps.GetTransforms()[tid], comps, watermark, ss.inprogress[bundID].ToData(s.inputInfo))
+		b = s.exe.ExecuteTransform(tid, comps.GetTransforms()[tid], comps, watermark, inputData)
 		b.InstID = bundID
 		logger.Logf("Execute: runner transform: stage %v %v - tid %v", s.ID, bundID, tid)
 	case wk.ID:
@@ -596,7 +590,7 @@ func (s *stage) Execute(j *job, wk *worker, comps *pipepb.Components, em *elemen
 			InputTransformID: s.inputTransformID,
 
 			// TODO Here's where we can split data for processing in multiple bundles.
-			InputData: ss.inprogress[bundID].ToData(s.inputInfo),
+			InputData: inputData,
 			Resp:      make(chan *fnpb.ProcessBundleResponse, 1),
 
 			SinkToPCollection: s.SinkToPCollection,
@@ -614,7 +608,7 @@ func (s *stage) Execute(j *job, wk *worker, comps *pipepb.Components, em *elemen
 		b.ProcessOn(wk) // Blocks until finished.
 	}
 	// Tentative Data is ready, commit it to the main datastore.
-	V(3).Logf("Execute: committing data for %v %v %v of %v\n%v", s.ID, bundID, maps.Keys(b.OutputData.raw), maps.Keys(s.OutputsToCoders), prototext.Format(comps.Transforms[tid]))
+	V(3).Logf("Execute: committing data for %v %v %v of %v\n%v", s.ID, bundID, maps.Keys(b.OutputData.Raw), maps.Keys(s.OutputsToCoders), prototext.Format(comps.Transforms[tid]))
 
 	resp := &fnpb.ProcessBundleResponse{}
 	if send {
@@ -637,5 +631,5 @@ func (s *stage) Execute(j *job, wk *worker, comps *pipepb.Components, em *elemen
 		logger.Logf("%v %v returned %v residuals back to %v", b.PBDID, b.InstID, l, s.mainInputPCol)
 	}
 	em.PersistBundle(s.ID, b.InstID, s.OutputsToCoders, b.OutputData, s.inputInfo, residualData)
-	b.OutputData = tentativeData{} // Clear the data.
+	b.OutputData = engine.TentativeData{} // Clear the data.
 }

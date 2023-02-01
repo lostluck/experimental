@@ -13,15 +13,21 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package internal
+package engine
 
 import (
 	"container/heap"
 	"context"
 	"fmt"
+	"io"
 	"testing"
 
+	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/graph/coder"
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/graph/mtime"
+	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/graph/window"
+	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/runtime/exec"
+	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/typex"
+	"github.com/google/go-cmp/cmp"
 )
 
 func TestElementHeap(t *testing.T) {
@@ -35,6 +41,7 @@ func TestElementHeap(t *testing.T) {
 		element{timestamp: 1},
 	}
 	heap.Init(&elements)
+	heap.Push(&elements, element{timestamp: 4})
 
 	if got, want := elements.Len(), len(elements); got != want {
 		t.Errorf("elements.Len() = %v, want %v", got, want)
@@ -43,7 +50,7 @@ func TestElementHeap(t *testing.T) {
 		t.Errorf("elements[0].timestamp = %v, want %v", got, want)
 	}
 
-	wanted := []mtime.Time{mtime.MinTimestamp, mtime.ZeroTimestamp, 1, 2, 3, mtime.EndOfGlobalWindowTime, mtime.MaxTimestamp}
+	wanted := []mtime.Time{mtime.MinTimestamp, mtime.ZeroTimestamp, 1, 2, 3, 4, mtime.EndOfGlobalWindowTime, mtime.MaxTimestamp}
 	for i, want := range wanted {
 		if got := heap.Pop(&elements).(element).timestamp; got != want {
 			t.Errorf("[%d] heap.Pop(&elements).(element).timestamp = %v, want %v", i, got, want)
@@ -208,10 +215,10 @@ func TestStageState_getUpstreamWatermark(t *testing.T) {
 func TestStageState_updateWatermarks(t *testing.T) {
 	inputCol := "testInput"
 	outputCol := "testOutput"
-	newState := func() (*stageState, *stageState, *elementManager) {
+	newState := func() (*stageState, *stageState, *ElementManager) {
 		underTest := makeStageState("underTest", []string{inputCol}, nil, []string{outputCol})
 		outStage := makeStageState("outStage", []string{outputCol}, nil, nil)
-		em := &elementManager{
+		em := &ElementManager{
 			consumers: map[string][]string{
 				inputCol:  {underTest.ID},
 				outputCol: {outStage.ID},
@@ -307,9 +314,9 @@ func TestStageState_updateWatermarks(t *testing.T) {
 
 func TestElementManager(t *testing.T) {
 	t.Run("impulse", func(t *testing.T) {
-		em := newElementManager(elementManagerConfig{})
-		em.addStage("impulse", nil, nil, []string{"output"})
-		em.addStage("dofn", []string{"output"}, nil, nil)
+		em := NewElementManager(Config{})
+		em.AddStage("impulse", nil, nil, []string{"output"})
+		em.AddStage("dofn", []string{"output"}, nil, nil)
 
 		em.Impulse("impulse")
 
@@ -326,16 +333,181 @@ func TestElementManager(t *testing.T) {
 		if !ok {
 			t.Error("Bundles channel unexpectedly closed")
 		}
-		fmt.Println("persisting", b)
-		em.PersistBundle("dofn", b.bundleID, nil, tentativeData{}, PColInfo{}, nil)
-		fmt.Println("persisted", b)
-
+		em.PersistBundle("dofn", b.BundleID, nil, TentativeData{}, PColInfo{}, nil)
 		_, ok = <-ch
 		if ok {
 			t.Error("Bundles channel expected to be closed")
 		}
-		if i > 2 {
-			t.Errorf("got %v bundles, want 2", i)
+		if got, want := i, 1; got != want {
+			t.Errorf("got %v bundles, want %v", got, want)
+		}
+	})
+
+	info := PColInfo{
+		GlobalID: "generic_info", // GlobalID isn't used except for debugging.
+		WDec:     exec.MakeWindowDecoder(coder.NewGlobalWindow()),
+		WEnc:     exec.MakeWindowEncoder(coder.NewGlobalWindow()),
+		EDec: func(r io.Reader) []byte {
+			b, err := io.ReadAll(r)
+			if err != nil {
+				t.Fatalf("error decoding \"generic_info\" data:%v", err)
+			}
+			return b
+		},
+	}
+	es := elements{
+		es: []element{{
+			window:    window.GlobalWindow{},
+			timestamp: mtime.MinTimestamp,
+			pane:      typex.NoFiringPane(),
+			elmBytes:  []byte{3, 65, 66, 67}, // "ABC"
+		}},
+		minTimestamp: mtime.MinTimestamp,
+	}
+
+	t.Run("dofn", func(t *testing.T) {
+		em := NewElementManager(Config{})
+		em.AddStage("impulse", nil, nil, []string{"input"})
+		em.AddStage("dofn1", []string{"input"}, nil, []string{"output"})
+		em.AddStage("dofn2", []string{"output"}, nil, nil)
+		em.Impulse("impulse")
+
+		var i int
+		ch := em.Bundles(context.Background(), func() string {
+			defer func() { i++ }()
+			t.Log("generating bundle", i)
+			return fmt.Sprintf("%v", i)
+		})
+		rb, ok := <-ch
+		if !ok {
+			t.Error("Bundles channel unexpectedly closed")
+		}
+		t.Log("received bundle", i)
+
+		td := TentativeData{}
+		for _, d := range es.ToData(info) {
+			td.WriteData("output", d)
+		}
+		outputCoders := map[string]PColInfo{
+			"output": info,
+		}
+
+		em.PersistBundle(rb.StageID, rb.BundleID, outputCoders, td, info, nil)
+		rb, ok = <-ch
+		if !ok {
+			t.Error("Bundles channel not expected to be closed")
+		}
+		// Check the data is what's expected:
+		data := em.InputForBundle(rb.StageID, rb.BundleID, info)
+		if got, want := len(data), 1; got != want {
+			t.Errorf("data len = %v, want %v", got, want)
+		}
+		if !cmp.Equal([]byte{127, 223, 59, 100, 90, 28, 172, 9, 0, 0, 0, 1, 15, 3, 65, 66, 67}, data[0]) {
+			t.Errorf("unexpected data, got %v", data[0])
+		}
+		em.PersistBundle(rb.StageID, rb.BundleID, outputCoders, TentativeData{}, info, nil)
+		rb, ok = <-ch
+		if ok {
+			t.Error("Bundles channel expected to be closed")
+		}
+
+		if got, want := i, 2; got != want {
+			t.Errorf("got %v bundles, want %v", got, want)
+		}
+	})
+
+	t.Run("side", func(t *testing.T) {
+		em := NewElementManager(Config{})
+		em.AddStage("impulse", nil, nil, []string{"input"})
+		em.AddStage("dofn1", []string{"input"}, nil, []string{"output"})
+		em.AddStage("dofn2", []string{"input"}, []string{"output"}, nil)
+		em.Impulse("impulse")
+
+		var i int
+		ch := em.Bundles(context.Background(), func() string {
+			defer func() { i++ }()
+			t.Log("generating bundle", i)
+			return fmt.Sprintf("%v", i)
+		})
+		rb, ok := <-ch
+		if !ok {
+			t.Error("Bundles channel unexpectedly closed")
+		}
+		t.Log("received bundle", i)
+
+		if got, want := rb.StageID, "dofn1"; got != want {
+			t.Fatalf("stage to execute = %v, want %v", got, want)
+		}
+
+		td := TentativeData{}
+		for _, d := range es.ToData(info) {
+			td.WriteData("output", d)
+		}
+		outputCoders := map[string]PColInfo{
+			"output":  info,
+			"input":   info,
+			"impulse": info,
+		}
+
+		em.PersistBundle(rb.StageID, rb.BundleID, outputCoders, td, info, nil)
+		rb, ok = <-ch
+		if !ok {
+			t.Fatal("Bundles channel not expected to be closed")
+		}
+		if got, want := rb.StageID, "dofn2"; got != want {
+			t.Fatalf("stage to execute = %v, want %v", got, want)
+		}
+		em.PersistBundle(rb.StageID, rb.BundleID, outputCoders, TentativeData{}, info, nil)
+		rb, ok = <-ch
+		if ok {
+			t.Error("Bundles channel expected to be closed")
+		}
+
+		if got, want := i, 2; got != want {
+			t.Errorf("got %v bundles, want %v", got, want)
+		}
+	})
+	t.Run("residual", func(t *testing.T) {
+		em := NewElementManager(Config{})
+		em.AddStage("impulse", nil, nil, []string{"input"})
+		em.AddStage("dofn", []string{"input"}, nil, nil)
+		em.Impulse("impulse")
+
+		var i int
+		ch := em.Bundles(context.Background(), func() string {
+			defer func() { i++ }()
+			t.Log("generating bundle", i)
+			return fmt.Sprintf("%v", i)
+		})
+		rb, ok := <-ch
+		if !ok {
+			t.Error("Bundles channel unexpectedly closed")
+		}
+		t.Log("received bundle", i)
+
+		// Add a residual
+		resid := es.ToData(info)
+		em.PersistBundle(rb.StageID, rb.BundleID, nil, TentativeData{}, info, resid)
+		rb, ok = <-ch
+		if !ok {
+			t.Error("Bundles channel not expected to be closed")
+		}
+		// Check the data is what's expected:
+		data := em.InputForBundle(rb.StageID, rb.BundleID, info)
+		if got, want := len(data), 1; got != want {
+			t.Errorf("data len = %v, want %v", got, want)
+		}
+		if !cmp.Equal([]byte{127, 223, 59, 100, 90, 28, 172, 9, 0, 0, 0, 1, 15, 3, 65, 66, 67}, data[0]) {
+			t.Errorf("unexpected data, got %v", data[0])
+		}
+		em.PersistBundle(rb.StageID, rb.BundleID, nil, TentativeData{}, info, nil)
+		rb, ok = <-ch
+		if ok {
+			t.Error("Bundles channel expected to be closed")
+		}
+
+		if got, want := i, 2; got != want {
+			t.Errorf("got %v bundles, want %v", got, want)
 		}
 	})
 }

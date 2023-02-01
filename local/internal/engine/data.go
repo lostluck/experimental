@@ -13,7 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package internal
+package engine
 
 // data.go homes the data management handler for all data that comes and goes
 // from the SDKs. If there were a place to add reliability & restart persistence
@@ -30,34 +30,14 @@ package internal
 // This mechanism will also allow for bundle retries to be added later, so
 // tentative outputs can be disgarded.
 
-type tentativeData struct {
-	raw map[string][][]byte
+type TentativeData struct {
+	Raw map[string][][]byte
 }
 
 // WriteData adds data to a given global collectionID.
-func (d *tentativeData) WriteData(colID string, data []byte) {
-	if d.raw == nil {
-		d.raw = map[string][][]byte{}
+func (d *TentativeData) WriteData(colID string, data []byte) {
+	if d.Raw == nil {
+		d.Raw = map[string][][]byte{}
 	}
-	d.raw[colID] = append(d.raw[colID], data)
-}
-
-type dataService struct {
-	// TODO actually quick process the data to windows here as well.
-	raw map[string][][]byte
-}
-
-// Commit tentative data to the datastore.
-func (d *dataService) Commit(tent tentativeData) {
-	if d.raw == nil {
-		d.raw = map[string][][]byte{}
-	}
-	for colID, data := range tent.raw {
-		d.raw[colID] = append(d.raw[colID], data...)
-	}
-}
-
-// Hack for Side Inputs until watermarks are sorted out.
-func (d *dataService) GetAllData(colID string) [][]byte {
-	return d.raw[colID]
+	d.Raw[colID] = append(d.Raw[colID], data)
 }

@@ -28,9 +28,10 @@ import (
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/runtime/exec"
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/typex"
 	pipepb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/pipeline_v1"
+	"github.com/lostluck/experimental/local/internal/engine"
+	"github.com/lostluck/experimental/local/internal/urns"
 	"google.golang.org/protobuf/encoding/prototext"
 	"google.golang.org/protobuf/proto"
-	"github.com/lostluck/experimental/local/internal/urns"
 )
 
 // This file retains the logic for the pardo handler
@@ -130,7 +131,7 @@ func (h *runner) ExecuteTransform(tid string, t *pipepb.PTransform, comps *pipep
 	if localID == "" {
 		V(1).Fatalf("bad transform: %v", prototext.Format(t))
 	}
-	output := tentativeData{}
+	output := engine.TentativeData{}
 	for _, d := range data {
 		output.WriteData(onlyOut, d)
 	}

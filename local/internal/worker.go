@@ -31,6 +31,7 @@ import (
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/runtime/exec"
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/typex"
 	fnpb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/fnexecution_v1"
+	"github.com/lostluck/experimental/local/internal/engine"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/encoding/prototext"
 
@@ -64,7 +65,7 @@ type worker struct {
 	bundles map[string]*bundle // Bundles keyed by InstructionID
 	stages  map[string]*stage  // Stages keyed by PBDID
 
-	data *dataService
+	data *DataService
 }
 
 // newWorker starts the server components of FnAPI Execution.
@@ -85,7 +86,7 @@ func newWorker(id string) *worker {
 		bundles: make(map[string]*bundle),
 		stages:  make(map[string]*stage),
 
-		data: &dataService{},
+		data: &DataService{},
 	}
 	V(0).Logf("Serving Worker components on %v\n", wk.Endpoint())
 	fnpb.RegisterBeamFnControlServer(wk.server, wk)
@@ -349,4 +350,26 @@ func (wk *worker) State(state fnpb.BeamFnState_StateServer) error {
 		}
 	}
 	return nil
+}
+
+// DataService is slated to be deleted in favour of stage based state
+// management for side inputs.
+type DataService struct {
+	// TODO actually quick process the data to windows here as well.
+	raw map[string][][]byte
+}
+
+// Commit tentative data to the datastore.
+func (d *DataService) Commit(tent engine.TentativeData) {
+	if d.raw == nil {
+		d.raw = map[string][][]byte{}
+	}
+	for colID, data := range tent.Raw {
+		d.raw[colID] = append(d.raw[colID], data...)
+	}
+}
+
+// Hack for Side Inputs until watermarks are sorted out.
+func (d *DataService) GetAllData(colID string) [][]byte {
+	return d.raw[colID]
 }
