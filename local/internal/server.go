@@ -43,7 +43,7 @@ type Server struct {
 func NewServer(port int) *Server {
 	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
 	if err != nil {
-		logger.Fatalf("failed to listen: %v", err)
+		panic(fmt.Sprintf("failed to listen: %v", err))
 	}
 	s := &Server{
 		lis:  lis,

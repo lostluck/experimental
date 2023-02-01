@@ -155,7 +155,7 @@ func reconcileCoders(coders, base map[string]*pipepb.Coder) {
 		for _, ccid := range comps {
 			c, ok := base[ccid]
 			if !ok {
-				logger.Fatalf("unknown coder id during reconciliation")
+				panic(fmt.Sprintf("unknown coder id during reconciliation: %v", ccid))
 			}
 			coders[ccid] = c
 		}

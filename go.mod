@@ -5,7 +5,7 @@ go 1.18
 require (
 	github.com/apache/beam/sdks/v2 v2.40.0
 	github.com/google/go-cmp v0.5.8
-	golang.org/x/exp v0.0.0-20220602145555-4a0574d9293f
+	golang.org/x/exp v0.0.0-20230131160201-f062dba9d201
 	google.golang.org/grpc v1.47.0
 	google.golang.org/protobuf v1.28.0
 )
@@ -23,7 +23,7 @@ require (
 	go.opencensus.io v0.23.0 // indirect
 	golang.org/x/net v0.0.0-20220607020251-c690dde0001d // indirect
 	golang.org/x/oauth2 v0.0.0-20220524215830-622c5d57e401 // indirect
-	golang.org/x/sys v0.0.0-20220520151302-bc2c85ada10a // indirect
+	golang.org/x/sys v0.1.0 // indirect
 	golang.org/x/text v0.3.7 // indirect
 	golang.org/x/xerrors v0.0.0-20220517211312-f3a8303e98df // indirect
 	google.golang.org/api v0.83.0 // indirect

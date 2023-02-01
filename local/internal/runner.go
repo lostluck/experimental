@@ -123,14 +123,14 @@ func (j *job) runEnvironment(ctx context.Context, env string, wk *worker) {
 		externalEnvironment(ctx, ep, wk)
 		V(1).Logf("%v for %v stopped", wk, j)
 	default:
-		logger.Fatalf("environment %v with urn %v unimplemented", env, e.GetUrn())
+		panic(fmt.Sprintf("environment %v with urn %v unimplemented", env, e.GetUrn()))
 	}
 }
 
 func externalEnvironment(ctx context.Context, ep *pipepb.ExternalPayload, wk *worker) {
 	conn, err := grpc.Dial(ep.GetEndpoint().GetUrl(), grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
-		logger.Fatalf("unable to dial sdk worker %v: %v", ep.GetEndpoint().GetUrl(), err)
+		panic(fmt.Sprintf("unable to dial sdk worker %v: %v", ep.GetEndpoint().GetUrl(), err))
 	}
 	defer conn.Close()
 	pool := fnpb.NewBeamFnExternalWorkerPoolClient(conn)

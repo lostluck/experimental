@@ -31,7 +31,7 @@ import (
 	"github.com/lostluck/experimental/local/internal/engine"
 	"github.com/lostluck/experimental/local/internal/urns"
 	"golang.org/x/exp/maps"
-	"google.golang.org/protobuf/encoding/prototext"
+	"golang.org/x/exp/slog"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -161,16 +161,18 @@ func executePipeline(ctx context.Context, wk *worker, j *job) {
 		case wk.ID:
 			// Great! this is for this environment. // Broken abstraction.
 			buildStage(stage, tid, t, comps, wk)
-			logger.Logf("pipelineBuild[%v]: %v", stage.ID, t.GetUniqueName())
+			slog.Debug("pipelineBuild", slog.Group("stage", slog.String("ID", stage.ID), slog.String("transformName", t.GetUniqueName())))
 			outputs := maps.Keys(stage.OutputsToCoders)
 			sort.Strings(outputs)
 			em.AddStage(stage.ID, []string{stage.mainInputPCol}, stage.sides, outputs)
 		default:
-			logger.Fatalf("unknown environment[%v]", t.GetEnvironmentId())
+			err := fmt.Errorf("unknown environment[%v]", t.GetEnvironmentId())
+			slog.Error("Execute", err)
+			panic(err)
 		}
 	}
 
-	// Prime the initial impulses:
+	// Prime the initial impulses, since we now know what consumes them.
 	for _, id := range impulses {
 		em.Impulse(id)
 	}
@@ -178,7 +180,7 @@ func executePipeline(ctx context.Context, wk *worker, j *job) {
 	// Execute stages here
 	for rb := range em.Bundles(ctx, wk.nextInst) {
 		s := wk.stages[rb.StageID]
-		s.Execute(j, wk, comps, em, rb.BundleID, rb.Watermark)
+		s.Execute(j, wk, comps, em, rb)
 	}
 	V(1).Logf("pipeline done!")
 }
@@ -203,7 +205,8 @@ func buildStage(s *stage, tid string, t *pipepb.PTransform, comps *pipepb.Compon
 
 	sis, err := getSideInputs(t)
 	if err != nil {
-		logger.Fatalf("for transform %v: %v", tid, err)
+		slog.Error("buildStage: getSide Inputs", err, slog.String("transformID", tid))
+		panic(err)
 	}
 	var inputInfo engine.PColInfo
 	var sides []string
@@ -233,7 +236,8 @@ func buildStage(s *stage, tid string, t *pipepb.PTransform, comps *pipepb.Compon
 
 	prepareSides, err := handleSideInputs(t, comps, coders, wk)
 	if err != nil {
-		logger.Fatalf("for transform %v: %v", tid, err)
+		slog.Error("buildStage: handleSideInputs", err, slog.String("transformID", tid))
+		panic(err)
 	}
 
 	// TODO: We need a new logical PCollection to represent the source
@@ -433,7 +437,7 @@ func portFor(wInCid string, wk *worker) []byte {
 	}
 	sourcePortBytes, err := proto.Marshal(sourcePort)
 	if err != nil {
-		logger.Fatalf("bad port: %v", err)
+		slog.Error("bad port", err, slog.String("endpoint", sourcePort.ApiServiceDescriptor.GetUrl()))
 	}
 	return sourcePortBytes
 }
@@ -535,7 +539,7 @@ func collateByWindows[T any](data [][]byte, watermark mtime.Time, wDec exec.Wind
 			for _, w := range ws {
 				// if w.MaxTimestamp() > watermark {
 				// 	var t T
-				// 	logger.Logf("collateByWindows[%T]: window not yet closed, skipping %v > %v", t, w.MaxTimestamp(), watermark)
+				// 	slog.Debug(fmt.Sprintf("collateByWindows[%T]: window not yet closed, skipping %v > %v", t, w.MaxTimestamp(), watermark))
 				// 	continue
 				// }
 				windowed[w] = join(windowed[w], e)
@@ -568,24 +572,24 @@ type stage struct {
 	OutputsToCoders   map[string]engine.PColInfo
 }
 
-func (s *stage) Execute(j *job, wk *worker, comps *pipepb.Components, em *engine.ElementManager, bundID string, watermark mtime.Time) {
+func (s *stage) Execute(j *job, wk *worker, comps *pipepb.Components, em *engine.ElementManager, rb engine.RunBundle) {
 	tid := s.transforms[0]
-	V(2).Logf("Execute: starting %v %v - %v at %v", s.ID, bundID, tid, watermark)
+	slog.Debug("Execute: starting bundle", "bundle", rb, slog.String("tid", tid))
 
 	var b *bundle
 	var send bool
-	inputData := em.InputForBundle(s.ID, bundID, s.inputInfo)
+	inputData := em.InputForBundle(rb, s.inputInfo)
 	switch s.envID {
 	case "": // Runner Transforms
 		// Runner transforms are processed immeadiately.
-		b = s.exe.ExecuteTransform(tid, comps.GetTransforms()[tid], comps, watermark, inputData)
-		b.InstID = bundID
-		logger.Logf("Execute: runner transform: stage %v %v - tid %v", s.ID, bundID, tid)
+		b = s.exe.ExecuteTransform(tid, comps.GetTransforms()[tid], comps, rb.Watermark, inputData)
+		b.InstID = rb.BundleID
+		slog.Debug("Execute: runner transform", "bundle", rb, slog.String("tid", tid))
 	case wk.ID:
 		send = true
 		b = &bundle{
 			PBDID:  s.ID,
-			InstID: bundID,
+			InstID: rb.BundleID,
 
 			InputTransformID: s.inputTransformID,
 
@@ -598,17 +602,19 @@ func (s *stage) Execute(j *job, wk *worker, comps *pipepb.Components, em *engine
 		}
 		b.DataWait.Add(b.OutputCount)
 
-		s.prepareSides(b, s.transforms[0], watermark)
+		s.prepareSides(b, s.transforms[0], rb.Watermark)
 	default:
-		logger.Fatalf("unknown environment[%v]", s.envID)
+		err := fmt.Errorf("unknown environment[%v]", s.envID)
+		slog.Error("Execute", err)
+		panic(err)
 	}
 
 	if send {
-		V(1).Logf("Execute: processing %v\n%v", b.PBDID, prototext.Format(comps.Transforms[tid]))
+		slog.Debug("Execute: processing", "bundle", rb)
 		b.ProcessOn(wk) // Blocks until finished.
 	}
 	// Tentative Data is ready, commit it to the main datastore.
-	V(3).Logf("Execute: committing data for %v %v %v of %v\n%v", s.ID, bundID, maps.Keys(b.OutputData.Raw), maps.Keys(s.OutputsToCoders), prototext.Format(comps.Transforms[tid]))
+	slog.Debug("Execute: commiting data", "bundle", rb, slog.Any("outputsWithData", maps.Keys(b.OutputData.Raw)), slog.Any("outputs", maps.Keys(s.OutputsToCoders)))
 
 	resp := &fnpb.ProcessBundleResponse{}
 	if send {
@@ -624,12 +630,13 @@ func (s *stage) Execute(j *job, wk *worker, comps *pipepb.Components, em *engine
 		ba := rr.GetApplication()
 		residualData = append(residualData, ba.GetElement())
 		if len(ba.GetElement()) == 0 {
-			logger.Fatalf("bundle %v %v returned empty residual application", b.PBDID, b.InstID)
+			slog.Log(slog.LevelError, "returned empty residual application", "bundle", rb)
+			panic("sdk returned empty residual application")
 		}
 	}
 	if l := len(residualData); l > 0 {
-		logger.Logf("%v %v returned %v residuals back to %v", b.PBDID, b.InstID, l, s.mainInputPCol)
+		slog.Debug("returned empty residual application", "bundle", rb, slog.Int("numResiduals", l), slog.String("pcollection", s.mainInputPCol))
 	}
-	em.PersistBundle(s.ID, b.InstID, s.OutputsToCoders, b.OutputData, s.inputInfo, residualData)
+	em.PersistBundle(rb, s.OutputsToCoders, b.OutputData, s.inputInfo, residualData)
 	b.OutputData = engine.TentativeData{} // Clear the data.
 }

@@ -32,6 +32,7 @@ import (
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/typex"
 	fnpb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/fnexecution_v1"
 	"github.com/lostluck/experimental/local/internal/engine"
+	"golang.org/x/exp/slog"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/encoding/prototext"
 
@@ -72,7 +73,7 @@ type worker struct {
 func newWorker(id string) *worker {
 	lis, err := net.Listen("tcp", ":0")
 	if err != nil {
-		logger.Fatalf("failed to listen: %v", err)
+		panic(fmt.Sprintf("failed to listen: %v", err))
 	}
 	var opts []grpc.ServerOption
 	wk := &worker{
@@ -286,7 +287,7 @@ func (wk *worker) State(state fnpb.BeamFnState_StateServer) error {
 					} else {
 						w, err = exec.MakeWindowDecoder(coder.NewIntervalWindow()).DecodeSingle(bytes.NewBuffer(wKey))
 						if err != nil {
-							logger.Fatalf("error decoding iterable side input window key %v: %v", wKey, err)
+							panic(fmt.Sprintf("error decoding iterable side input window key %v: %v", wKey, err))
 						}
 					}
 					winMap := b.IterableSideInputData[ikey.GetTransformId()][ikey.GetSideInputId()]
@@ -294,7 +295,7 @@ func (wk *worker) State(state fnpb.BeamFnState_StateServer) error {
 					for w := range winMap {
 						wins = append(wins, w)
 					}
-					logger.Logf("side input[%v][%v] I Key: %v Windows: %v", req.GetId(), req.GetInstructionId(), w, wins)
+					slog.Debug(fmt.Sprintf("side input[%v][%v] I Key: %v Windows: %v", req.GetId(), req.GetInstructionId(), w, wins))
 					data = winMap[w]
 
 				case *fnpb.StateKey_MultimapSideInput_:
@@ -306,7 +307,7 @@ func (wk *worker) State(state fnpb.BeamFnState_StateServer) error {
 					} else {
 						w, err = exec.MakeWindowDecoder(coder.NewIntervalWindow()).DecodeSingle(bytes.NewBuffer(wKey))
 						if err != nil {
-							logger.Fatalf("error decoding iterable side input window key %v: %v", wKey, err)
+							panic(fmt.Sprintf("error decoding iterable side input window key %v: %v", wKey, err))
 						}
 					}
 					dKey := mmkey.GetKey()
@@ -315,12 +316,12 @@ func (wk *worker) State(state fnpb.BeamFnState_StateServer) error {
 					for w := range winMap {
 						wins = append(wins, w)
 					}
-					logger.Logf("side input[%v][%v] MM Key: %v Windows: %v", req.GetId(), req.GetInstructionId(), w, wins)
+					slog.Debug(fmt.Sprintf("side input[%v][%v] MM Key: %v Windows: %v", req.GetId(), req.GetInstructionId(), w, wins))
 
 					data = winMap[w][string(dKey)]
 
 				default:
-					logger.Fatalf("unsupported StateKey Access type: %T: %v", key.GetType(), prototext.Format(key))
+					panic(fmt.Sprintf("unsupported StateKey Access type: %T: %v", key.GetType(), prototext.Format(key)))
 				}
 
 				// Encode the runner iterable (no length, just consecutive elements), and send it out.
@@ -340,7 +341,7 @@ func (wk *worker) State(state fnpb.BeamFnState_StateServer) error {
 					},
 				}
 			default:
-				logger.Fatalf("unsupported StateRequest kind %T: %v", req.GetRequest(), prototext.Format(req))
+				panic(fmt.Sprintf("unsupported StateRequest kind %T: %v", req.GetRequest(), prototext.Format(req)))
 			}
 		}
 	}()

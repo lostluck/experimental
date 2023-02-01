@@ -17,6 +17,7 @@ package internal
 
 import (
 	"bytes"
+	"fmt"
 	"hash/maphash"
 	"sort"
 	"sync"
@@ -465,7 +466,7 @@ func (m *metricsStore) contributeMetrics(payloads *fnpb.ProcessBundleResponse) {
 			a = ops.newAccum()
 		}
 		if err := a.accumulate(mon.GetPayload()); err != nil {
-			logger.Fatalf("error decoding metrics %v: %+v\n\t%+v", urn, key, a)
+			panic(fmt.Sprintf("error decoding metrics %v: %+v\n\t%+v", urn, key, a))
 		}
 		m.accums[key] = a
 	}

@@ -16,31 +16,25 @@
 package internal
 
 import (
-	"log"
+	"fmt"
 	"os"
 	"sync/atomic"
+
+	"golang.org/x/exp/slog"
 )
 
 // The logger for this runner.
 var logger = &runnerLog{
 	disabled: 2,
-	logger:   log.New(os.Stderr, "[local] ", log.Ldate|log.Ltime|log.Lmicroseconds|log.Lshortfile),
 }
 
 type runnerLog struct {
 	disabled int32 // if > level, disable log output.
-	logger   logIface
 }
 
 // SetMaxV sets the maximum V log level that will be printed.
 func SetMaxV(level int32) {
 	atomic.StoreInt32(&logger.disabled, level)
-}
-
-type logIface interface {
-	Printf(format string, v ...any)
-	Println(v ...any)
-	Fatalf(format string, v ...any)
 }
 
 // V indicates the level of the log.
@@ -60,20 +54,18 @@ func V(level int32) *runnerLog {
 	return logger
 }
 
-// Logf calls l.Output to print to the logger. Arguments are handled in the manner of fmt.Println.
 func (r *runnerLog) Logf(format string, v ...any) {
 	if r == nil {
 		return
 	}
-	r.logger.Printf(format, v...)
+	slog.Default().LogDepth(2, slog.LevelInfo, fmt.Sprintf(format, v...))
 }
 
-// Log calls l.Output to print to the logger. Arguments are handled in the manner of fmt.Log.
 func (r *runnerLog) Log(v ...any) {
 	if r == nil {
 		return
 	}
-	r.logger.Println(v...)
+	slog.Default().LogDepth(2, slog.LevelInfo, fmt.Sprint(v...))
 }
 
 // Fatalf is equivalent to l.Logf() followed by a call to os.Exit(1)
@@ -81,5 +73,6 @@ func (r *runnerLog) Fatalf(format string, v ...any) {
 	if r == nil {
 		return
 	}
-	r.logger.Fatalf(format, v...)
+	slog.Default().LogDepth(2, slog.LevelError, fmt.Sprintf(format, v...))
+	os.Exit(1)
 }

@@ -329,11 +329,14 @@ func TestElementManager(t *testing.T) {
 			defer func() { i++ }()
 			return fmt.Sprintf("%v", i)
 		})
-		b, ok := <-ch
+		rb, ok := <-ch
 		if !ok {
 			t.Error("Bundles channel unexpectedly closed")
 		}
-		em.PersistBundle("dofn", b.BundleID, nil, TentativeData{}, PColInfo{}, nil)
+		if got, want := rb.StageID, "dofn"; got != want {
+			t.Errorf("stage to execute = %v, want %v", got, want)
+		}
+		em.PersistBundle(rb, nil, TentativeData{}, PColInfo{}, nil)
 		_, ok = <-ch
 		if ok {
 			t.Error("Bundles channel expected to be closed")
@@ -392,23 +395,23 @@ func TestElementManager(t *testing.T) {
 			"output": info,
 		}
 
-		em.PersistBundle(rb.StageID, rb.BundleID, outputCoders, td, info, nil)
+		em.PersistBundle(rb, outputCoders, td, info, nil)
 		rb, ok = <-ch
 		if !ok {
 			t.Error("Bundles channel not expected to be closed")
 		}
 		// Check the data is what's expected:
-		data := em.InputForBundle(rb.StageID, rb.BundleID, info)
+		data := em.InputForBundle(rb, info)
 		if got, want := len(data), 1; got != want {
 			t.Errorf("data len = %v, want %v", got, want)
 		}
 		if !cmp.Equal([]byte{127, 223, 59, 100, 90, 28, 172, 9, 0, 0, 0, 1, 15, 3, 65, 66, 67}, data[0]) {
 			t.Errorf("unexpected data, got %v", data[0])
 		}
-		em.PersistBundle(rb.StageID, rb.BundleID, outputCoders, TentativeData{}, info, nil)
+		em.PersistBundle(rb, outputCoders, TentativeData{}, info, nil)
 		rb, ok = <-ch
 		if ok {
-			t.Error("Bundles channel expected to be closed")
+			t.Error("Bundles channel expected to be closed", rb)
 		}
 
 		if got, want := i, 2; got != want {
@@ -449,7 +452,7 @@ func TestElementManager(t *testing.T) {
 			"impulse": info,
 		}
 
-		em.PersistBundle(rb.StageID, rb.BundleID, outputCoders, td, info, nil)
+		em.PersistBundle(rb, outputCoders, td, info, nil)
 		rb, ok = <-ch
 		if !ok {
 			t.Fatal("Bundles channel not expected to be closed")
@@ -457,7 +460,7 @@ func TestElementManager(t *testing.T) {
 		if got, want := rb.StageID, "dofn2"; got != want {
 			t.Fatalf("stage to execute = %v, want %v", got, want)
 		}
-		em.PersistBundle(rb.StageID, rb.BundleID, outputCoders, TentativeData{}, info, nil)
+		em.PersistBundle(rb, outputCoders, TentativeData{}, info, nil)
 		rb, ok = <-ch
 		if ok {
 			t.Error("Bundles channel expected to be closed")
@@ -487,23 +490,23 @@ func TestElementManager(t *testing.T) {
 
 		// Add a residual
 		resid := es.ToData(info)
-		em.PersistBundle(rb.StageID, rb.BundleID, nil, TentativeData{}, info, resid)
+		em.PersistBundle(rb, nil, TentativeData{}, info, resid)
 		rb, ok = <-ch
 		if !ok {
 			t.Error("Bundles channel not expected to be closed")
 		}
 		// Check the data is what's expected:
-		data := em.InputForBundle(rb.StageID, rb.BundleID, info)
+		data := em.InputForBundle(rb, info)
 		if got, want := len(data), 1; got != want {
 			t.Errorf("data len = %v, want %v", got, want)
 		}
 		if !cmp.Equal([]byte{127, 223, 59, 100, 90, 28, 172, 9, 0, 0, 0, 1, 15, 3, 65, 66, 67}, data[0]) {
 			t.Errorf("unexpected data, got %v", data[0])
 		}
-		em.PersistBundle(rb.StageID, rb.BundleID, nil, TentativeData{}, info, nil)
+		em.PersistBundle(rb, nil, TentativeData{}, info, nil)
 		rb, ok = <-ch
 		if ok {
-			t.Error("Bundles channel expected to be closed")
+			t.Error("Bundles channel expected to be closed", rb)
 		}
 
 		if got, want := i, 2; got != want {
@@ -511,6 +514,3 @@ func TestElementManager(t *testing.T) {
 		}
 	})
 }
-
-// TODO: add tests for persisting bundles
-// TODO: add tests for producing bundles.

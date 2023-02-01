@@ -29,6 +29,7 @@ import (
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/graph/window"
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/runtime/exec"
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/typex"
+	"golang.org/x/exp/slog"
 )
 
 type Config struct {
@@ -94,7 +95,7 @@ func NewElementManager(config Config) *ElementManager {
 // AddStage adds a stage to this element manager, connecting it's pcollections and
 // nodes to the watermark propagation graph.
 func (em *ElementManager) AddStage(ID string, inputIDs, sides, outputIDs []string) {
-	// logger.Logf("AddStage: %v inputs: %v sides: %v outputs: %v", ID, inputIDs, sides, outputIDs)
+	slog.Debug("AddStage", slog.String("ID", ID), slog.Any("inputs", inputIDs), slog.Any("sides", sides), slog.Any("outputs", outputIDs))
 	ss := makeStageState(ID, inputIDs, sides, outputIDs)
 
 	em.stages[ss.ID] = ss
@@ -173,12 +174,12 @@ func (em *ElementManager) Impulse(stageID string) {
 	}}
 
 	consumers := em.consumers[stage.outputIDs[0]]
-	//logger.Log("Impulse:", stageID, stage.outputIDs, consumers)
+	slog.Debug("Impulse", slog.String("stageID", stageID), slog.Any("outputs", stage.outputIDs), slog.Any("consumers", consumers))
+
 	em.pendingElements.Add(len(consumers))
 	for _, sID := range consumers {
 		consumer := em.stages[sID]
 		consumer.AddPending(newPending)
-		//	logger.Logf("Impulse: %v setting downstream stage %v, with %v new elements", stageID, sID, len(newPending))
 	}
 	refreshes := stage.updateWatermarks(mtime.MaxTimestamp, mtime.MaxTimestamp, em)
 	em.addRefreshes(refreshes)
@@ -190,8 +191,11 @@ type RunBundle struct {
 	Watermark mtime.Time
 }
 
-func (rb RunBundle) String() string {
-	return fmt.Sprintf("{%v %v %v}", rb.StageID, rb.BundleID, rb.Watermark)
+func (rb RunBundle) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("ID", rb.BundleID),
+		slog.String("stage", rb.StageID),
+		slog.Time("watermark", rb.Watermark.ToTime()))
 }
 
 func (em *ElementManager) Bundles(ctx context.Context, nextBundID func() string) <-chan RunBundle {
@@ -199,7 +203,7 @@ func (em *ElementManager) Bundles(ctx context.Context, nextBundID func() string)
 	ctx, cancelFn := context.WithCancel(ctx)
 	go func() {
 		em.pendingElements.Wait()
-		//logger.Logf("no more pending elements: terminating pipeline")
+		slog.Info("no more pending elements: terminating pipeline")
 		cancelFn()
 		// Ensure the watermark evaluation goroutine exits.
 		em.refreshCond.Broadcast()
@@ -241,7 +245,6 @@ func (em *ElementManager) Bundles(ctx context.Context, nextBundID func() string)
 
 					select {
 					case <-ctx.Done():
-						//		logger.Logf("Bundles: loop canceled (pre pending)")
 						return
 					case runStageCh <- rb:
 					}
@@ -256,11 +259,11 @@ func (em *ElementManager) Bundles(ctx context.Context, nextBundID func() string)
 
 // InputForBundle returns pre-allocated data for the given bundle, encoding the elements using
 // the pcollection's coders.
-func (em *ElementManager) InputForBundle(stageID, bundleID string, info PColInfo) [][]byte {
-	ss := em.stages[stageID]
+func (em *ElementManager) InputForBundle(rb RunBundle, info PColInfo) [][]byte {
+	ss := em.stages[rb.StageID]
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
-	es := ss.inprogress[bundleID]
+	es := ss.inprogress[rb.BundleID]
 	return es.ToData(info)
 }
 
@@ -273,12 +276,12 @@ func (em *ElementManager) InputForBundle(stageID, bundleID string, info PColInfo
 //
 // PersistBundle takes in the stage ID, ID of the bundle associated with the pending
 // input elements, and the committed output elements.
-func (em *ElementManager) PersistBundle(stageID string, bundID string, col2Coders map[string]PColInfo, d TentativeData, inputInfo PColInfo, residuals [][]byte) {
-	stage := em.stages[stageID]
+func (em *ElementManager) PersistBundle(rb RunBundle, col2Coders map[string]PColInfo, d TentativeData, inputInfo PColInfo, residuals [][]byte) {
+	stage := em.stages[rb.StageID]
 	for output, data := range d.Raw {
 		info := col2Coders[output]
 		var newPending []element
-		//	logger.Logf("PersistBundle: processing output for stage %v bundle %v output: %v", stageID, bundID, output)
+		slog.Debug("PersistBundle: processing output", "bundle", rb, slog.String("output", output))
 		for _, datum := range data {
 			buf := bytes.NewBuffer(datum)
 			if len(datum) == 0 {
@@ -292,7 +295,8 @@ func (em *ElementManager) PersistBundle(stageID string, bundID string, col2Coder
 					if err == io.EOF {
 						break
 					}
-					//			logger.Fatalf("error decoding watermarks for %v: %v", output, err)
+					slog.Error("PersistBundle: error decoding watermarks", err, "bundle", rb, slog.String("output", output))
+					panic("error decoding watermarks")
 				}
 				// TODO: Optimize unnecessary copies. This is doubleteeing.
 				elmBytes := info.EDec(tee)
@@ -308,13 +312,11 @@ func (em *ElementManager) PersistBundle(stageID string, bundID string, col2Coder
 			}
 		}
 		consumers := em.consumers[output]
-		//logger.Logf("PersistBundle: %v has consumers: %v for %v elements", stageID, consumers, len(newPending))
+		slog.Debug("PersistBundle: bundle has downstream consumers.", "bundle", rb, slog.Int("newPending", len(newPending)), "consumers", consumers)
 		for _, sID := range consumers {
 			em.pendingElements.Add(len(newPending))
 			consumer := em.stages[sID]
 			consumer.AddPending(newPending)
-
-			//		logger.Logf("PersistBundle: setting downstream stage %v, with %v new elements", sID, len(newPending))
 		}
 	}
 
@@ -327,7 +329,8 @@ func (em *ElementManager) PersistBundle(stageID string, bundID string, col2Coder
 			if err == io.EOF {
 				break
 			}
-			//	logger.Fatalf("error decoding header for residual  for %v: %v", stage.ID, err)
+			slog.Error("PersistBundle: error decoding residual header", err, "bundle", rb)
+			panic("error decoding residual header")
 		}
 
 		// TODO use a default output watermark estimator, since we should have watermark estimates
@@ -351,15 +354,13 @@ func (em *ElementManager) PersistBundle(stageID string, bundID string, col2Coder
 	// Must be done after adding the new pending elements to avoid an incorrect
 	// watermark advancement.
 	stage.mu.Lock()
-	completed := stage.inprogress[bundID]
+	completed := stage.inprogress[rb.BundleID]
 	em.pendingElements.Add(-len(completed.es))
-	delete(stage.inprogress, bundID)
+	delete(stage.inprogress, rb.BundleID)
 	stage.mu.Unlock()
 
-	//logger.Logf("PersistBundle: removed pending bundle %v, with %v processed elements", bundID, -len(completed.es))
-
 	// TODO support state/timer watermark holds.
-	em.addRefreshAndClearBundle(stage.ID, bundID)
+	em.addRefreshAndClearBundle(stage.ID, rb.BundleID)
 }
 
 func (em *ElementManager) addRefreshes(stages set[string]) {
@@ -457,7 +458,6 @@ func makeStageState(ID string, inputIDs, sides, outputIDs []string) *stageState 
 	if len(inputIDs) == 1 {
 		ss.inputID = inputIDs[0]
 	}
-	//logger.Logf("makeStageState: %v input: %v sides: %v outputs: %v", ID, ss.inputID, ss.sides, ss.outputIDs)
 	return ss
 }
 
@@ -514,7 +514,6 @@ func (ss *stageState) startBundle(watermark mtime.Time, genBundID func() string)
 	}()
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
-	//	logger.Logf("startBundle: %v %v - %v pending elements at %v", ss.ID, rb.bundleID, len(ss.pending), rb.watermark)
 
 	var toProcess, notYet []element
 	for _, e := range ss.pending {
@@ -528,7 +527,6 @@ func (ss *stageState) startBundle(watermark mtime.Time, genBundID func() string)
 	heap.Init(&ss.pending)
 
 	if len(toProcess) == 0 {
-		//	logger.Logf("startBundle: %v %v - no elements at %v", ss.ID, rb.bundleID, rb.watermark)
 		return "", false
 	}
 	// Is THIS is where basic splits should happen/per element processing?
@@ -541,7 +539,6 @@ func (ss *stageState) startBundle(watermark mtime.Time, genBundID func() string)
 	}
 	bundID := genBundID()
 	ss.inprogress[bundID] = es
-	//logger.Logf("startBundle: %v %v - %v elements at %v", ss.ID, rb.bundleID, len(es.es), rb.watermark)
 	return bundID, true
 }
 
@@ -579,8 +576,6 @@ func (ss *stageState) updateWatermarks(minPending, minStateHold mtime.Time, em *
 	// PCollection watermarks are based on their parents's output watermark.
 	_, newIn := ss.UpstreamWatermark()
 
-	//	logger.Logf("updateWatermarks[%v]: upstream %v %v, minPending %v, minStateHold %v input %v output %v", ss.ID, pcol, newIn, minPending, minStateHold, ss.input, ss.output)
-
 	// Set the input watermark based on the minimum pending elements,
 	// and the current input pcollection watermark.
 	if minPending < newIn {
@@ -589,7 +584,6 @@ func (ss *stageState) updateWatermarks(minPending, minStateHold mtime.Time, em *
 
 	// If bigger, advance the input watermark.
 	if newIn > ss.input {
-		//	logger.Logf("updateWatermarks[%v]: advancing input watermark from %v to %v", ss.ID, ss.input, newIn)
 		ss.input = newIn
 	}
 	// The output starts with the new input as the basis.
@@ -600,13 +594,10 @@ func (ss *stageState) updateWatermarks(minPending, minStateHold mtime.Time, em *
 	refreshes := set[string]{}
 	// If bigger, advance the output watermark
 	if newOut > ss.output {
-		//	logger.Logf("updateWatermarks[%v]: advancing output watermark from %v to %v", ss.ID, ss.output, newOut)
 		ss.output = newOut
 		for _, outputCol := range ss.outputIDs {
 			consumers := em.consumers[outputCol]
-			// if len(consumers) > 0 {
-			// 	//	logger.Logf("updateWatermarks[%v]: setting downstream consumer of %v to %v for %v", ss.ID, outputCol, ss.output, consumers)
-			// }
+
 			for _, sID := range consumers {
 				em.stages[sID].updateUpstreamWatermark(outputCol, ss.output)
 				refreshes.insert(sID)
@@ -630,26 +621,19 @@ func (ss *stageState) bundleReady(em *ElementManager) (mtime.Time, bool) {
 	inputW := ss.input
 	_, upstreamW := ss.UpstreamWatermark()
 	if inputW == upstreamW {
-		//	logger.Logf("Bundles: stage %v has insufficient upstream watermark; requires %q %v > %v", ss.ID, upstreamPcol, inputW, upstreamW)
-		return mtime.MinTimestamp, false
-	} else if inputW > upstreamW {
-		//	logger.Fatalf("%v has invariance violation, input watermark greater than upstream: %v", ss.ID, inputW, upstreamW)
+		slog.Debug("bundleReady: insufficient upstream watermark",
+			slog.String("stage", ss.ID),
+			slog.Group("watermark",
+				slog.Any("upstream", upstreamW),
+				slog.Any("input", inputW)))
 		return mtime.MinTimestamp, false
 	}
-
-	// We know now that inputW < upstreamW, so we should be able to process any available inputs.
-	// if len(ss.sides) > 0 {
-	// 	//	logger.Logf("Bundles: stage %v has side inputs %v", ss.ID, ss.sides)
-	// }
 	ready := true
 	for _, side := range ss.sides {
 		pID := em.pcolParents[side]
 		parent := em.stages[pID]
 		ow := parent.OutputWatermark()
-		//	logger.Logf("Bundles: stage %v parent[%v] side input %v watermark; requires %v >= %v", ss.ID, pID, side, ow, upstreamW)
-
 		if upstreamW > ow {
-			//		logger.Logf("Bundles: stage %v side input %v from %v insufficient watermark; requires %v >= %v", ss.ID, side, pID, ow, upstreamW)
 			ready = false
 		}
 	}

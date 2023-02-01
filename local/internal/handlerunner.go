@@ -17,6 +17,7 @@ package internal
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"reflect"
 	"sort"
@@ -30,6 +31,7 @@ import (
 	pipepb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/pipeline_v1"
 	"github.com/lostluck/experimental/local/internal/engine"
 	"github.com/lostluck/experimental/local/internal/urns"
+	"golang.org/x/exp/slog"
 	"google.golang.org/protobuf/encoding/prototext"
 	"google.golang.org/protobuf/proto"
 )
@@ -115,10 +117,10 @@ func (h *runner) ExecuteTransform(tid string, t *pipepb.PTransform, comps *pipep
 		// TODO fix data piping for GBKs.
 		data = append(data, gbkBytes(ws, wc, kc, ec, inputData, coders, watermark))
 		if len(data[0]) == 0 {
-			logger.Fatalf("no data for GBK")
+			panic(fmt.Sprintf("no data for GBK"))
 		}
 	default:
-		logger.Fatalf("unimplemented runner transform[%v]", urn)
+		panic(fmt.Sprintf("unimplemented runner transform[%v]", urn))
 	}
 
 	// To avoid conflicts with these single transform
@@ -173,7 +175,7 @@ func gbkBytes(ws *pipepb.WindowingStrategy, wc, kc, vc *pipepb.Coder, toAggregat
 		}
 	default:
 		// TODO need to correct session logic if output time is different.
-		logger.Fatalf("unsupported OutputTime behavior: %v", ws.GetOutputTime())
+		panic(fmt.Sprintf("unsupported OutputTime behavior: %v", ws.GetOutputTime()))
 	}
 	wDec, wEnc := makeWindowCoders(wc)
 
@@ -203,7 +205,7 @@ func gbkBytes(ws *pipepb.WindowingStrategy, wc, kc, vc *pipepb.Coder, toAggregat
 				break
 			}
 			if err != nil {
-				logger.Fatalf("can't decode windowed value header with %v: %v", wc, err)
+				panic(fmt.Sprintf("can't decode windowed value header with %v: %v", wc, err))
 			}
 
 			keyByt := kd(buf)
@@ -229,7 +231,7 @@ func gbkBytes(ws *pipepb.WindowingStrategy, wc, kc, vc *pipepb.Coder, toAggregat
 	// If the strategy is session windows, then we need to get all the windows, sort them
 	// and see which ones need to be merged together.
 	if ws.GetWindowFn().GetUrn() == urns.WindowFnSession {
-		logger.Log("sorting by session window")
+		slog.Debug("sorting by session window")
 		session := &pipepb.SessionWindowsPayload{}
 		if err := (proto.UnmarshalOptions{}).Unmarshal(ws.GetWindowFn().GetPayload(), session); err != nil {
 			panic("unable to decode SessionWindowsPayload")
