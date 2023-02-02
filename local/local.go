@@ -43,7 +43,6 @@ func Execute(ctx context.Context, p *beam.Pipeline) (beam.PipelineResult, error)
 		go s.Serve()
 	}
 	if !jobopts.IsLoopback() {
-		//	log.Infof(ctx, "Environment type: %v, forcing loopback, as the local runner only supports loopback", *jobopts.EnvironmentType)
 		*jobopts.EnvironmentType = "loopback"
 	}
 	return universal.Execute(ctx, p)

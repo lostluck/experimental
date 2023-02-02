@@ -31,6 +31,7 @@ import (
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/io/rtrackers/offsetrange"
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/register"
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/testing/passert"
+	"golang.org/x/exp/slog"
 )
 
 // separate_test.go is retains structures and tests to ensure the runner can
@@ -147,6 +148,14 @@ type watcher struct {
 	sentinelCount, sentinelCap int
 }
 
+func (w *watcher) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.Int("id", w.id),
+		slog.Int("sentinelCount", w.sentinelCount),
+		slog.Int("sentinelCap", w.sentinelCap),
+	)
+}
+
 // Watchers is a "net/rpc" service.
 type Watchers struct {
 	mu             sync.Mutex
@@ -187,7 +196,7 @@ func (ws *Watchers) Check(args *Args, unblocked *bool) error {
 	w.mu.Lock()
 	*unblocked = w.sentinelCount >= w.sentinelCap
 	w.mu.Unlock()
-	V(2).Logf("sentinel target for watcher%d is %d/%d. unblocked=%v", args.WatcherID, w.sentinelCount, w.sentinelCap, *unblocked)
+	slog.Debug("sentinel target for watcher%d is %d/%d. unblocked=%v", args.WatcherID, w.sentinelCount, w.sentinelCap, *unblocked)
 	return nil
 }
 
@@ -206,7 +215,7 @@ func (ws *Watchers) Delay(args *Args, delay *bool) error {
 	// Delay as long as the sentinel count is under the cap.
 	*delay = w.sentinelCount < w.sentinelCap
 	w.mu.Unlock()
-	V(2).Logf("sentinel target for watcher%d is %d/%d. delay=%v", args.WatcherID, w.sentinelCount, w.sentinelCap, *delay)
+	slog.Debug("Delay: sentinel target", "watcher", w, slog.Bool("delay", *delay))
 	return nil
 }
 
@@ -261,7 +270,8 @@ func (fn *sepHarnessBase) setup() error {
 	sepClientOnce.Do(func() {
 		client, err := rpc.DialHTTP("tcp", fn.LocalService)
 		if err != nil {
-			V(0).Fatalf("dialing sentinels server %v: %v", fn.LocalService, err)
+			slog.Error("failed to dial sentinels  server", err, slog.String("endpoint", fn.LocalService))
+			panic(fmt.Sprintf("dialing sentinels server %v: %v", fn.LocalService, err))
 		}
 		sepClient = client
 		sepWaitMap = map[int]chan struct{}{}
@@ -285,15 +295,16 @@ func (fn *sepHarnessBase) setup() error {
 			var unblock bool
 			err := sepClient.Call("Watchers.Check", &Args{WatcherID: id}, &unblock)
 			if err != nil {
-				V(0).Fatalf("Watchers.Check error sentinels server %v: %v", fn.LocalService, err)
+				slog.Error("Watchers.Check: sentinels server error", err, slog.String("endpoint", fn.LocalService))
+				panic("sentinel server error")
 			}
 			if unblock {
 				close(c) // unblock all the local waiters.
-				V(2).Logf("sentinel target for watcher %d met, unblocking", id)
+				slog.Debug("sentinel target for watcher, unblocking", slog.Int("watcherID", id))
 				sepClientMu.Unlock()
 				return
 			}
-			V(2).Logf("sentinel target for watcher %d not met", id)
+			slog.Debug("sentinel target for watcher not met", slog.Int("watcherID", id))
 			sepClientMu.Unlock()
 		}
 	}(fn.WatcherID, c)
@@ -305,7 +316,8 @@ func (fn *sepHarnessBase) block() {
 	var ignored bool
 	err := sepClient.Call("Watchers.Block", &Args{WatcherID: fn.WatcherID}, &ignored)
 	if err != nil {
-		V(0).Fatalf("Watchers.Block error %v", err)
+		slog.Error("Watchers.Block error", err, slog.String("endpoint", fn.LocalService))
+		panic(err)
 	}
 	c := sepWaitMap[fn.WatcherID]
 	sepClientMu.Unlock()
@@ -321,7 +333,8 @@ func (fn *sepHarnessBase) delay() bool {
 	var delay bool
 	err := sepClient.Call("Watchers.Delay", &Args{WatcherID: fn.WatcherID}, &delay)
 	if err != nil {
-		V(0).Fatalf("Watchers.Delay error %v", err)
+		slog.Error("Watchers.Delay error", err)
+		panic(err)
 	}
 	return delay
 }
@@ -338,9 +351,9 @@ func (fn *sepHarness) Setup() error {
 
 func (fn *sepHarness) ProcessElement(v beam.T) beam.T {
 	if fn.Base.IsSentinelEncoded.Fn.Call([]any{v})[0].(bool) {
-		V(2).Logf("%v is a sentinel, blocking", v)
+		slog.Debug("blocking on sentinel", slog.Any("sentinel", v))
 		fn.Base.block()
-		V(2).Logf("%v unblocked", v)
+		slog.Debug("unblocking from sentinel", slog.Any("sentinel", v))
 	} else {
 		time.Sleep(fn.Base.Sleep)
 	}
@@ -376,9 +389,9 @@ func (fn *sepHarnessSdf) ProcessElement(rt *sdf.LockRTracker, v beam.T, emit fun
 	i := rt.GetRestriction().(offsetrange.Restriction).Start
 	for rt.TryClaim(i) {
 		if fn.Base.IsSentinelEncoded.Fn.Call([]any{i, v})[0].(bool) {
-			V(2).Logf("%v is a sentinel, blocking", v)
+			slog.Debug("blocking on sentinel", slog.Group("sentinel", slog.Any("value", v), slog.Int64("pos", i)))
 			fn.Base.block()
-			V(2).Logf("%v unblocked", v)
+			slog.Debug("unblocking from sentinel", slog.Group("sentinel", slog.Any("value", v), slog.Int64("pos", i)))
 		} else {
 			time.Sleep(fn.Base.Sleep)
 		}
@@ -422,14 +435,13 @@ func (fn *sepHarnessSdfStream) CreateTracker(r offsetrange.Restriction) *sdf.Loc
 func (fn *sepHarnessSdfStream) ProcessElement(rt *sdf.LockRTracker, v beam.T, emit func(beam.T)) sdf.ProcessContinuation {
 	if fn.Base.IsSentinelEncoded.Fn.Call([]any{v})[0].(bool) {
 		if fn.Base.delay() {
-			V(2).Logf("%v is a sentinel, delaying", v)
+			slog.Debug("delaying on sentinel", slog.Group("sentinel", slog.Any("value", v)))
 			return sdf.ResumeProcessingIn(fn.Base.Sleep)
 		}
-		V(2).Logf("%v is a sentinel and cleared to process", v)
+		slog.Debug("cleared to process sentinel", slog.Group("sentinel", slog.Any("value", v)))
 	}
 	r := rt.GetRestriction().(offsetrange.Restriction)
 	i := r.Start
-	V(2).Logf("emitting element to restriction size %v: %v ", r.Size(), r)
 	for rt.TryClaim(i) {
 		emit(v)
 		i++
@@ -468,10 +480,14 @@ func (fn *singleStepSdfStream) ProcessElement(rt *sdf.LockRTracker, v beam.T, em
 	r := rt.GetRestriction().(offsetrange.Restriction)
 	i := r.Start
 	if r.Size() < 1 {
-		V(2).Logf("size 0 restriction, stopping %v: %v", r.Size(), r)
+		slog.Debug("size 0 restriction, stoping to process sentinel", slog.Any("value", v))
 		return sdf.StopProcessing()
 	}
-	V(2).Logf("emitting element to restriction size %v: %v ; claiming position %v", r.Size(), r, i)
+	slog.Debug("emitting element to restriction", slog.Any("value", v), slog.Group("restriction",
+		slog.Any("value", v),
+		slog.Float64("size", r.Size()),
+		slog.Int64("pos", i),
+	))
 	if rt.TryClaim(i) {
 		emit(i)
 	}

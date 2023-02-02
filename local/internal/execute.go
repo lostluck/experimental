@@ -85,7 +85,7 @@ func ExecutePipeline(ctx context.Context, wk *worker.W, j *jobservices.Job) {
 	var impulses []string
 	for i, stage := range topo {
 		if len(stage.transforms) != 1 {
-			V(0).Fatalf("unsupported stage[%d]: contains multiple transforms: %v", i, stage.transforms)
+			panic(fmt.Sprintf("unsupported stage[%d]: contains multiple transforms: %v; TODO: implement fusion", i, stage.transforms))
 		}
 		tid := stage.transforms[0]
 		t := ts[tid]
@@ -318,7 +318,10 @@ func handleSideInputs(t *pipepb.PTransform, comps *pipepb.Components, coders map
 		// this is a side input
 		switch si.GetAccessPattern().GetUrn() {
 		case urns.SideInputIterable:
-			V(2).Logf("urnSideInputIterable key? src %v, local %v, global %v", t.GetUniqueName(), local, global)
+			slog.Debug("urnSideInputIterable",
+				slog.String("sourceTransform", t.GetUniqueName()),
+				slog.String("local", local),
+				slog.String("global", global))
 			col := comps.GetPcollections()[global]
 			ed := collectionPullDecoder(col.GetCoderId(), coders, comps)
 			wDec, wEnc := getWindowValueCoders(comps, col, coders)
@@ -343,7 +346,10 @@ func handleSideInputs(t *pipepb.PTransform, comps *pipepb.Components, coders map
 			})
 
 		case urns.SideInputMultiMap:
-			V(2).Logf("urnSideInputMultiMap key? %v, %v", local, global)
+			slog.Debug("urnSideInputMultiMap",
+				slog.String("sourceTransform", t.GetUniqueName()),
+				slog.String("local", local),
+				slog.String("global", global))
 			col := comps.GetPcollections()[global]
 
 			kvc := comps.GetCoders()[col.GetCoderId()]

@@ -21,6 +21,7 @@ import (
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/runtime/pipelinex"
 	pipepb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/pipeline_v1"
 	"golang.org/x/exp/maps"
+	"golang.org/x/exp/slog"
 )
 
 // preprocessor retains configuration for preprocessing the
@@ -62,7 +63,8 @@ func (p *preprocessor) preProcessGraph(comps *pipepb.Components) []*stage {
 		spec := t.GetSpec()
 		if spec == nil {
 			// Most composites don't have specs.
-			V(2).Logf("transform %v %v is missing a spec", tid, t.GetUniqueName())
+			slog.Debug("transform is missing a spec",
+				slog.Group("transform", slog.String("ID", tid), slog.String("name", t.GetUniqueName())))
 			continue
 		}
 
@@ -78,7 +80,10 @@ func (p *preprocessor) preProcessGraph(comps *pipepb.Components) []*stage {
 			if len(t.GetSubtransforms()) == 0 {
 				leaves[tid] = struct{}{}
 			} else {
-				V(0).Logf("composite transform %v has unknown urn %v", t.GetUniqueName(), spec.GetUrn())
+				slog.Info("composite transform has unknown urn",
+					slog.Group("transform", slog.String("ID", tid),
+						slog.String("name", t.GetUniqueName()),
+						slog.String("urn", spec.GetUrn())))
 			}
 			continue
 		}
@@ -116,7 +121,7 @@ func (p *preprocessor) preProcessGraph(comps *pipepb.Components) []*stage {
 	keptLeaves := maps.Keys(leaves)
 	sort.Strings(keptLeaves)
 	topological := pipelinex.TopologicalSort(ts, keptLeaves)
-	V(2).Logf("TOPO:\n%+v", topological)
+	slog.Debug("topological transform ordering", topological)
 
 	var stages []*stage
 	for _, tid := range topological {

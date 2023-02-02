@@ -345,7 +345,6 @@ func (fn *selfCheckpointingDoFn) SplitRestriction(_ []byte, rest offsetrange.Res
 		splits = append(splits, offsetrange.Restriction{Start: s, End: e})
 	}
 	splits = append(splits, offsetrange.Restriction{Start: s, End: rest.End})
-	V(1).Logf("splits len %v", len(splits))
 	return splits
 }
 

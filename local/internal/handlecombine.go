@@ -20,9 +20,8 @@ import (
 	"reflect"
 
 	pipepb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/pipeline_v1"
-	"google.golang.org/protobuf/encoding/prototext"
-	"google.golang.org/protobuf/proto"
 	"github.com/lostluck/experimental/local/internal/urns"
+	"google.golang.org/protobuf/proto"
 )
 
 // This file retains the logic for the combine handler
@@ -201,7 +200,6 @@ func (h *combine) PrepareTransform(tid string, t *pipepb.PTransform, comps *pipe
 			extractEID: tform(mergeEID, urns.TransformExtract, mergedNID, pcolOutID, t.GetEnvironmentId()),
 		},
 	}
-	V(2).Logf("new components from combine %v\n%v", tid, prototext.Format(newComps))
 
 	// Now we return everything!
 	// TODO recurse through sub transforms to remove?

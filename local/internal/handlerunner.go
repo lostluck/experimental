@@ -89,15 +89,10 @@ func (h *runner) ExecuteTransform(tid string, t *pipepb.PTransform, comps *pipep
 
 	switch urn {
 	case urns.TransformFlatten:
-		// Allready done and collated.
+		// Already done and collated.
 		data = inputData
 
 	case urns.TransformGBK:
-		var inCol string
-		for _, in := range t.GetInputs() {
-			inCol = in
-		}
-
 		ws := windowingStrategy(comps, tid)
 		kvc := kvcoder(comps, tid)
 
@@ -113,8 +108,6 @@ func (h *runner) ExecuteTransform(tid string, t *pipepb.PTransform, comps *pipep
 		kc := coders[kcID]
 		ec := coders[ecID]
 
-		V(3).Logf("reading gbk data from %v", inCol)
-		// TODO fix data piping for GBKs.
 		data = append(data, gbkBytes(ws, wc, kc, ec, inputData, coders, watermark))
 		if len(data[0]) == 0 {
 			panic("no data for GBK")
@@ -131,7 +124,7 @@ func (h *runner) ExecuteTransform(tid string, t *pipepb.PTransform, comps *pipep
 	}
 
 	if localID == "" {
-		V(1).Fatalf("bad transform: %v", prototext.Format(t))
+		panic(fmt.Sprintf("bad transform: %v", prototext.Format(t)))
 	}
 	output := engine.TentativeData{}
 	for _, d := range data {

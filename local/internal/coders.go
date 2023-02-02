@@ -25,6 +25,7 @@ import (
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/util/ioutilx"
 	pipepb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/pipeline_v1"
 	"github.com/lostluck/experimental/local/internal/urns"
+	"golang.org/x/exp/slog"
 	"google.golang.org/protobuf/encoding/prototext"
 )
 
@@ -78,7 +79,8 @@ func makeWindowCoders(wc *pipepb.Coder) (exec.WindowDecoder, exec.WindowEncoder)
 	case urns.CoderIntervalWindow:
 		cwc = coder.NewIntervalWindow()
 	default:
-		V(0).Fatalf("makeWindowCoders, unknown urn: %v", prototext.Format(wc))
+		slog.Log(slog.LevelError, "makeWindowCoders: unknown urn", slog.String("urn", wc.GetSpec().GetUrn()))
+		panic(fmt.Sprintf("makeWindowCoders, unknown urn: %v", prototext.Format(wc)))
 	}
 	return exec.MakeWindowDecoder(cwc), exec.MakeWindowEncoder(cwc)
 }
