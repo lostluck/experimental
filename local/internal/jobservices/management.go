@@ -34,6 +34,7 @@ func (s *Server) Prepare(ctx context.Context, req *jobpb.PrepareJobRequest) (*jo
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// Since jobs execute in the background, they should not be tied to a request's context.
 	rootCtx, cancelFn := context.WithCancel(context.Background())
 	job := &Job{
 		key:      s.nextId(),
