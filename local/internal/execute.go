@@ -33,6 +33,8 @@ import (
 	"github.com/lostluck/experimental/local/internal/worker"
 	"golang.org/x/exp/maps"
 	"golang.org/x/exp/slog"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -577,4 +579,90 @@ func (s *stage) Execute(j *jobservices.Job, wk *worker.W, comps *pipepb.Componen
 	}
 	em.PersistBundle(rb, s.OutputsToCoders, b.OutputData, s.inputInfo, residualData)
 	b.OutputData = engine.TentativeData{} // Clear the data.
+}
+
+// RunPipeline starts the main thread fo executing this job.
+// It's analoguous to the manager side process for a distributed pipeline.
+// It will begin "workers"
+func RunPipeline(j *jobservices.Job) {
+	j.SendMsg("starting " + j.String())
+	j.Start()
+
+	// In a "proper" runner, we'd iterate through all the
+	// environments, and start up docker containers, but
+	// here, we only want and need the go one, operating
+	// in loopback mode.
+	env := "go"
+	wk := worker.New(env) // Cheating by having the worker id match the environment id.
+	go wk.Serve()
+
+	// When this function exits, we
+	defer func() {
+		j.CancelFn()
+	}()
+	go runEnvironment(j.RootCtx, j, env, wk)
+
+	j.SendMsg("running " + j.String())
+	j.Running()
+
+	ExecutePipeline(j.RootCtx, wk, j)
+	j.SendMsg("pipeline completed " + j.String())
+
+	// Stop the worker.
+	wk.Stop()
+
+	j.SendMsg("terminating " + j.String())
+	j.Done()
+}
+
+func runEnvironment(ctx context.Context, j *jobservices.Job, env string, wk *worker.W) {
+	// TODO fix broken abstraction.
+	// We're starting a worker pool here, because that's the loopback environment.
+	// It's sort of a mess, largely because of loopback, which has
+	// a different flow from a provisioned docker container.
+	e := j.Pipeline.GetComponents().GetEnvironments()[env]
+	switch e.GetUrn() {
+	case urns.EnvExternal:
+		ep := &pipepb.ExternalPayload{}
+		if err := (proto.UnmarshalOptions{}).Unmarshal(e.GetPayload(), ep); err != nil {
+			slog.Error("unmarshing environment payload", err, slog.String("envID", wk.ID))
+		}
+		externalEnvironment(ctx, ep, wk)
+		slog.Info("environment stopped", slog.String("envID", wk.String()), slog.String("job", j.String()))
+	default:
+		panic(fmt.Sprintf("environment %v with urn %v unimplemented", env, e.GetUrn()))
+	}
+}
+
+func externalEnvironment(ctx context.Context, ep *pipepb.ExternalPayload, wk *worker.W) {
+	conn, err := grpc.Dial(ep.GetEndpoint().GetUrl(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		panic(fmt.Sprintf("unable to dial sdk worker %v: %v", ep.GetEndpoint().GetUrl(), err))
+	}
+	defer conn.Close()
+	pool := fnpb.NewBeamFnExternalWorkerPoolClient(conn)
+
+	endpoint := &pipepb.ApiServiceDescriptor{
+		Url: wk.Endpoint(),
+	}
+
+	pool.StartWorker(ctx, &fnpb.StartWorkerRequest{
+		WorkerId:          wk.ID,
+		ControlEndpoint:   endpoint,
+		LoggingEndpoint:   endpoint,
+		ArtifactEndpoint:  endpoint,
+		ProvisionEndpoint: endpoint,
+		Params:            nil,
+	})
+
+	// Job processing happens here, but orchestrated by other goroutines
+	// This goroutine blocks until the context is cancelled, signalling
+	// that the pool runner should stop the worker.
+	<-ctx.Done()
+
+	// Previous context cancelled so we need a new one
+	// for this request.
+	pool.StopWorker(context.Background(), &fnpb.StopWorkerRequest{
+		WorkerId: wk.ID,
+	})
 }

@@ -37,8 +37,7 @@ func Execute(ctx context.Context, p *beam.Pipeline) (beam.PipelineResult, error)
 		// One hasn't been selected, so lets start one up and set the address.
 		// Conveniently, this means that if multiple pipelines are executed against
 		// the local runner, they will all use the same server.
-		s := jobservices.NewServer(0)
-		s.Execute = internal.ExecutePipeline
+		s := jobservices.NewServer(0, internal.RunPipeline)
 		*jobopts.Endpoint = s.Endpoint()
 		go s.Serve()
 	}

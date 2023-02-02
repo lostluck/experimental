@@ -35,10 +35,9 @@ import (
 	"github.com/lostluck/experimental/local/internal/engine"
 	"golang.org/x/exp/slog"
 	"google.golang.org/grpc"
-	"google.golang.org/protobuf/encoding/prototext"
-
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/encoding/prototext"
 )
 
 // A W manages worker environments, sending them work

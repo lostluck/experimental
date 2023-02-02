@@ -42,10 +42,15 @@ func (s *Server) Prepare(ctx context.Context, req *jobpb.PrepareJobRequest) (*jo
 		options:  req.GetPipelineOptions(),
 
 		msgChan:   make(chan string, 100),
-		stateChan: make(chan jobpb.JobState_Enum),
-		rootCtx:   rootCtx,
-		cancelFn:  cancelFn,
+		stateChan: make(chan jobpb.JobState_Enum, 1),
+		RootCtx:   rootCtx,
+		CancelFn:  cancelFn,
 	}
+
+	// Queue initial state of the job.
+	job.state.Store(jobpb.JobState_STOPPED)
+	job.stateChan <- job.state.Load().(jobpb.JobState_Enum)
+
 	if err := isSupported(job.Pipeline.GetRequirements()); err != nil {
 		slog.Error("unable to run job", err, slog.String("jobname", req.GetJobName()))
 		return nil, err
@@ -66,7 +71,7 @@ func (s *Server) Run(ctx context.Context, req *jobpb.RunJobRequest) (*jobpb.RunJ
 	s.mu.Unlock()
 
 	// Bring up a background goroutine to allow the job to continue processing.
-	go job.run(job.rootCtx, s.Execute)
+	go s.execute(job)
 
 	return &jobpb.RunJobResponse{
 		JobId: job.key,
@@ -90,11 +95,20 @@ func (s *Server) GetMessageStream(req *jobpb.JobMessagesRequest, stream jobpb.Jo
 					},
 				},
 			})
+
 		case state, ok := <-job.stateChan:
+			// TODO: Don't block job execution if WaitForCompletion isn't being run.
+			// The state channel means the job may only execute if something is observing
+			// the message stream, as the send on the state or message channel may block
+			// once full.
+			// Not a problem for tests or short lived batch, but would be hazardous for
+			// asynchronous jobs.
+
 			// Channel is closed, so the job must be done.
 			if !ok {
 				state = jobpb.JobState_DONE
 			}
+			job.state.Store(state)
 			stream.Send(&jobpb.JobMessagesResponse{
 				Response: &jobpb.JobMessagesResponse_StateResponse{
 					StateResponse: &jobpb.JobStateEvent{

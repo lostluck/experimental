@@ -16,13 +16,11 @@
 package jobservices
 
 import (
-	"context"
 	"fmt"
 	"net"
 	"sync"
 
 	jobpb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/jobmanagement_v1"
-	"github.com/lostluck/experimental/local/internal/worker"
 	"golang.org/x/exp/slog"
 
 	"google.golang.org/grpc"
@@ -41,19 +39,20 @@ type Server struct {
 	index uint32
 	jobs  map[string]*Job
 
-	// TODO organize this better, so this doesn't need to be assigned this way.
-	Execute func(context.Context, *worker.W, *Job)
+	// execute defines how a job is executed.
+	execute func(*Job)
 }
 
 // NewServer acquires the indicated port.
-func NewServer(port int) *Server {
+func NewServer(port int, execute func(*Job)) *Server {
 	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
 	if err != nil {
 		panic(fmt.Sprintf("failed to listen: %v", err))
 	}
 	s := &Server{
-		lis:  lis,
-		jobs: make(map[string]*Job),
+		lis:     lis,
+		jobs:    make(map[string]*Job),
+		execute: execute,
 	}
 	slog.Info("Serving JobManagement", slog.String("endpoint", s.Endpoint()))
 	var opts []grpc.ServerOption

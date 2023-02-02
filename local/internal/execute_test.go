@@ -45,8 +45,7 @@ func executeWithT(ctx context.Context, t *testing.T, p *beam.Pipeline) (beam.Pip
 func initRunner(t *testing.T) {
 	t.Helper()
 	if *jobopts.Endpoint == "" {
-		s := jobservices.NewServer(0)
-		s.Execute = ExecutePipeline
+		s := jobservices.NewServer(0, RunPipeline)
 		*jobopts.Endpoint = s.Endpoint()
 		go s.Serve()
 		t.Cleanup(func() {
