@@ -28,6 +28,7 @@ import (
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/testing/ptest"
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/transforms/filter"
 	"github.com/apache/beam/sdks/v2/go/test/integration/primitives"
+	"github.com/lostluck/experimental/local/internal/jobservices"
 )
 
 // execute will startup the server, and this will be maintained for the life of
@@ -37,14 +38,15 @@ func execute(ctx context.Context, p *beam.Pipeline) (beam.PipelineResult, error)
 }
 
 func executeWithT(ctx context.Context, t *testing.T, p *beam.Pipeline) (beam.PipelineResult, error) {
-	V(0).Log("startingTest - ", t.Name())
+	t.Log("startingTest - ", t.Name())
 	return execute(ctx, p)
 }
 
 func initRunner(t *testing.T) {
 	t.Helper()
 	if *jobopts.Endpoint == "" {
-		s := NewServer(0)
+		s := jobservices.NewServer(0)
+		s.Execute = ExecutePipeline
 		*jobopts.Endpoint = s.Endpoint()
 		go s.Serve()
 		t.Cleanup(func() {

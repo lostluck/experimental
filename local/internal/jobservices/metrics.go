@@ -13,7 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package internal
+package jobservices
 
 import (
 	"bytes"
@@ -27,6 +27,7 @@ import (
 	fnpb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/fnexecution_v1"
 	pipepb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/pipeline_v1"
 	"golang.org/x/exp/constraints"
+	"golang.org/x/exp/slog"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
@@ -181,12 +182,15 @@ func buildUrnToOpsMap(mUrn2Spec map[string]*pipepb.MonitoringInfoSpec) map[strin
 		key := hasher.Sum64()
 		fn, ok := l2func[key]
 		if !ok {
-			V(2).Logf("unknown MonitoringSpec required Labels key[%v] for urn %v: %v", key, urn, sorted)
+			slog.Debug("unknown MonitoringSpec required Labels",
+				slog.String("urn", spec.GetType()),
+				slog.String("key", spec.GetType()),
+				slog.Any("sortedlabels", sorted))
 			continue
 		}
 		fac, ok := typ2accumFac[spec.GetType()]
 		if !ok {
-			V(2).Logf("unknown MonitoringSpec type for urn %v: %v", urn, spec.GetType())
+			slog.Debug("unknown MonitoringSpec type")
 			continue
 		}
 		ret[urn] = urnOps{
@@ -445,7 +449,7 @@ type metricsStore struct {
 	accums map[metricKey]metricAccumulator
 }
 
-func (m *metricsStore) contributeMetrics(payloads *fnpb.ProcessBundleResponse) {
+func (m *metricsStore) ContributeMetrics(payloads *fnpb.ProcessBundleResponse) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.accums == nil {
@@ -457,7 +461,7 @@ func (m *metricsStore) contributeMetrics(payloads *fnpb.ProcessBundleResponse) {
 		urn := mon.GetUrn()
 		ops, ok := mUrn2Ops[urn]
 		if !ok {
-			V(2).Logf("unknown metrics urn: %v", urn)
+			slog.Debug("unknown metrics urn", slog.String("urn", urn))
 			continue
 		}
 		key := ops.keyFn(urn, mon.GetLabels())
@@ -476,8 +480,6 @@ func (m *metricsStore) contributeMetrics(payloads *fnpb.ProcessBundleResponse) {
 }
 
 func (m *metricsStore) Results(d durability) []*pipepb.MonitoringInfo {
-	// m.mu.Lock()
-	// defer m.mu.Unlock()
 	// We don't gather tentative metrics yet.
 	if d == tentative {
 		return nil

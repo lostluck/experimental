@@ -13,7 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package internal
+package jobservices
 
 import (
 	"context"
@@ -22,6 +22,7 @@ import (
 
 	jobpb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/jobmanagement_v1"
 	pipepb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/pipeline_v1"
+	"golang.org/x/exp/slog"
 )
 
 func (s *Server) nextId() string {
@@ -34,9 +35,9 @@ func (s *Server) Prepare(ctx context.Context, req *jobpb.PrepareJobRequest) (*jo
 	defer s.mu.Unlock()
 
 	rootCtx, cancelFn := context.WithCancel(context.Background())
-	job := &job{
+	job := &Job{
 		key:      s.nextId(),
-		pipeline: req.GetPipeline(),
+		Pipeline: req.GetPipeline(),
 		jobName:  req.GetJobName(),
 		options:  req.GetPipelineOptions(),
 
@@ -45,8 +46,8 @@ func (s *Server) Prepare(ctx context.Context, req *jobpb.PrepareJobRequest) (*jo
 		rootCtx:   rootCtx,
 		cancelFn:  cancelFn,
 	}
-	if err := isSupported(job.pipeline.GetRequirements()); err != nil {
-		V(0).Logf("unable to run job %v: %v", req.GetJobName(), err)
+	if err := isSupported(job.Pipeline.GetRequirements()); err != nil {
+		slog.Error("unable to run job", err, slog.String("jobname", req.GetJobName()))
 		return nil, err
 	}
 	s.jobs[job.key] = job
@@ -65,7 +66,7 @@ func (s *Server) Run(ctx context.Context, req *jobpb.RunJobRequest) (*jobpb.RunJ
 	s.mu.Unlock()
 
 	// Bring up a background goroutine to allow the job to continue processing.
-	go job.run(job.rootCtx)
+	go job.run(job.rootCtx, s.Execute)
 
 	return &jobpb.RunJobResponse{
 		JobId: job.key,

@@ -13,12 +13,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package internal
+package jobservices
 
 import (
+	"fmt"
 	"io"
 
 	jobpb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/jobmanagement_v1"
+	"golang.org/x/exp/slog"
 )
 
 func (s *Server) ReverseArtifactRetrievalService(stream jobpb.ArtifactStagingService_ReverseArtifactRetrievalServiceServer) error {
@@ -31,10 +33,13 @@ func (s *Server) ReverseArtifactRetrievalService(stream jobpb.ArtifactStagingSer
 	}
 	job := s.jobs[in.GetStagingToken()]
 
-	envs := job.pipeline.GetComponents().GetEnvironments()
+	envs := job.Pipeline.GetComponents().GetEnvironments()
 	for _, env := range envs {
 		for _, dep := range env.GetDependencies() {
-			V(2).Log("start GetArtifact:", dep.GetTypeUrn(), string(dep.GetTypePayload()))
+			slog.Debug("GetArtifact start",
+				slog.Group("dep",
+					slog.String("urn", dep.GetTypeUrn()),
+					slog.String("payload", string(dep.GetTypePayload()))))
 			stream.Send(&jobpb.ArtifactRequestWrapper{
 				Request: &jobpb.ArtifactRequestWrapper_GetArtifact{
 					GetArtifact: &jobpb.GetArtifactRequest{
@@ -52,7 +57,11 @@ func (s *Server) ReverseArtifactRetrievalService(stream jobpb.ArtifactStagingSer
 					return err
 				}
 				if in.IsLast {
-					V(2).Log("finished GetArtifact:", dep.GetTypeUrn(), string(dep.GetTypePayload()), "received bytes:", count)
+					slog.Debug("GetArtifact finish",
+						slog.Group("dep",
+							slog.String("urn", dep.GetTypeUrn()),
+							slog.String("payload", string(dep.GetTypePayload()))),
+						slog.Int("bytesReceived", count))
 					break
 				}
 				// Here's where we go through each environment's artifacts.
@@ -61,9 +70,10 @@ func (s *Server) ReverseArtifactRetrievalService(stream jobpb.ArtifactStagingSer
 				case *jobpb.ArtifactResponseWrapper_GetArtifactResponse:
 					count += len(req.GetArtifactResponse.GetData())
 				case *jobpb.ArtifactResponseWrapper_ResolveArtifactResponse:
-					V(0).Fatalf("Unexpected ResolveArtifactResponse to GetArtifact: %v", in.GetResponse())
+					err := fmt.Errorf("Unexpected ResolveArtifactResponse to GetArtifact: %v", in.GetResponse())
+					slog.Error("GetArtifact failure", err)
+					return err
 				}
-
 			}
 		}
 	}

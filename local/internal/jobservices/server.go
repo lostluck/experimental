@@ -13,14 +13,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package internal
+package jobservices
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"sync"
 
 	jobpb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/jobmanagement_v1"
+	"github.com/lostluck/experimental/local/internal/worker"
+	"golang.org/x/exp/slog"
 
 	"google.golang.org/grpc"
 )
@@ -36,7 +39,10 @@ type Server struct {
 	// Job Management
 	mu    sync.Mutex
 	index uint32
-	jobs  map[string]*job
+	jobs  map[string]*Job
+
+	// TODO organize this better, so this doesn't need to be assigned this way.
+	Execute func(context.Context, *worker.W, *Job)
 }
 
 // NewServer acquires the indicated port.
@@ -47,9 +53,9 @@ func NewServer(port int) *Server {
 	}
 	s := &Server{
 		lis:  lis,
-		jobs: make(map[string]*job),
+		jobs: make(map[string]*Job),
 	}
-	V(0).Logf("Serving JobManagement on %v", s.Endpoint())
+	slog.Info("Serving JobManagement", slog.String("endpoint", s.Endpoint()))
 	var opts []grpc.ServerOption
 	s.server = grpc.NewServer(opts...)
 	jobpb.RegisterJobServiceServer(s.server, s)
@@ -57,7 +63,7 @@ func NewServer(port int) *Server {
 	return s
 }
 
-func (s *Server) getJob(id string) *job {
+func (s *Server) getJob(id string) *Job {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.jobs[id]

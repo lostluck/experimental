@@ -21,7 +21,6 @@ import (
 	"fmt"
 	"io"
 	"sort"
-	"sync"
 
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/graph/mtime"
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/runtime/exec"
@@ -29,14 +28,16 @@ import (
 	fnpb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/fnexecution_v1"
 	pipepb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/pipeline_v1"
 	"github.com/lostluck/experimental/local/internal/engine"
+	"github.com/lostluck/experimental/local/internal/jobservices"
 	"github.com/lostluck/experimental/local/internal/urns"
+	"github.com/lostluck/experimental/local/internal/worker"
 	"golang.org/x/exp/maps"
 	"golang.org/x/exp/slog"
 	"google.golang.org/protobuf/proto"
 )
 
-func executePipeline(ctx context.Context, wk *worker, j *job) {
-	pipeline := j.pipeline
+func ExecutePipeline(ctx context.Context, wk *worker.W, j *jobservices.Job) {
+	pipeline := j.Pipeline
 	comps := proto.Clone(pipeline.GetComponents()).(*pipepb.Components)
 
 	// TODO, configure the preprocessor from pipeline options.
@@ -80,7 +81,7 @@ func executePipeline(ctx context.Context, wk *worker, j *job) {
 	// This is where the Batch -> Streaming tension exists.
 	// We don't *pre* do this, and we need a different mechanism
 	// to sort out processing order.
-	// Prepare stage here.
+	stages := map[string]*stage{}
 	var impulses []string
 	for i, stage := range topo {
 		if len(stage.transforms) != 1 {
@@ -96,7 +97,7 @@ func executePipeline(ctx context.Context, wk *worker, j *job) {
 		if stage.exe != nil {
 			stage.envID = stage.exe.ExecuteWith(t)
 		}
-		stage.ID = wk.nextStage()
+		stage.ID = wk.NextStage()
 
 		switch stage.envID {
 		case "": // Runner Transforms
@@ -157,10 +158,12 @@ func executePipeline(ctx context.Context, wk *worker, j *job) {
 				sort.Strings(inputs)
 				em.AddStage(stage.ID, inputs, nil, []string{getOnlyValue(t.GetOutputs())})
 			}
-			wk.stages[stage.ID] = stage
+			stages[stage.ID] = stage
+			wk.Descriptors[stage.ID] = stage.desc
 		case wk.ID:
 			// Great! this is for this environment. // Broken abstraction.
 			buildStage(stage, tid, t, comps, wk)
+			stages[stage.ID] = stage
 			slog.Debug("pipelineBuild", slog.Group("stage", slog.String("ID", stage.ID), slog.String("transformName", t.GetUniqueName())))
 			outputs := maps.Keys(stage.OutputsToCoders)
 			sort.Strings(outputs)
@@ -178,11 +181,11 @@ func executePipeline(ctx context.Context, wk *worker, j *job) {
 	}
 
 	// Execute stages here
-	for rb := range em.Bundles(ctx, wk.nextInst) {
-		s := wk.stages[rb.StageID]
+	for rb := range em.Bundles(ctx, wk.NextInst) {
+		s := stages[rb.StageID]
 		s.Execute(j, wk, comps, em, rb)
 	}
-	V(1).Logf("pipeline done!")
+	slog.Info("pipeline done!", slog.String("job", j.String()))
 }
 
 func getOnlyValue[K comparable, V any](in map[K]V) V {
@@ -195,7 +198,7 @@ func getOnlyValue[K comparable, V any](in map[K]V) V {
 	panic("unreachable")
 }
 
-func buildStage(s *stage, tid string, t *pipepb.PTransform, comps *pipepb.Components, wk *worker) {
+func buildStage(s *stage, tid string, t *pipepb.PTransform, comps *pipepb.Components, wk *worker.W) {
 	s.inputTransformID = tid + "_source"
 
 	coders := map[string]*pipepb.Coder{}
@@ -283,7 +286,7 @@ func buildStage(s *stage, tid string, t *pipepb.PTransform, comps *pipepb.Compon
 	s.mainInputPCol = inputInfo.GlobalID
 	s.inputInfo = inputInfo
 
-	wk.stages[s.ID] = s
+	wk.Descriptors[s.ID] = s.desc
 }
 
 func getSideInputs(t *pipepb.PTransform) (map[string]*pipepb.SideInput, error) {
@@ -298,12 +301,12 @@ func getSideInputs(t *pipepb.PTransform) (map[string]*pipepb.SideInput, error) {
 }
 
 // handleSideInputs ensures appropriate coders are available to the bundle, and prepares a function to stage the data.
-func handleSideInputs(t *pipepb.PTransform, comps *pipepb.Components, coders map[string]*pipepb.Coder, wk *worker) (func(b *bundle, tid string, watermark mtime.Time), error) {
+func handleSideInputs(t *pipepb.PTransform, comps *pipepb.Components, coders map[string]*pipepb.Coder, wk *worker.W) (func(b *worker.B, tid string, watermark mtime.Time), error) {
 	sis, err := getSideInputs(t)
 	if err != nil {
 		return nil, err
 	}
-	var prepSides []func(b *bundle, tid string, watermark mtime.Time)
+	var prepSides []func(b *worker.B, tid string, watermark mtime.Time)
 
 	// Get WindowedValue Coders for the transform's input and output PCollections.
 	for local, global := range t.GetInputs() {
@@ -322,8 +325,8 @@ func handleSideInputs(t *pipepb.PTransform, comps *pipepb.Components, coders map
 			// May be of zero length, but that's OK. Side inputs can be empty.
 
 			global, local := global, local
-			prepSides = append(prepSides, func(b *bundle, tid string, watermark mtime.Time) {
-				data := wk.data.GetAllData(global)
+			prepSides = append(prepSides, func(b *worker.B, tid string, watermark mtime.Time) {
+				data := wk.D.GetAllData(global)
 
 				if b.IterableSideInputData == nil {
 					b.IterableSideInputData = map[string]map[string]map[typex.Window][][]byte{}
@@ -353,9 +356,9 @@ func handleSideInputs(t *pipepb.PTransform, comps *pipepb.Components, coders map
 			wDec, wEnc := getWindowValueCoders(comps, col, coders)
 
 			global, local := global, local
-			prepSides = append(prepSides, func(b *bundle, tid string, watermark mtime.Time) {
+			prepSides = append(prepSides, func(b *worker.B, tid string, watermark mtime.Time) {
 				// May be of zero length, but that's OK. Side inputs can be empty.
-				data := wk.data.GetAllData(global)
+				data := wk.D.GetAllData(global)
 				if b.MultiMapSideInputData == nil {
 					b.MultiMapSideInputData = map[string]map[string]map[typex.Window]map[string][][]byte{}
 				}
@@ -382,7 +385,7 @@ func handleSideInputs(t *pipepb.PTransform, comps *pipepb.Components, coders map
 			return nil, fmt.Errorf("local input %v (global %v) uses accesspattern %v", local, global, si.GetAccessPattern().GetUrn())
 		}
 	}
-	return func(b *bundle, tid string, watermark mtime.Time) {
+	return func(b *worker.B, tid string, watermark mtime.Time) {
 		for _, prep := range prepSides {
 			prep(b, tid, watermark)
 		}
@@ -428,7 +431,7 @@ func sinkTransform(sinkID string, sinkPortBytes []byte, inPID string) *pipepb.PT
 	return source
 }
 
-func portFor(wInCid string, wk *worker) []byte {
+func portFor(wInCid string, wk *worker.W) []byte {
 	sourcePort := &fnpb.RemoteGrpcPort{
 		CoderId: wInCid,
 		ApiServiceDescriptor: &pipepb.ApiServiceDescriptor{
@@ -445,82 +448,11 @@ func portFor(wInCid string, wk *worker) []byte {
 type transformExecuter interface {
 	ExecuteUrns() []string
 	ExecuteWith(t *pipepb.PTransform) string
-	ExecuteTransform(tid string, t *pipepb.PTransform, comps *pipepb.Components, watermark mtime.Time, data [][]byte) *bundle
+	ExecuteTransform(tid string, t *pipepb.PTransform, comps *pipepb.Components, watermark mtime.Time, data [][]byte) *worker.B
 }
 
 type processor struct {
 	transformExecuters map[string]transformExecuter
-}
-
-// bundle represents an extant ProcessBundle instruction sent to an SDK worker.
-type bundle struct {
-	InstID string // ID for the instruction processing this bundle.
-	PBDID  string // ID for the ProcessBundleDescriptor
-
-	// InputTransformID is data being sent to the SDK.
-	InputTransformID string
-	InputData        [][]byte // Data specifically for this bundle.
-
-	// TODO change to a single map[tid] -> map[input] -> map[window] -> struct { Iter data, MultiMap data } instead of all maps.
-	// IterableSideInputData is a map from transformID, to inputID, to window, to data.
-	IterableSideInputData map[string]map[string]map[typex.Window][][]byte
-	// MultiMapSideInputData is a map from transformID, to inputID, to window, to data key, to data values.
-	MultiMapSideInputData map[string]map[string]map[typex.Window]map[string][][]byte
-
-	// OutputCount is the number of data outputs this bundle has.
-	// We need to see this many closed data channels before the bundle is complete.
-	OutputCount int
-	// DataWait is how we determine if a bundle is finished, by waiting for each of
-	// a Bundle's DataSinks to produce their last output.
-	// After this point we can "commit" the bundle's output for downstream use.
-	DataWait   sync.WaitGroup
-	OutputData engine.TentativeData
-	Resp       chan *fnpb.ProcessBundleResponse
-
-	SinkToPCollection map[string]string
-
-	// TODO: Metrics for this bundle, can be handled after the fact.
-}
-
-// ProcessOn executes the given bundle on the given worker.
-//
-// Assumes the bundle is initialized (all maps are non-nil, and data waitgroup is set.)
-// Assumes the bundle descriptor is already registered.
-func (b *bundle) ProcessOn(wk *worker) {
-	wk.mu.Lock()
-	wk.bundles[b.InstID] = b
-	wk.mu.Unlock()
-
-	V(2).Logf("processing %v %v on %v", b.InstID, b.PBDID, wk)
-
-	// Tell the SDK to start processing the bundle.
-	wk.InstReqs <- &fnpb.InstructionRequest{
-		InstructionId: b.InstID,
-		Request: &fnpb.InstructionRequest_ProcessBundle{
-			ProcessBundle: &fnpb.ProcessBundleRequest{
-				ProcessBundleDescriptorId: b.PBDID,
-			},
-		},
-	}
-
-	// Send the data one at a time, rather than batching.
-	// TODO: Batch Data.
-	for i, d := range b.InputData {
-		V(3).Logf("XXX adding data to channel for %v", b.InstID)
-		wk.DataReqs <- &fnpb.Elements{
-			Data: []*fnpb.Elements_Data{
-				{
-					InstructionId: b.InstID,
-					TransformId:   b.InputTransformID,
-					Data:          d,
-					IsLast:        i+1 == len(b.InputData),
-				},
-			},
-		}
-	}
-
-	V(3).Logf("XXX waiting on data from %v", b.InstID)
-	b.DataWait.Wait() // Wait until data is ready.
 }
 
 // collateByWindows takes the data and collates them into window keyed maps.
@@ -566,17 +498,17 @@ type stage struct {
 	inputInfo        engine.PColInfo
 	desc             *fnpb.ProcessBundleDescriptor
 	sides            []string
-	prepareSides     func(b *bundle, tid string, watermark mtime.Time)
+	prepareSides     func(b *worker.B, tid string, watermark mtime.Time)
 
 	SinkToPCollection map[string]string
 	OutputsToCoders   map[string]engine.PColInfo
 }
 
-func (s *stage) Execute(j *job, wk *worker, comps *pipepb.Components, em *engine.ElementManager, rb engine.RunBundle) {
+func (s *stage) Execute(j *jobservices.Job, wk *worker.W, comps *pipepb.Components, em *engine.ElementManager, rb engine.RunBundle) {
 	tid := s.transforms[0]
 	slog.Debug("Execute: starting bundle", "bundle", rb, slog.String("tid", tid))
 
-	var b *bundle
+	var b *worker.B
 	var send bool
 	inputData := em.InputForBundle(rb, s.inputInfo)
 	switch s.envID {
@@ -587,7 +519,7 @@ func (s *stage) Execute(j *job, wk *worker, comps *pipepb.Components, em *engine
 		slog.Debug("Execute: runner transform", "bundle", rb, slog.String("tid", tid))
 	case wk.ID:
 		send = true
-		b = &bundle{
+		b = &worker.B{
 			PBDID:  s.ID,
 			InstID: rb.BundleID,
 
@@ -621,10 +553,10 @@ func (s *stage) Execute(j *job, wk *worker, comps *pipepb.Components, em *engine
 		resp = <-b.Resp
 		// Tally metrics immeadiately so they're available before
 		// pipeline termination.
-		j.metrics.contributeMetrics(resp)
+		j.ContributeMetrics(resp)
 	}
 	// TODO handle side input data properly.
-	wk.data.Commit(b.OutputData)
+	wk.D.Commit(b.OutputData)
 	var residualData [][]byte
 	for _, rr := range resp.GetResidualRoots() {
 		ba := rr.GetApplication()

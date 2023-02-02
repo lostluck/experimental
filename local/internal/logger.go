@@ -25,7 +25,7 @@ import (
 
 // The logger for this runner.
 var logger = &runnerLog{
-	disabled: 2,
+	disabled: 3,
 }
 
 type runnerLog struct {

@@ -13,7 +13,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package internal
+// Package worker handles interactions with SDK side workers, representing
+// the worker services, communicating with those services, and SDK environments.
+package worker
 
 import (
 	"bytes"
@@ -24,7 +26,6 @@ import (
 	"sync/atomic"
 
 	"io"
-	"path"
 
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/graph/coder"
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/graph/window"
@@ -40,9 +41,9 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// A worker manages environments, sending them work
+// A W manages worker environments, sending them work
 // that they're able to execute.
-type worker struct {
+type W struct {
 	fnpb.UnimplementedBeamFnControlServer
 	fnpb.UnimplementedBeamFnDataServer
 	fnpb.UnimplementedBeamFnStateServer
@@ -62,21 +63,21 @@ type worker struct {
 	InstReqs chan *fnpb.InstructionRequest
 	DataReqs chan *fnpb.Elements
 
-	mu      sync.Mutex
-	bundles map[string]*bundle // Bundles keyed by InstructionID
-	stages  map[string]*stage  // Stages keyed by PBDID
+	mu          sync.Mutex
+	bundles     map[string]*B                            // Bundles keyed by InstructionID
+	Descriptors map[string]*fnpb.ProcessBundleDescriptor // Stages keyed by PBDID
 
-	data *DataService
+	D *DataService
 }
 
-// newWorker starts the server components of FnAPI Execution.
-func newWorker(id string) *worker {
+// New starts the worker server components of FnAPI Execution.
+func New(id string) *W {
 	lis, err := net.Listen("tcp", ":0")
 	if err != nil {
 		panic(fmt.Sprintf("failed to listen: %v", err))
 	}
 	var opts []grpc.ServerOption
-	wk := &worker{
+	wk := &W{
 		ID:     id,
 		lis:    lis,
 		server: grpc.NewServer(opts...),
@@ -84,12 +85,12 @@ func newWorker(id string) *worker {
 		InstReqs: make(chan *fnpb.InstructionRequest, 10),
 		DataReqs: make(chan *fnpb.Elements, 10),
 
-		bundles: make(map[string]*bundle),
-		stages:  make(map[string]*stage),
+		bundles:     make(map[string]*B),
+		Descriptors: make(map[string]*fnpb.ProcessBundleDescriptor),
 
-		data: &DataService{},
+		D: &DataService{},
 	}
-	V(0).Logf("Serving Worker components on %v\n", wk.Endpoint())
+	slog.Info("Serving Worker components", slog.String("endpoint", wk.Endpoint()))
 	fnpb.RegisterBeamFnControlServer(wk.server, wk)
 	fnpb.RegisterBeamFnDataServer(wk.server, wk)
 	fnpb.RegisterBeamFnLoggingServer(wk.server, wk)
@@ -97,84 +98,116 @@ func newWorker(id string) *worker {
 	return wk
 }
 
-func (wk *worker) Endpoint() string {
+func (wk *W) Endpoint() string {
 	return wk.lis.Addr().String()
 }
 
 // Serve serves on the started listener. Blocks.
-func (wk *worker) Serve() {
+func (wk *W) Serve() {
 	wk.server.Serve(wk.lis)
 }
 
-func (wk *worker) String() string {
+func (wk *W) String() string {
 	return "worker[" + wk.ID + "]"
 }
 
+func (wk *W) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("ID", wk.ID),
+		slog.String("endpoint", wk.Endpoint()),
+	)
+}
+
 // Stop the GRPC server.
-func (wk *worker) Stop() {
-	V(1).Logf("stopping %v", wk)
+func (wk *W) Stop() {
+	slog.Debug("stopping", "worker", wk)
 	close(wk.InstReqs)
 	close(wk.DataReqs)
 	wk.server.Stop()
 	wk.lis.Close()
-	V(1).Logf("stopped %v", wk)
+	slog.Debug("stopped", "worker", wk)
 }
 
-func (wk *worker) nextInst() string {
+func (wk *W) NextInst() string {
 	return fmt.Sprintf("inst%03d", atomic.AddUint64(&wk.inst, 1))
 }
 
-func (wk *worker) nextStage() string {
+func (wk *W) NextStage() string {
 	return fmt.Sprintf("stage%03d", atomic.AddUint64(&wk.bund, 1))
 }
 
 // TODO set logging level.
 var minsev = fnpb.LogEntry_Severity_DEBUG
 
-func (wk *worker) Logging(stream fnpb.BeamFnLogging_LoggingServer) error {
+func (wk *W) Logging(stream fnpb.BeamFnLogging_LoggingServer) error {
 	for {
 		in, err := stream.Recv()
 		if err == io.EOF {
 			return nil
 		}
 		if err != nil {
-			V(2).Logf("logging stream.Recv error: %v", err)
+			slog.Error("stream.Recv", err, "worker", wk)
 			return err
 		}
 		for _, l := range in.GetLogEntries() {
 			if l.Severity > minsev {
-				V(0).Logf("%v [%v]: %v", l.GetSeverity(), path.Base(l.GetLogLocation()), l.GetMessage())
+				slog.Log(toSlogSev(l.GetSeverity()), l.GetMessage(),
+					slog.String(slog.SourceKey, l.GetLogLocation()),
+					slog.Time(slog.TimeKey, l.GetTimestamp().AsTime()),
+					"worker", wk,
+				)
 			}
 		}
 	}
 }
 
-func (wk *worker) GetProcessBundleDescriptor(ctx context.Context, req *fnpb.GetProcessBundleDescriptorRequest) (*fnpb.ProcessBundleDescriptor, error) {
-	stage, ok := wk.stages[req.GetProcessBundleDescriptorId()]
+func toSlogSev(sev fnpb.LogEntry_Severity_Enum) slog.Level {
+	switch sev {
+	case fnpb.LogEntry_Severity_TRACE:
+		return slog.Level(-8) //
+	case fnpb.LogEntry_Severity_DEBUG:
+		return slog.LevelDebug // -4
+	case fnpb.LogEntry_Severity_INFO:
+		return slog.LevelInfo // 0
+	case fnpb.LogEntry_Severity_NOTICE:
+		return slog.Level(2)
+	case fnpb.LogEntry_Severity_WARN:
+		return slog.LevelWarn // 4
+	case fnpb.LogEntry_Severity_ERROR:
+		return slog.LevelError // 8
+	case fnpb.LogEntry_Severity_CRITICAL:
+		return slog.Level(10)
+	}
+	return slog.LevelInfo
+}
+
+func (wk *W) GetProcessBundleDescriptor(ctx context.Context, req *fnpb.GetProcessBundleDescriptorRequest) (*fnpb.ProcessBundleDescriptor, error) {
+	desc, ok := wk.Descriptors[req.GetProcessBundleDescriptorId()]
 	if !ok {
 		return nil, fmt.Errorf("descriptor %v not found", req.GetProcessBundleDescriptorId())
 	}
-	return stage.desc, nil
+	return desc, nil
 }
 
-func (wk *worker) Control(ctrl fnpb.BeamFnControl_ControlServer) error {
+func (wk *W) Control(ctrl fnpb.BeamFnControl_ControlServer) error {
 	done := make(chan bool)
 	go func() {
 		for {
 			resp, err := ctrl.Recv()
 			if err == io.EOF {
-				V(3).Logf("ctrl.Recv finished marking done")
+				slog.Debug("ctrl.Recv finished; marking done", "worker", wk)
 				done <- true // means stream is finished
 				return
 			}
 			if err != nil {
 				switch status.Code(err) {
 				case codes.Canceled: // Might ignore this all the time instead.
-					V(3).Logf("ctrl.Recv Canceled: %v", err)
+					slog.Error("ctrl.Recv Canceled", err, "worker", wk)
 					done <- true // means stream is finished
 					return
 				default:
-					V(0).Fatalf("ctrl.Recv error: %v", err)
+					slog.Error("ctrl.Recv failed", err, "worker", wk)
+					panic(err)
 				}
 			}
 
@@ -182,11 +215,12 @@ func (wk *worker) Control(ctrl fnpb.BeamFnControl_ControlServer) error {
 			if b, ok := wk.bundles[resp.GetInstructionId()]; ok {
 				// TODO. Better pipeline error handling.
 				if resp.Error != "" {
-					V(0).Fatalf("ctrl.Recv pipeline error: %v", resp.Error)
+					slog.Log(slog.LevelError, "ctrl.Recv pipeline error", slog.ErrorKey, resp.GetError())
+					panic(resp.GetError())
 				}
 				b.Resp <- resp.GetProcessBundle()
 			} else {
-				V(3).Logf("ctrl.Recv: %v", resp)
+				slog.Debug("ctrl.Recv: %v", resp)
 			}
 			wk.mu.Unlock()
 		}
@@ -195,12 +229,13 @@ func (wk *worker) Control(ctrl fnpb.BeamFnControl_ControlServer) error {
 	for req := range wk.InstReqs {
 		ctrl.Send(req)
 	}
-	V(2).Logf("ctrl.Send finished waiting on done")
-	V(2).Logf("Control Done %v", <-done)
+	slog.Debug("ctrl.Send finished waiting on done")
+	<-done
+	slog.Debug("Control done")
 	return nil
 }
 
-func (wk *worker) Data(data fnpb.BeamFnData_DataServer) error {
+func (wk *W) Data(data fnpb.BeamFnData_DataServer) error {
 	go func() {
 		for {
 			resp, err := data.Recv()
@@ -210,18 +245,18 @@ func (wk *worker) Data(data fnpb.BeamFnData_DataServer) error {
 			if err != nil {
 				switch status.Code(err) {
 				case codes.Canceled:
-					V(3).Logf("data.Recv Canceled: %v", err)
+					slog.Error("data.Recv Canceled", err, "worker", wk)
 					return
 				default:
-					V(0).Fatalf("data.Recv error: %v", err)
+					slog.Error("data.Recv failed", err, "worker", wk)
+					panic(err)
 				}
 			}
 			wk.mu.Lock()
 			for _, d := range resp.GetData() {
-				tID := d.GetTransformId()
 				b, ok := wk.bundles[d.GetInstructionId()]
 				if !ok {
-					V(3).Logf("data.Recv for unknown bundle: %v", resp)
+					slog.Info("data.Recv for unknown bundle", "response", resp)
 					continue
 				}
 				colID := b.SinkToPCollection[d.GetTransformId()]
@@ -232,7 +267,6 @@ func (wk *worker) Data(data fnpb.BeamFnData_DataServer) error {
 					b.OutputData.WriteData(colID, d.GetData())
 				}
 				if d.GetIsLast() {
-					V(3).Logf("XXX done waiting on data from %v, with tID: %v", b.InstID, tID)
 					b.DataWait.Done()
 				}
 			}
@@ -241,15 +275,14 @@ func (wk *worker) Data(data fnpb.BeamFnData_DataServer) error {
 	}()
 
 	for req := range wk.DataReqs {
-		V(3).Logf("XXX data.Send for %v", req.GetData()[0].GetInstructionId())
 		if err := data.Send(req); err != nil {
-			V(3).Logf("data.Send error: %v", err)
+			slog.Log(slog.LevelDebug, "data.Send error", slog.ErrorKey, err)
 		}
 	}
 	return nil
 }
 
-func (wk *worker) State(state fnpb.BeamFnState_StateServer) error {
+func (wk *W) State(state fnpb.BeamFnState_StateServer) error {
 	responses := make(chan *fnpb.StateResponse)
 	go func() {
 		// This go routine creates all responses to state requests from the worker
@@ -263,10 +296,11 @@ func (wk *worker) State(state fnpb.BeamFnState_StateServer) error {
 			if err != nil {
 				switch status.Code(err) {
 				case codes.Canceled:
-					V(3).Logf("state.Recv Canceled: %v", err)
+					slog.Error("state.Recv Canceled", err, "worker", wk)
 					return
 				default:
-					V(0).Fatalf("state.Recv error: %v", err)
+					slog.Error("state.Recv failed", err, "worker", wk)
+					panic(err)
 				}
 			}
 			switch req.GetRequest().(type) {
@@ -274,7 +308,7 @@ func (wk *worker) State(state fnpb.BeamFnState_StateServer) error {
 				// TODO: move data handling to be pcollection based.
 				b := wk.bundles[req.GetInstructionId()]
 				key := req.GetStateKey()
-				V(3).Logf("StateRequest_Get: %v", prototext.Format(req))
+				slog.Debug("StateRequest_Get", prototext.Format(req), "bundle", b)
 
 				var data [][]byte
 				switch key.GetType().(type) {
@@ -330,8 +364,6 @@ func (wk *worker) State(state fnpb.BeamFnState_StateServer) error {
 				for _, value := range data {
 					buf.Write(value)
 				}
-				V(3).Logf("StateRequest_Get[%v][%v]: data len - %v", req.GetId(), req.GetInstructionId(), buf.Len())
-
 				responses <- &fnpb.StateResponse{
 					Id: req.GetId(),
 					Response: &fnpb.StateResponse_Get{
@@ -347,7 +379,7 @@ func (wk *worker) State(state fnpb.BeamFnState_StateServer) error {
 	}()
 	for resp := range responses {
 		if err := state.Send(resp); err != nil {
-			V(3).Logf("state.Send error: %v", err)
+			slog.Error("state.Send error", err)
 		}
 	}
 	return nil

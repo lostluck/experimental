@@ -21,7 +21,6 @@ import (
 	"io"
 	"reflect"
 	"sort"
-	"sync"
 
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/graph/coder"
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/graph/mtime"
@@ -31,6 +30,7 @@ import (
 	pipepb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/pipeline_v1"
 	"github.com/lostluck/experimental/local/internal/engine"
 	"github.com/lostluck/experimental/local/internal/urns"
+	"github.com/lostluck/experimental/local/internal/worker"
 	"golang.org/x/exp/slog"
 	"google.golang.org/protobuf/encoding/prototext"
 	"google.golang.org/protobuf/proto"
@@ -79,7 +79,7 @@ func (h *runner) ExecuteWith(t *pipepb.PTransform) string {
 }
 
 // ExecTransform handles special processing with respect to runner specific transforms
-func (h *runner) ExecuteTransform(tid string, t *pipepb.PTransform, comps *pipepb.Components, watermark mtime.Time, inputData [][]byte) *bundle {
+func (h *runner) ExecuteTransform(tid string, t *pipepb.PTransform, comps *pipepb.Components, watermark mtime.Time, inputData [][]byte) *worker.B {
 	urn := t.GetSpec().GetUrn()
 	var data [][]byte
 	var onlyOut string
@@ -117,7 +117,7 @@ func (h *runner) ExecuteTransform(tid string, t *pipepb.PTransform, comps *pipep
 		// TODO fix data piping for GBKs.
 		data = append(data, gbkBytes(ws, wc, kc, ec, inputData, coders, watermark))
 		if len(data[0]) == 0 {
-			panic(fmt.Sprintf("no data for GBK"))
+			panic("no data for GBK")
 		}
 	default:
 		panic(fmt.Sprintf("unimplemented runner transform[%v]", urn))
@@ -139,7 +139,7 @@ func (h *runner) ExecuteTransform(tid string, t *pipepb.PTransform, comps *pipep
 	}
 
 	dataID := tid + "_" + localID // The ID from which the consumer will read from.
-	b := &bundle{
+	b := &worker.B{
 		InputTransformID: dataID,
 		SinkToPCollection: map[string]string{
 			dataID: onlyOut,
@@ -148,11 +148,6 @@ func (h *runner) ExecuteTransform(tid string, t *pipepb.PTransform, comps *pipep
 	}
 	return b
 }
-
-var (
-	impOnce  sync.Once
-	impBytes []byte
-)
 
 // windowingStrategy sources the transform's windowing strategy from a single parallel input.
 func windowingStrategy(comps *pipepb.Components, tid string) *pipepb.WindowingStrategy {

@@ -13,7 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package internal
+package jobservices
 
 import (
 	"context"
@@ -25,6 +25,8 @@ import (
 	jobpb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/jobmanagement_v1"
 	pipepb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/pipeline_v1"
 	"github.com/lostluck/experimental/local/internal/urns"
+	"github.com/lostluck/experimental/local/internal/worker"
+	"golang.org/x/exp/slog"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/proto"
@@ -49,11 +51,11 @@ func isSupported(requirements []string) error {
 	return nil
 }
 
-type job struct {
+type Job struct {
 	key     string
 	jobName string
 
-	pipeline *pipepb.Pipeline
+	Pipeline *pipepb.Pipeline
 	options  *structpb.Struct
 
 	// Management side concerns.
@@ -68,14 +70,18 @@ type job struct {
 	metrics metricsStore
 }
 
-func (j *job) String() string {
+func (j *Job) ContributeMetrics(payloads *fnpb.ProcessBundleResponse) {
+	j.metrics.ContributeMetrics(payloads)
+}
+
+func (j *Job) String() string {
 	return fmt.Sprintf("%v[%v]", j.key, j.jobName)
 }
 
 // Run starts the main thread fo executing this job.
 // It's analoguous to the manager side process for a distributed pipeline.
 // It will begin "workers"
-func (j *job) run(ctx context.Context) {
+func (j *Job) run(ctx context.Context, executePipeline func(context.Context, *worker.W, *Job)) {
 	j.stateChan <- jobpb.JobState_STOPPED
 	j.msgChan <- "starting " + j.String()
 	j.stateChan <- jobpb.JobState_STARTING
@@ -85,7 +91,7 @@ func (j *job) run(ctx context.Context) {
 	// here, we only want and need the go one, operating
 	// in loopback mode.
 	env := "go"
-	wk := newWorker(env) // Cheating by having the worker id match the environment id.
+	wk := worker.New(env) // Cheating by having the worker id match the environment id.
 	go wk.Serve()
 
 	wkctx, cancelFn := context.WithCancel(ctx)
@@ -108,26 +114,26 @@ func (j *job) run(ctx context.Context) {
 	j.stateChan <- jobpb.JobState_DONE
 }
 
-func (j *job) runEnvironment(ctx context.Context, env string, wk *worker) {
+func (j *Job) runEnvironment(ctx context.Context, env string, wk *worker.W) {
 	// TODO fix broken abstraction.
 	// We're starting a worker pool here, because that's the loopback environment.
 	// It's sort of a mess, largely because of loopback, which has
 	// a different flow from a provisioned docker container.
-	e := j.pipeline.GetComponents().GetEnvironments()[env]
+	e := j.Pipeline.GetComponents().GetEnvironments()[env]
 	switch e.GetUrn() {
 	case urns.EnvExternal:
 		ep := &pipepb.ExternalPayload{}
 		if err := (proto.UnmarshalOptions{}).Unmarshal(e.GetPayload(), ep); err != nil {
-			V(1).Logf("unmarshalling environment payload %v: %v", wk.ID, err)
+			slog.Error("unmarshing evironment payload", err, slog.String("envID", wk.ID))
 		}
 		externalEnvironment(ctx, ep, wk)
-		V(1).Logf("%v for %v stopped", wk, j)
+		slog.Info("environment stopped", slog.String("envID", wk.String()), slog.String("job", j.String()))
 	default:
 		panic(fmt.Sprintf("environment %v with urn %v unimplemented", env, e.GetUrn()))
 	}
 }
 
-func externalEnvironment(ctx context.Context, ep *pipepb.ExternalPayload, wk *worker) {
+func externalEnvironment(ctx context.Context, ep *pipepb.ExternalPayload, wk *worker.W) {
 	conn, err := grpc.Dial(ep.GetEndpoint().GetUrl(), grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		panic(fmt.Sprintf("unable to dial sdk worker %v: %v", ep.GetEndpoint().GetUrl(), err))

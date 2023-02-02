@@ -24,6 +24,7 @@ import (
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/options/jobopts"
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/runners/universal"
 	"github.com/lostluck/experimental/local/internal"
+	"github.com/lostluck/experimental/local/internal/jobservices"
 )
 
 func init() {
@@ -36,7 +37,8 @@ func Execute(ctx context.Context, p *beam.Pipeline) (beam.PipelineResult, error)
 		// One hasn't been selected, so lets start one up and set the address.
 		// Conveniently, this means that if multiple pipelines are executed against
 		// the local runner, they will all use the same server.
-		s := internal.NewServer(0)
+		s := jobservices.NewServer(0)
+		s.Execute = internal.ExecutePipeline
 		*jobopts.Endpoint = s.Endpoint()
 		go s.Serve()
 	}
