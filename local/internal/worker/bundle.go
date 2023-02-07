@@ -25,6 +25,7 @@ import (
 )
 
 // B represents an extant ProcessBundle instruction sent to an SDK worker.
+// Generally manipulated by another package to interact with a worker.
 type B struct {
 	InstID string // ID for the instruction processing this bundle.
 	PBDID  string // ID for the ProcessBundleDescriptor
@@ -42,16 +43,23 @@ type B struct {
 	// OutputCount is the number of data outputs this bundle has.
 	// We need to see this many closed data channels before the bundle is complete.
 	OutputCount int
-	// DataWait is how we determine if a bundle is finished, by waiting for each of
+	// dataWait is how we determine if a bundle is finished, by waiting for each of
 	// a Bundle's DataSinks to produce their last output.
 	// After this point we can "commit" the bundle's output for downstream use.
-	DataWait   sync.WaitGroup
+	dataWait   sync.WaitGroup
 	OutputData engine.TentativeData
 	Resp       chan *fnpb.ProcessBundleResponse
 
 	SinkToPCollection map[string]string
 
 	// TODO: Metrics for this bundle, can be handled after the fact.
+}
+
+// Init initializes the
+func (b *B) Init() {
+	// We need to see final data signals that match the number of
+	// outputs the stage this bundle executes posesses.
+	b.dataWait.Add(b.OutputCount)
 }
 
 func (b *B) LogValue() slog.Value {
@@ -64,6 +72,9 @@ func (b *B) LogValue() slog.Value {
 //
 // Assumes the bundle is initialized (all maps are non-nil, and data waitgroup is set.)
 // Assumes the bundle descriptor is already registered.
+//
+// While this method mostly manipulates a W, putting it on a B avoids mixing the workers
+// public GRPC APIs up with local calls.
 func (b *B) ProcessOn(wk *W) {
 	wk.mu.Lock()
 	wk.bundles[b.InstID] = b
@@ -96,5 +107,5 @@ func (b *B) ProcessOn(wk *W) {
 	}
 
 	slog.Debug("waiting on data", "bundle", b)
-	b.DataWait.Wait() // Wait until data is ready.
+	b.dataWait.Wait() // Wait until data is ready.
 }

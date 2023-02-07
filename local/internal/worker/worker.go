@@ -41,7 +41,8 @@ import (
 )
 
 // A W manages worker environments, sending them work
-// that they're able to execute.
+// that they're able to execute, and manages the server
+// side handlers for FnAPI RPCs.
 type W struct {
 	fnpb.UnimplementedBeamFnControlServer
 	fnpb.UnimplementedBeamFnDataServer
@@ -266,7 +267,7 @@ func (wk *W) Data(data fnpb.BeamFnData_DataServer) error {
 					b.OutputData.WriteData(colID, d.GetData())
 				}
 				if d.GetIsLast() {
-					b.DataWait.Done()
+					b.dataWait.Done()
 				}
 			}
 			wk.mu.Unlock()

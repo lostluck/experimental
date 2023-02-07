@@ -540,7 +540,7 @@ func (s *stage) Execute(j *jobservices.Job, wk *worker.W, comps *pipepb.Componen
 			SinkToPCollection: s.SinkToPCollection,
 			OutputCount:       s.outputCount,
 		}
-		b.DataWait.Add(b.OutputCount)
+		b.Init()
 
 		s.prepareSides(b, s.transforms[0], rb.Watermark)
 	default:
