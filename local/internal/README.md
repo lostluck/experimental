@@ -19,6 +19,21 @@
   * pullDecoder refactor 
   * []byte avoidance -> To io.Reader/Writer streams
 
+# Notes to myself: 2023-02-08
+
+The runner is out! Rather the initial email is out:
+https://lists.apache.org/thread/3g27rjd2mp8t6ptxs95qhlo2b2dpcqr5  
+
+ https://github.com/apache/beam/pull/25391  has the initial state 
+ which will begin to diverge from what's in this Repo. That's WAI.
+
+Near term, updates will go to that email thread, and the Beam
+tracking issue: https://github.com/apache/beam/issues/24789. 
+And future work will be fully on the repo.
+
+This dev branch will remain as is here for later reference, but
+is otherwise for historical value of the Apache Beam Prism Runner.
+
 # Notes to myself: 2023-01-30
 
 OK, so couldn't focus on resolving the streaming issue WRT
