@@ -1,6 +1,6 @@
 module github.com/lostluck/experimental
 
-go 1.20
+go 1.21
 
 require (
 	github.com/apache/beam/sdks/v2 v2.40.0

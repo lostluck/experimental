@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"sort"
 
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/graph/mtime"
@@ -32,7 +33,6 @@ import (
 	"github.com/lostluck/experimental/local/internal/urns"
 	"github.com/lostluck/experimental/local/internal/worker"
 	"golang.org/x/exp/maps"
-	"golang.org/x/exp/slog"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/proto"
@@ -570,7 +570,7 @@ func (s *stage) Execute(j *jobservices.Job, wk *worker.W, comps *pipepb.Componen
 		ba := rr.GetApplication()
 		residualData = append(residualData, ba.GetElement())
 		if len(ba.GetElement()) == 0 {
-			slog.Log(slog.LevelError, "returned empty residual application", "bundle", rb)
+			slog.Error("returned empty residual application", "bundle", rb)
 			panic("sdk returned empty residual application")
 		}
 	}

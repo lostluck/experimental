@@ -151,7 +151,7 @@ func (wk *W) Logging(stream fnpb.BeamFnLogging_LoggingServer) error {
 		}
 		for _, l := range in.GetLogEntries() {
 			if l.Severity > minsev {
-				slog.Log(toSlogSev(l.GetSeverity()), l.GetMessage(),
+				slog.Log(context.TODO(), toSlogSev(l.GetSeverity()), l.GetMessage(),
 					slog.String(slog.SourceKey, l.GetLogLocation()),
 					slog.Time(slog.TimeKey, l.GetTimestamp().AsTime()),
 					"worker", wk,
@@ -215,7 +215,7 @@ func (wk *W) Control(ctrl fnpb.BeamFnControl_ControlServer) error {
 			if b, ok := wk.bundles[resp.GetInstructionId()]; ok {
 				// TODO. Better pipeline error handling.
 				if resp.Error != "" {
-					slog.Log(slog.LevelError, "ctrl.Recv pipeline error", slog.ErrorKey, resp.GetError())
+					slog.Error("ctrl.Recv pipeline error", "error", resp.GetError())
 					panic(resp.GetError())
 				}
 				b.Resp <- resp.GetProcessBundle()
@@ -276,7 +276,7 @@ func (wk *W) Data(data fnpb.BeamFnData_DataServer) error {
 
 	for req := range wk.DataReqs {
 		if err := data.Send(req); err != nil {
-			slog.Log(slog.LevelDebug, "data.Send error", slog.ErrorKey, err)
+			slog.Debug("data.Send error", "error", err)
 		}
 	}
 	return nil
