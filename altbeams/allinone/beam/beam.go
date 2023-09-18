@@ -58,6 +58,7 @@ import (
 	"fmt"
 	"reflect"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -164,10 +165,14 @@ func (_ *Emitter[E]) newDFC(id string) processor {
 	return newDFC[E](id, nil)
 }
 
+var numBuf atomic.Uint32
+
+func init() { numBuf.Store(100) } // See BenchmarkPipe.
+
 func newDFC[E any](id string, ds map[string]processor) DFC[E] {
 	return DFC[E]{
 		id:         id,
-		upstream:   make(chan msg),
+		upstream:   make(chan msg, numBuf.Load()),
 		downstream: ds,
 	}
 }
