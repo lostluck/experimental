@@ -61,16 +61,18 @@ func BenchmarkPipe(b *testing.B) {
 	for _, n := range []int{0, 1, 10, 100} {
 		n := n
 		b.Run(fmt.Sprintf("%d", n), func(b *testing.B) {
+
+			ctx := context.Background()
 			b.ReportAllocs()
 			var wg sync.WaitGroup
 			imp := Start()
-			src := RunDoFn(context.Background(), &wg, imp, &SourceFn{Count: b.N})
+			src := RunDoFn(ctx, &wg, imp, &SourceFn{Count: b.N})
 			iden := src
 			for range n {
-				iden = RunDoFn(context.Background(), &wg, iden[0], &IdenFn[int]{})
+				iden = RunDoFn(ctx, &wg, iden[0], &IdenFn[int]{})
 			}
 			discard := &DiscardFn[int]{}
-			RunDoFn(context.Background(), &wg, iden[0], discard)
+			RunDoFn(ctx, &wg, iden[0], discard)
 			b.ResetTimer()
 			wg.Wait()
 			if discard.processed != b.N {
@@ -85,10 +87,4 @@ func BenchmarkPipe(b *testing.B) {
 			b.Logf("%v - %d - %v", n, b.N, d/(time.Duration(div)))
 		})
 	}
-}
-
-type MyIncDoFn struct {
-	Name string
-
-	Output Emitter[int]
 }

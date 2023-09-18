@@ -167,7 +167,7 @@ func (_ *Emitter[E]) newDFC(id string) processor {
 func newDFC[E any](id string, ds map[string]processor) DFC[E] {
 	return DFC[E]{
 		id:         id,
-		upstream:   make(chan msg, 1),
+		upstream:   make(chan msg),
 		downstream: ds,
 	}
 }
