@@ -73,29 +73,29 @@ func TestBuild(t *testing.T) {
 // cpu: 12th Gen Intel(R) Core(TM) i7-1260P
 // BenchmarkPipe
 // BenchmarkPipe/var_dofns_0
-// BenchmarkPipe/var_dofns_0-16            49666132                24.02 ns/op             24.00 ns/elm           7 B/op          0 allocs/op
+// BenchmarkPipe/var_dofns_0-16            76823004                13.98 ns/op             13.00 ns/elm           0 B/op          0 allocs/op
 // BenchmarkPipe/var_dofns_1
-// BenchmarkPipe/var_dofns_1-16            20401291                58.37 ns/op             58.00 ns/elm          15 B/op          1 allocs/op
+// BenchmarkPipe/var_dofns_1-16            38088778                30.59 ns/op             30.00 ns/elm           0 B/op          0 allocs/op
 // BenchmarkPipe/var_dofns_2
-// BenchmarkPipe/var_dofns_2-16            13080327                92.52 ns/op             46.00 ns/elm          23 B/op          2 allocs/op
+// BenchmarkPipe/var_dofns_2-16            24171816                49.44 ns/op             24.00 ns/elm           0 B/op          0 allocs/op
 // BenchmarkPipe/var_dofns_3
-// BenchmarkPipe/var_dofns_3-16             9421681               124.6 ns/op              41.00 ns/elm          31 B/op          3 allocs/op
+// BenchmarkPipe/var_dofns_3-16            17444563                67.09 ns/op             22.00 ns/elm           0 B/op          0 allocs/op
 // BenchmarkPipe/var_dofns_5
-// BenchmarkPipe/var_dofns_5-16             6235714               191.4 ns/op              38.00 ns/elm          47 B/op          5 allocs/op
+// BenchmarkPipe/var_dofns_5-16            11590651               103.0 ns/op              20.00 ns/elm           0 B/op          0 allocs/op
 // BenchmarkPipe/var_dofns_10
-// BenchmarkPipe/var_dofns_10-16            3193524               373.2 ns/op              37.00 ns/elm          87 B/op         10 allocs/op
+// BenchmarkPipe/var_dofns_10-16            6210330               192.8 ns/op              19.00 ns/elm           0 B/op          0 allocs/op
 // BenchmarkPipe/var_dofns_20
-// BenchmarkPipe/var_dofns_20-16            1646349               731.3 ns/op              36.00 ns/elm         167 B/op         20 allocs/op
+// BenchmarkPipe/var_dofns_20-16            3111206               385.3 ns/op              19.00 ns/elm           0 B/op          0 allocs/op
 // BenchmarkPipe/var_dofns_30
-// BenchmarkPipe/var_dofns_30-16            1000000              1107 ns/op                36.00 ns/elm         247 B/op         30 allocs/op
+// BenchmarkPipe/var_dofns_30-16            1935891               619.7 ns/op              20.00 ns/elm           0 B/op          0 allocs/op
 // BenchmarkPipe/var_dofns_50
-// BenchmarkPipe/var_dofns_50-16             607266              1868 ns/op                37.00 ns/elm         407 B/op         50 allocs/op
+// BenchmarkPipe/var_dofns_50-16            1000000              1024 ns/op                20.00 ns/elm           0 B/op          0 allocs/op
 // BenchmarkPipe/var_dofns_75
-// BenchmarkPipe/var_dofns_75-16             400274              2995 ns/op                39.00 ns/elm         607 B/op         75 allocs/op
+// BenchmarkPipe/var_dofns_75-16             710708              1657 ns/op                22.00 ns/elm           0 B/op          0 allocs/op
 // BenchmarkPipe/var_dofns_100
-// BenchmarkPipe/var_dofns_100-16            283448              4033 ns/op                40.00 ns/elm         807 B/op        100 allocs/op
+// BenchmarkPipe/var_dofns_100-16            529915              2275 ns/op                22.00 ns/elm           0 B/op          0 allocs/op
 // BenchmarkPipe/var_dofns_500
-// BenchmarkPipe/var_dofns_500-16             59900             19905 ns/op                39.00 ns/elm        3990 B/op        498 allocs/op
+// BenchmarkPipe/var_dofns_500-16            106410             11172 ns/op                22.00 ns/elm           0 B/op          0 allocs/op
 func BenchmarkPipe(b *testing.B) {
 	makeBench := func(numDoFns int) func(b *testing.B) {
 		return func(b *testing.B) {

@@ -106,7 +106,8 @@ type emitIface interface {
 func (emt Emitter[E]) Emit(ec ElmC, elm E) {
 	// derive the elmContext, and direct the element down to its PCollection handle
 	proc := ec.pcollections[emt.pcolKey]
-	if err := proc.process(ec.elmContext, elm); err != nil {
+	nd := proc.(*node[E])
+	if err := nd.processE(ec.elmContext, elm); err != nil {
 		panic(err)
 	}
 }
@@ -138,7 +139,8 @@ func (p *Plan) Process(ctx context.Context) error {
 		return err
 	}
 
-	if err := p.Root.process(elmContext{eventTime: time.Now()}, []byte{}); err != nil {
+	nd := p.Root.(*node[[]byte])
+	if err := nd.processE(elmContext{eventTime: time.Now()}, []byte{}); err != nil {
 		return err
 	}
 
@@ -180,6 +182,13 @@ func (n *node[E]) process(ecc elmContext, elm any) error {
 		pcollections: n.pcollections,
 	}
 	return n.fn.ProcessElement(context.TODO(), ec, elm.(E))
+}
+func (n *node[E]) processE(ecc elmContext, elm E) error {
+	ec := ElmC{
+		elmContext:   ecc,
+		pcollections: n.pcollections,
+	}
+	return n.fn.ProcessElement(context.TODO(), ec, elm)
 }
 
 func (n *node[E]) FinishBundle(ctx context.Context) error {

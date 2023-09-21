@@ -69,6 +69,10 @@ func (c *DFC[E]) process(ec elmContext, elm any) {
 	c.perElm(ElmC{ec, c.downstream}, elm.(E))
 }
 
+func (c *DFC[E]) processE(ec elmContext, elm E) {
+	c.perElm(ElmC{ec, c.downstream}, elm)
+}
+
 func (c *DFC[E]) finish() error {
 	if c.finishBundle == nil {
 		return nil
@@ -140,7 +144,8 @@ func (emt Emitter[E]) Emit(ec ElmC, elm E) {
 	// derive the elmContext, and direct the element down to its PCollection handle
 	proc := ec.pcollections[emt.pcolKey]
 
-	proc.process(ec.elmContext, elm)
+	dfc := proc.(*DFC[E])
+	dfc.processE(ec.elmContext, elm)
 }
 
 // BundleProc is the only interface that needs to be implemented by most DoFns.
@@ -200,7 +205,7 @@ func makeEmitters(prod any) ([]processor, map[string]processor) {
 // Reverse execution construction from sinks to sources.
 
 func Impulse(dfc *DFC[[]byte]) error {
-	dfc.process(elmContext{
+	dfc.processE(elmContext{
 		eventTime: time.Now(),
 	}, []byte{})
 	return dfc.finish()
