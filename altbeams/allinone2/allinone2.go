@@ -125,17 +125,17 @@ func main() {
 	ctx := context.Background()
 
 	// Forward Construction approach.
-	imp := beam.Start()
-	src := beam.RunDoFn(ctx, imp, &SourceFn{
+	imp := beam.Impulse()
+	src := beam.ParDo(ctx, imp, &SourceFn{
 		Name:  "Source",
 		Count: 10,
 	})
-	inc := beam.RunDoFn(ctx, src[0], &MyIncDoFn{
+	inc := beam.ParDo(ctx, src[0], &MyIncDoFn{
 		Name: "IncFn",
 	})
-	beam.RunDoFn(ctx, inc[0], &DiscardFn[int]{
+	beam.ParDo(ctx, inc[0], &DiscardFn[int]{
 		Name: "DiscardFn",
 	})
-	beam.Impulse(imp)
+	beam.Start(imp)
 	fmt.Println("goroutines", runtime.NumGoroutine())
 }

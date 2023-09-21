@@ -13,23 +13,11 @@ import (
 	"time"
 )
 
-type KV[K, V any] struct {
-	key   K
-	value V
-}
-
-func (kv *KV[K, V]) Key() K {
-	return kv.key
-}
-
-func (kv *KV[K, V]) Value() V {
-	return kv.value
-}
-
 // DFC is the DoFn Context for simple DoFns.
 type DFC[E any] struct {
 	id string
 
+	dofn       BundleProc[E]
 	downstream map[string]processor
 
 	perElm       func(ec ElmC, elm E) bool
@@ -65,12 +53,31 @@ func (c *DFC[E]) FinishBundle(finishBundle func() error) {
 	c.finishBundle = finishBundle
 }
 
-func (c *DFC[E]) process(ec elmContext, elm any) {
-	c.perElm(ElmC{ec, c.downstream}, elm.(E))
+// processor allows a uniform type for different generic types.
+type processor interface {
+	start(ctx context.Context) error
+	process(elmContext, any) error
+	finish() error
 }
 
-func (c *DFC[E]) processE(ec elmContext, elm E) {
+func (c *DFC[E]) process(ec elmContext, elm any) error {
+	c.perElm(ElmC{ec, c.downstream}, elm.(E))
+	return nil
+}
+
+func (c *DFC[E]) processE(ec elmContext, elm E) error {
 	c.perElm(ElmC{ec, c.downstream}, elm)
+	return nil
+}
+
+func (c *DFC[E]) start(ctx context.Context) error {
+	c.dofn.ProcessBundle(ctx, c)
+	for _, proc := range c.downstream {
+		if err := proc.start(ctx); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (c *DFC[E]) finish() error {
@@ -101,12 +108,6 @@ type ElmC struct {
 	elmContext
 
 	pcollections map[string]processor
-}
-
-// processor allows a uniform type for different generic types.
-type processor interface {
-	process(elmContext, any)
-	finish() error
 }
 
 func (e *ElmC) EventTime() time.Time {
@@ -156,20 +157,16 @@ type BundleProc[E any] interface {
 // --------------------------------------------------
 // Forward execution construction from sources to sinks.
 
-func Start() *DFC[[]byte] {
+func Impulse() *DFC[[]byte] {
 	return newDFC[[]byte]("impulse", nil)
 }
 
-// RunDoFn initializes and starts the BundleProc, and prepares inputs for downstream consumers.
-func RunDoFn[E any](ctx context.Context, input processor, prod BundleProc[E]) []processor {
+// ParDo initializes and starts the BundleProc, and prepares inputs for downstream consumers.
+func ParDo[E any](ctx context.Context, input processor, prod BundleProc[E]) []processor {
 	dfc := input.(*DFC[E])
-
+	dfc.dofn = prod
 	procs, downstream := makeEmitters(prod)
 	dfc.downstream = downstream
-
-	// TODO FIX This means "start bundle is being run immeadiately, instead of kicked off on start"
-	prod.ProcessBundle(ctx, dfc)
-
 	return procs
 }
 
@@ -203,10 +200,14 @@ func makeEmitters(prod any) ([]processor, map[string]processor) {
 
 // --------------------------------------------------
 // Reverse execution construction from sinks to sources.
-
-func Impulse(dfc *DFC[[]byte]) error {
-	dfc.processE(elmContext{
+func Start(dfc *DFC[[]byte]) error {
+	if err := dfc.start(context.TODO()); err != nil {
+		return err
+	}
+	if err := dfc.processE(elmContext{
 		eventTime: time.Now(),
-	}, []byte{})
+	}, []byte{}); err != nil {
+		return err
+	}
 	return dfc.finish()
 }

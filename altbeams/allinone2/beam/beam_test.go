@@ -48,21 +48,12 @@ func (fn *IdenFn[E]) ProcessBundle(ctx context.Context, dfc *DFC[E]) error {
 	return nil
 }
 
-func (fn *DFC[E]) impulse() {
-	fn.process(
-		elmContext{
-			eventTime: time.Now(),
-		},
-		[]byte{},
-	)
-}
-
 func TestBuild(t *testing.T) {
-	imp := Start()
-	src := RunDoFn(context.Background(), imp, &SourceFn{Count: 10})
-	RunDoFn(context.Background(), src[0], &DiscardFn[int]{})
+	imp := Impulse()
+	src := ParDo(context.Background(), imp, &SourceFn{Count: 10})
+	ParDo(context.Background(), src[0], &DiscardFn[int]{})
 
-	Impulse(imp)
+	Start(imp)
 }
 
 // BenchmarkPipe benchmarks along the number of DoFns.
@@ -101,17 +92,17 @@ func BenchmarkPipe(b *testing.B) {
 		return func(b *testing.B) {
 			b.ReportAllocs()
 			ctx := context.Background()
-			imp := Start()
-			src := RunDoFn(ctx, imp, &SourceFn{Count: b.N})
+			imp := Impulse()
+			src := ParDo(ctx, imp, &SourceFn{Count: b.N})
 			iden := src
 			for range numDoFns {
-				iden = RunDoFn(ctx, iden[0], &IdenFn[int]{})
+				iden = ParDo(ctx, iden[0], &IdenFn[int]{})
 			}
 			discard := &DiscardFn[int]{}
-			RunDoFn(ctx, iden[0], discard)
+			ParDo(ctx, iden[0], discard)
 			b.ResetTimer()
 
-			imp.impulse()
+			Start(imp)
 			if discard.processed != b.N {
 				b.Fatalf("processed dodn't match bench number: got %v want %v", discard.processed, b.N)
 			}
