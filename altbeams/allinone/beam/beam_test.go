@@ -17,7 +17,7 @@ func (fn *SourceFn) ProcessBundle(ctx context.Context, dfc DFC[[]byte]) error {
 	// Do some startbundle work.
 	processed := 0
 	dfc.Process(func(ec ElmC, _ []byte) bool {
-		for i := range fn.Count {
+		for i := 0; i < fn.Count; i++ {
 			processed++
 			fn.Output.Emit(ec, i)
 		}
@@ -32,9 +32,10 @@ type DiscardFn[E any] struct {
 
 func (fn *DiscardFn[E]) ProcessBundle(ctx context.Context, dfc DFC[E]) error {
 	fn.processed = 0
-	for _, _ = range dfc.Process {
+	dfc.Process(func(ec ElmC, elm E) bool {
 		fn.processed++
-	}
+		return true
+	})
 	return nil
 }
 
@@ -43,9 +44,10 @@ type IdenFn[E any] struct {
 }
 
 func (fn *IdenFn[E]) ProcessBundle(ctx context.Context, dfc DFC[E]) error {
-	for ec, e := range dfc.Process {
-		fn.Output.Emit(ec, e)
-	}
+	dfc.Process(func(ec ElmC, elm E) bool {
+		fn.Output.Emit(ec, elm)
+		return true
+	})
 	return nil
 }
 
@@ -113,7 +115,7 @@ func BenchmarkPipe(b *testing.B) {
 			imp := Start()
 			src := RunDoFn(ctx, &wg, imp, &SourceFn{Count: b.N})
 			iden := src
-			for range numDoFns {
+			for i := 0; i < numDoFns; i++ {
 				iden = RunDoFn(ctx, &wg, iden[0], &IdenFn[int]{})
 			}
 			discard := &DiscardFn[int]{}

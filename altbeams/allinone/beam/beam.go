@@ -80,7 +80,7 @@ type DFC[E any] struct {
 	processStarted bool
 	id             string
 
-	upstream   chan msg
+	upstream   chan msg[E]
 	downstream map[string]processor
 }
 
@@ -88,9 +88,9 @@ func (dfc DFC[E]) identifier() string {
 	return dfc.id
 }
 
-type msg struct {
+type msg[E any] struct {
 	ec  elmContext
-	elm any
+	elm E
 }
 
 type elmContext struct {
@@ -114,14 +114,18 @@ func (c *DFC[E]) Process(perElm func(ec ElmC, elm E) bool) {
 			elmContext:   m.ec,
 			pcollections: c.downstream,
 		}
-		if !perElm(ec, m.elm.(E)) {
+		if !perElm(ec, m.elm) {
 			break
 		}
 	}
 }
 
 func (c DFC[E]) process(ec elmContext, elm any) {
-	c.upstream <- msg{ec, elm}
+	c.upstream <- msg[E]{ec, elm.(E)}
+}
+
+func (c DFC[E]) processE(ec elmContext, elm E) {
+	c.upstream <- msg[E]{ec, elm}
 }
 
 func (c DFC[E]) stop() {
@@ -172,7 +176,7 @@ func init() { numBuf.Store(100) } // See BenchmarkPipe.
 func newDFC[E any](id string, ds map[string]processor) DFC[E] {
 	return DFC[E]{
 		id:         id,
-		upstream:   make(chan msg, numBuf.Load()),
+		upstream:   make(chan msg[E], numBuf.Load()),
 		downstream: ds,
 	}
 }
@@ -189,7 +193,8 @@ func (emt Emitter[E]) Emit(ec ElmC, elm E) {
 	// derive the elmContext, and direct the element down to its PCollection handle
 	proc := ec.pcollections[emt.pcolKey]
 
-	proc.process(ec.elmContext, elm)
+	dfc := proc.(DFC[E])
+	dfc.processE(ec.elmContext, elm)
 }
 
 // BundleProc is the only interface that needs to be implemented by most DoFns.
@@ -204,7 +209,7 @@ func Start() DFC[[]byte] {
 	dfc := newDFC[[]byte]("impulse", nil)
 	dfc.processStarted = true
 	go func() {
-		dfc.upstream <- msg{
+		dfc.upstream <- msg[[]byte]{
 			ec: elmContext{
 				eventTime: time.Now(),
 			},
@@ -242,7 +247,7 @@ func makeEmitters(prod any) ([]processor, map[string]processor) {
 	var procs []processor
 	downstream := map[string]processor{}
 	rt := rv.Type()
-	for i := range rv.NumField() {
+	for i := 0; i < rv.NumField(); i++ {
 		fv := rv.Field(i)
 		if !fv.CanAddr() || !rt.Field(i).IsExported() {
 			continue
@@ -299,7 +304,7 @@ func setEmitters(cons any, procs []processor) map[string]processor {
 	}
 
 	downstream := map[string]processor{}
-	for i := range rv.NumField() {
+	for i := 0; i < rv.NumField(); i++ {
 		fv := rv.Field(i)
 		if !fv.CanAddr() {
 			continue
@@ -318,7 +323,7 @@ func setEmitters(cons any, procs []processor) map[string]processor {
 }
 
 func Impulse(dfc DFC[[]byte]) {
-	dfc.upstream <- msg{
+	dfc.upstream <- msg[[]byte]{
 		ec: elmContext{
 			eventTime: time.Now(),
 		},
