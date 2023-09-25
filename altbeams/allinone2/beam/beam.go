@@ -8,17 +8,30 @@ package beam
 
 import (
 	"context"
-	"fmt"
+	"math"
 	"reflect"
 	"time"
 )
 
+type Keys interface {
+	comparable
+}
+
+type KV[K Keys, V Elements] struct {
+	Key   K
+	Value V
+}
+
+type Elements interface {
+	any // Sadly, can't really restrict this without breaking iterators in GBK results.
+}
+
 // DFC is the DoFn Context for simple DoFns.
-type DFC[E any] struct {
-	id string
+type DFC[E Elements] struct {
+	id int
 
 	dofn       BundleProc[E]
-	downstream map[string]processor
+	downstream []processor
 
 	perElm       func(ec ElmC, elm E) bool
 	finishBundle func() error
@@ -28,6 +41,13 @@ type elmContext struct {
 	eventTime time.Time
 	windows   []time.Time
 	pane      string
+}
+
+func newDFC[E Elements](id int, ds []processor) *DFC[E] {
+	return &DFC[E]{
+		id:         id,
+		downstream: ds,
+	}
 }
 
 // Process is what the user calls to handle the bundle of elements.
@@ -53,16 +73,24 @@ func (c *DFC[E]) FinishBundle(finishBundle func() error) {
 	c.finishBundle = finishBundle
 }
 
+// ToElmC is to get the appropriate element context for elements not derived from a specific
+// element directly.
+//
+// This derives the element windows, and sets a no-firing pane.
+func (c *DFC[E]) ToElmC(eventTime time.Time) ElmC {
+	return ElmC{
+		elmContext: elmContext{
+			eventTime: eventTime,
+			// TODO windows, pane
+		},
+		pcollections: c.downstream,
+	}
+}
+
 // processor allows a uniform type for different generic types.
 type processor interface {
 	start(ctx context.Context) error
-	process(elmContext, any) error
 	finish() error
-}
-
-func (c *DFC[E]) process(ec elmContext, elm any) error {
-	c.perElm(ElmC{ec, c.downstream}, elm.(E))
-	return nil
 }
 
 func (c *DFC[E]) processE(ec elmContext, elm E) error {
@@ -81,11 +109,10 @@ func (c *DFC[E]) start(ctx context.Context) error {
 }
 
 func (c *DFC[E]) finish() error {
-	if c.finishBundle == nil {
-		return nil
-	}
-	if err := c.finishBundle(); err != nil {
-		return err
+	if c.finishBundle != nil {
+		if err := c.finishBundle(); err != nil {
+			return err
+		}
 	}
 	for _, proc := range c.downstream {
 		if err := proc.finish(); err != nil {
@@ -107,35 +134,28 @@ func (c *DFC[E]) finish() error {
 type ElmC struct {
 	elmContext
 
-	pcollections map[string]processor
+	pcollections []processor
 }
 
 func (e *ElmC) EventTime() time.Time {
 	return e.eventTime
 }
 
-type Emitter[E any] struct {
-	pcolKey string
-}
-
-func (emt *Emitter[E]) setPColKey(id string) {
-	emt.pcolKey = id
-}
-
-func (_ *Emitter[E]) newDFC(id string) processor {
-	return newDFC[E](id, nil)
-}
-
-func newDFC[E any](id string, ds map[string]processor) *DFC[E] {
-	return &DFC[E]{
-		id:         id,
-		downstream: ds,
-	}
+type Emitter[E Elements] struct {
+	pcolKey int
 }
 
 type emitIface interface {
-	setPColKey(id string)
-	newDFC(id string) processor
+	setPColKey(id int)
+	newDFC(id int) processor
+}
+
+func (emt *Emitter[E]) setPColKey(id int) {
+	emt.pcolKey = id
+}
+
+func (_ *Emitter[E]) newDFC(id int) processor {
+	return newDFC[E](id, nil)
 }
 
 // Emit the element within the current element's context.
@@ -150,7 +170,7 @@ func (emt Emitter[E]) Emit(ec ElmC, elm E) {
 }
 
 // BundleProc is the only interface that needs to be implemented by most DoFns.
-type BundleProc[E any] interface {
+type BundleProc[E Elements] interface {
 	ProcessBundle(ctx context.Context, dfc *DFC[E]) error
 }
 
@@ -158,44 +178,101 @@ type BundleProc[E any] interface {
 // Forward execution construction from sources to sinks.
 
 func Impulse() *DFC[[]byte] {
-	return newDFC[[]byte]("impulse", nil)
+	return newDFC[[]byte](0, nil)
 }
 
 // ParDo initializes and starts the BundleProc, and prepares inputs for downstream consumers.
-func ParDo[E any](ctx context.Context, input processor, prod BundleProc[E]) []processor {
+func ParDo[E Elements](input processor, prod BundleProc[E]) []processor {
 	dfc := input.(*DFC[E])
 	dfc.dofn = prod
-	procs, downstream := makeEmitters(prod)
-	dfc.downstream = downstream
+	procs := makeEmitters(prod)
+	dfc.downstream = procs
 	return procs
 }
 
-func makeEmitters(prod any) ([]processor, map[string]processor) {
+type Iter[V Elements] struct {
+	source func() (V, bool) // source returns true if the element is valid.
+}
+
+// All allows a single iteration of its stream of values.
+func (it *Iter[V]) All(perElm func(elm V) bool) {
+	for {
+		v, ok := it.source()
+		if !ok {
+			return
+		}
+		if !perElm(v) {
+			return
+		}
+	}
+}
+
+// ParDo initializes and starts the BundleProc, and prepares inputs for downstream consumers.
+func GBK[K Keys, V Elements](input processor) processor {
+	return ParDo(input, &gbk[K, V]{})[0]
+}
+
+// gbk groups by the key type and value type.
+type gbk[K Keys, V Elements] struct {
+	Output Emitter[KV[K, Iter[V]]]
+}
+
+var (
+	MaxET time.Time = time.UnixMilli(math.MaxInt64 / 1000)
+	EOGW            = MaxET.Add(-time.Hour * 24)
+)
+
+func (fn *gbk[K, V]) ProcessBundle(ctx context.Context, dfc *DFC[KV[K, V]]) error {
+	grouped := map[K][]V{}
+	dfc.Process(func(ec ElmC, elm KV[K, V]) bool {
+		vs := grouped[elm.Key]
+		vs = append(vs, elm.Value)
+		grouped[elm.Key] = vs
+		return true
+	})
+	dfc.FinishBundle(func() error {
+		ec := dfc.ToElmC(EOGW) // TODO pull, from the window that's been closed.
+		for k, vs := range grouped {
+			var i int
+			out := KV[K, Iter[V]]{Key: k, Value: Iter[V]{
+				source: func() (V, bool) {
+					var v V
+					if i < len(vs) {
+						v = vs[i]
+						i++
+						return v, true
+					}
+					return v, false
+				},
+			}}
+			fn.Output.Emit(ec, out)
+		}
+		return nil
+	})
+	return nil
+}
+
+func makeEmitters(prod any) []processor {
 	rv := reflect.ValueOf(prod)
 	if rv.Kind() == reflect.Pointer {
 		rv = rv.Elem()
 	}
 	var procs []processor
-	downstream := map[string]processor{}
 	rt := rv.Type()
-	for i := range rv.NumField() {
+	for i := 0; i < rv.NumField(); i++ {
 		fv := rv.Field(i)
 		if !fv.CanAddr() || !rt.Field(i).IsExported() {
 			continue
 		}
 		fv = fv.Addr()
 		if emt, ok := fv.Interface().(emitIface); ok {
-			id := fmt.Sprintf("n%d", len(downstream))
+			id := len(procs)
 			emt.setPColKey(id)
 			proc := emt.newDFC(id)
-			downstream[id] = proc
 			procs = append(procs, proc)
 		}
 	}
-	if len(procs) != len(downstream) {
-		panic(fmt.Sprintf("mistmatch between ids and outputs on %T: %v ids, outs %v", prod, len(procs), len(downstream)))
-	}
-	return procs, downstream
+	return procs
 }
 
 // --------------------------------------------------

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"testing"
 	"time"
+
+	"golang.org/x/exp/constraints"
 )
 
 type SourceFn struct {
@@ -16,42 +18,44 @@ func (fn *SourceFn) ProcessBundle(ctx context.Context, dfc *DFC[[]byte]) error {
 	// Do some startbundle work.
 	processed := 0
 	dfc.Process(func(ec ElmC, _ []byte) bool {
-		for i := range fn.Count {
+		for i := 0; i < fn.Count; i++ {
 			processed++
 			fn.Output.Emit(ec, i)
 		}
-		return false
+		return true
 	})
 	return nil
 }
 
-type DiscardFn[E any] struct {
+type DiscardFn[E Elements] struct {
 	processed int
 }
 
 func (fn *DiscardFn[E]) ProcessBundle(ctx context.Context, dfc *DFC[E]) error {
 	fn.processed = 0
-	for _, _ = range dfc.Process {
+	dfc.Process(func(ec ElmC, elm E) bool {
 		fn.processed++
-	}
+		return true
+	})
 	return nil
 }
 
-type IdenFn[E any] struct {
+type IdenFn[E Elements] struct {
 	Output Emitter[E]
 }
 
 func (fn *IdenFn[E]) ProcessBundle(ctx context.Context, dfc *DFC[E]) error {
-	for ec, e := range dfc.Process {
-		fn.Output.Emit(ec, e)
-	}
+	dfc.Process(func(ec ElmC, elm E) bool {
+		fn.Output.Emit(ec, elm)
+		return true
+	})
 	return nil
 }
 
 func TestBuild(t *testing.T) {
 	imp := Impulse()
-	src := ParDo(context.Background(), imp, &SourceFn{Count: 10})
-	ParDo(context.Background(), src[0], &DiscardFn[int]{})
+	src := ParDo(imp, &SourceFn{Count: 10})
+	ParDo(src[0], &DiscardFn[int]{})
 
 	Start(imp)
 }
@@ -62,44 +66,25 @@ func TestBuild(t *testing.T) {
 // goarch: amd64
 // pkg: github.com/lostluck/experimental/altbeams/allinone2/beam
 // cpu: 12th Gen Intel(R) Core(TM) i7-1260P
-// BenchmarkPipe
-// BenchmarkPipe/var_dofns_0
-// BenchmarkPipe/var_dofns_0-16            76823004                13.98 ns/op             13.00 ns/elm           0 B/op          0 allocs/op
-// BenchmarkPipe/var_dofns_1
-// BenchmarkPipe/var_dofns_1-16            38088778                30.59 ns/op             30.00 ns/elm           0 B/op          0 allocs/op
-// BenchmarkPipe/var_dofns_2
-// BenchmarkPipe/var_dofns_2-16            24171816                49.44 ns/op             24.00 ns/elm           0 B/op          0 allocs/op
-// BenchmarkPipe/var_dofns_3
-// BenchmarkPipe/var_dofns_3-16            17444563                67.09 ns/op             22.00 ns/elm           0 B/op          0 allocs/op
-// BenchmarkPipe/var_dofns_5
-// BenchmarkPipe/var_dofns_5-16            11590651               103.0 ns/op              20.00 ns/elm           0 B/op          0 allocs/op
-// BenchmarkPipe/var_dofns_10
-// BenchmarkPipe/var_dofns_10-16            6210330               192.8 ns/op              19.00 ns/elm           0 B/op          0 allocs/op
-// BenchmarkPipe/var_dofns_20
-// BenchmarkPipe/var_dofns_20-16            3111206               385.3 ns/op              19.00 ns/elm           0 B/op          0 allocs/op
-// BenchmarkPipe/var_dofns_30
-// BenchmarkPipe/var_dofns_30-16            1935891               619.7 ns/op              20.00 ns/elm           0 B/op          0 allocs/op
-// BenchmarkPipe/var_dofns_50
-// BenchmarkPipe/var_dofns_50-16            1000000              1024 ns/op                20.00 ns/elm           0 B/op          0 allocs/op
-// BenchmarkPipe/var_dofns_75
-// BenchmarkPipe/var_dofns_75-16             710708              1657 ns/op                22.00 ns/elm           0 B/op          0 allocs/op
-// BenchmarkPipe/var_dofns_100
-// BenchmarkPipe/var_dofns_100-16            529915              2275 ns/op                22.00 ns/elm           0 B/op          0 allocs/op
-// BenchmarkPipe/var_dofns_500
-// BenchmarkPipe/var_dofns_500-16            106410             11172 ns/op                22.00 ns/elm           0 B/op          0 allocs/op
+// BenchmarkPipe/var_dofns_0-16         	97536266	        11.86 ns/op	        11.00 ns/elm	       0 B/op	       0 allocs/op
+// BenchmarkPipe/var_dofns_1-16         	38748386	        30.96 ns/op	        30.00 ns/elm	       0 B/op	       0 allocs/op
+// BenchmarkPipe/var_dofns_2-16         	24103524	        49.15 ns/op	        24.00 ns/elm	       0 B/op	       0 allocs/op
+// BenchmarkPipe/var_dofns_3-16         	17758483	        67.46 ns/op	        22.00 ns/elm	       0 B/op	       0 allocs/op
+// BenchmarkPipe/var_dofns_5-16         	11575345	       103.7 ns/op	        20.00 ns/elm	       0 B/op	       0 allocs/op
+// BenchmarkPipe/var_dofns_10-16        	 6107569	       196.5 ns/op	        19.00 ns/elm	       0 B/op	       0 allocs/op
+// BenchmarkPipe/var_dofns_100-16       	  450638	      2234 ns/op	        22.00 ns/elm	       0 B/op	       0 allocs/op
 func BenchmarkPipe(b *testing.B) {
 	makeBench := func(numDoFns int) func(b *testing.B) {
 		return func(b *testing.B) {
 			b.ReportAllocs()
-			ctx := context.Background()
 			imp := Impulse()
-			src := ParDo(ctx, imp, &SourceFn{Count: b.N})
+			src := ParDo(imp, &SourceFn{Count: b.N})
 			iden := src
-			for range numDoFns {
-				iden = ParDo(ctx, iden[0], &IdenFn[int]{})
+			for i := 0; i < numDoFns; i++ {
+				iden = ParDo(iden[0], &IdenFn[int]{})
 			}
 			discard := &DiscardFn[int]{}
-			ParDo(ctx, iden[0], discard)
+			ParDo(iden[0], discard)
 			b.ResetTimer()
 
 			Start(imp)
@@ -115,7 +100,136 @@ func BenchmarkPipe(b *testing.B) {
 			b.ReportMetric(float64(d/(time.Duration(div))), "ns/elm")
 		}
 	}
-	for _, numDoFns := range []int{0, 1, 2, 3, 5, 10, 20, 30, 50, 75, 100, 500} {
+	for _, numDoFns := range []int{0, 1, 2, 3, 5, 10, 100} {
 		b.Run(fmt.Sprintf("var_dofns_%d", numDoFns), makeBench(numDoFns))
+	}
+}
+
+type KeyMod[V constraints.Integer] struct {
+	Mod V
+
+	Output Emitter[KV[V, V]]
+}
+
+func (fn *KeyMod[V]) ProcessBundle(ctx context.Context, dfc *DFC[V]) error {
+	dfc.Process(func(ec ElmC, elm V) bool {
+		mod := elm % fn.Mod
+		fn.Output.Emit(ec, KV[V, V]{
+			Key:   V(mod),
+			Value: elm,
+		})
+		return true
+	})
+	return nil
+}
+
+type SumByKey[K Keys, V constraints.Integer | constraints.Float] struct {
+	Output Emitter[KV[K, V]]
+}
+
+func (fn *SumByKey[K, V]) ProcessBundle(ctx context.Context, dfc *DFC[KV[K, Iter[V]]]) error {
+	dfc.Process(func(ec ElmC, elm KV[K, Iter[V]]) bool {
+		var sum V
+		elm.Value.All(func(elm V) bool {
+			sum += elm
+			return true
+		})
+		fn.Output.Emit(ec, KV[K, V]{Key: elm.Key, Value: sum})
+		return true
+	})
+	return nil
+}
+
+type GroupKeyModSum[V constraints.Integer] struct {
+	Mod V
+
+	Output Emitter[KV[V, V]]
+}
+
+func (fn *GroupKeyModSum[V]) ProcessBundle(ctx context.Context, dfc *DFC[V]) error {
+	grouped := map[V]V{}
+	dfc.Process(func(ec ElmC, elm V) bool {
+		mod := elm % fn.Mod
+		v := grouped[mod]
+		v += elm
+		grouped[mod] = v
+		return true
+	})
+
+	dfc.FinishBundle(func() error {
+		ec := dfc.ToElmC(EOGW) // TODO pull from the window that's been closed.
+		for k, v := range grouped {
+			fn.Output.Emit(ec, KV[V, V]{Key: k, Value: v})
+		}
+		return nil
+	})
+	return nil
+}
+
+func TestGBKSum(t *testing.T) {
+	imp := Impulse()
+	src := ParDo(imp, &SourceFn{Count: 10})
+	mod := 3
+	keyed := ParDo(src[0], &KeyMod[int]{Mod: mod})
+	grouped := GBK[int, int](keyed[0])
+	sums := ParDo(grouped, &SumByKey[int, int]{})
+
+	discard := &DiscardFn[KV[int, int]]{}
+	ParDo(sums[0], discard)
+	Start(imp)
+
+	if got, want := discard.processed, mod; got != want {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+func BenchmarkGBKSum_int(b *testing.B) {
+	for _, mod := range []int{2, 3, 5, 10, 100, 1000, 10000} {
+		b.Run(fmt.Sprintf("mod_%v", mod), func(b *testing.B) {
+			imp := Impulse()
+			src := ParDo(imp, &SourceFn{Count: b.N})
+			keyed := ParDo(src[0], &KeyMod[int]{Mod: mod})
+			grouped := GBK[int, int](keyed[0])
+			sums := ParDo(grouped, &SumByKey[int, int]{})
+
+			discard := &DiscardFn[KV[int, int]]{}
+			ParDo(sums[0], discard)
+
+			b.ResetTimer()
+			Start(imp)
+
+			want := mod
+			if b.N < mod {
+				want = b.N
+			}
+
+			if got := discard.processed; got != want {
+				b.Errorf("got %v, want %v", got, want)
+			}
+		})
+	}
+}
+
+func BenchmarkGBKSum_Lifted_int(b *testing.B) {
+	for _, mod := range []int{2, 3, 5, 10, 100, 1000, 10000} {
+		b.Run(fmt.Sprintf("mod_%v", mod), func(b *testing.B) {
+			imp := Impulse()
+			src := ParDo(imp, &SourceFn{Count: b.N})
+			keyed := ParDo(src[0], &GroupKeyModSum[int]{Mod: mod})
+			discard := &DiscardFn[KV[int, int]]{}
+			ParDo(keyed[0], discard)
+
+			b.ResetTimer()
+			Start(imp)
+
+			want := mod
+			if b.N < mod {
+				want = b.N
+			}
+
+			if got := discard.processed; got != want {
+				b.Errorf("got %v, want %v", got, want)
+			}
+		})
 	}
 }
