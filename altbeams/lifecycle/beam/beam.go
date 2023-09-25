@@ -14,7 +14,6 @@ package beam
 
 import (
 	"context"
-	"fmt"
 	"reflect"
 	"time"
 )
@@ -55,7 +54,7 @@ type elmContext struct {
 type ElmC struct {
 	elmContext
 
-	pcollections map[string]processor
+	pcollections []processor
 }
 
 type processor interface {
@@ -71,7 +70,7 @@ func (e *ElmC) EventTime() time.Time {
 // unknown. It can be used to build an element context for emitting
 // values.
 type BundC struct {
-	pcollections map[string]processor
+	pcollections []processor
 }
 
 func (bc BundC) WithEventTime(et time.Time) ElmC {
@@ -86,10 +85,10 @@ func (bc BundC) WithEventTime(et time.Time) ElmC {
 }
 
 type Emitter[E any] struct {
-	pcolKey string
+	pcolKey int
 }
 
-func (emt *Emitter[E]) setPColKey(id string) {
+func (emt *Emitter[E]) setPColKey(id int) {
 	emt.pcolKey = id
 }
 
@@ -98,7 +97,7 @@ func (emt *Emitter[E]) newNode() processor {
 }
 
 type emitIface interface {
-	setPColKey(id string)
+	setPColKey(id int)
 	newNode() processor
 }
 
@@ -152,7 +151,7 @@ func (p *Plan) Process(ctx context.Context) error {
 type node[E any] struct {
 	fn DoFn[E]
 
-	pcollections map[string]processor
+	pcollections []processor
 }
 
 func (n *node[E]) StartBundle(ctx context.Context) error {
@@ -204,19 +203,18 @@ func ParDo[E any](ctx context.Context, cur processor, prod DoFn[E]) []processor 
 	} else {
 		proc = cur.(*node[E])
 	}
-	procs, downstream := makeEmitters(prod)
+	procs := makeEmitters(prod)
 	proc.fn = prod
-	proc.pcollections = downstream
+	proc.pcollections = procs
 	return procs
 }
 
-func makeEmitters(prod any) ([]processor, map[string]processor) {
+func makeEmitters(prod any) []processor {
 	rv := reflect.ValueOf(prod)
 	if rv.Kind() == reflect.Pointer {
 		rv = rv.Elem()
 	}
 	var procs []processor
-	downstream := map[string]processor{}
 	rt := rv.Type()
 	for i := 0; i < rv.NumField(); i++ {
 		fv := rv.Field(i)
@@ -225,15 +223,11 @@ func makeEmitters(prod any) ([]processor, map[string]processor) {
 		}
 		fv = fv.Addr()
 		if emt, ok := fv.Interface().(emitIface); ok {
-			id := fmt.Sprintf("n%d", len(downstream))
+			id := len(procs)
 			emt.setPColKey(id)
 			proc := emt.newNode()
-			downstream[id] = proc
 			procs = append(procs, proc)
 		}
 	}
-	if len(procs) != len(downstream) {
-		panic(fmt.Sprintf("mistmatch between ids and outputs on %T: %v ids, outs %v", prod, len(procs), len(downstream)))
-	}
-	return procs, downstream
+	return procs
 }
