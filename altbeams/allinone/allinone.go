@@ -137,19 +137,6 @@ func main() {
 		Name: "DiscardFn",
 	})
 
-	// Reverse construction approach.
-	// dcrd := beam.StartConsumer(ctx, &wg, "discard", nil, &DiscardFn[int]{
-	// 	Name: "DiscardFn",
-	// })
-	// inc := beam.StartConsumer(ctx, &wg, "inc", beam.Wrap(dcrd), &MyIncDoFn{
-	// 	Name: "IncFn",
-	// })
-	// src := beam.StartConsumer(ctx, &wg, "start", beam.Wrap(inc), &SourceFn{
-	// 	Name:  "Source",
-	// 	Count: 10,
-	// })
-
-	// beam.Impulse(src)
 	wg.Wait()
 	fmt.Println("goroutines", runtime.NumGoroutine())
 }

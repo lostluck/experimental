@@ -55,7 +55,6 @@ package beam
 
 import (
 	"context"
-	"fmt"
 	"reflect"
 	"sync"
 	"sync/atomic"
@@ -78,13 +77,13 @@ func (kv *KV[K, V]) Value() V {
 // DFC is the DoFn Context for simple DoFns.
 type DFC[E any] struct {
 	processStarted bool
-	id             string
+	id             int
 
 	upstream   chan msg[E]
-	downstream map[string]processor
+	downstream []processor
 }
 
-func (dfc DFC[E]) identifier() string {
+func (dfc DFC[E]) identifier() int {
 	return dfc.id
 }
 
@@ -144,11 +143,11 @@ func (c DFC[E]) stop() {
 type ElmC struct {
 	elmContext
 
-	pcollections map[string]processor
+	pcollections []processor
 }
 
 type processor interface {
-	identifier() string
+	identifier() int
 	process(elmContext, any)
 	stop()
 }
@@ -158,14 +157,14 @@ func (e *ElmC) EventTime() time.Time {
 }
 
 type Emitter[E any] struct {
-	pcolKey string
+	pcolKey int
 }
 
-func (emt *Emitter[E]) setPColKey(id string) {
+func (emt *Emitter[E]) setPColKey(id int) {
 	emt.pcolKey = id
 }
 
-func (_ *Emitter[E]) newDFC(id string) processor {
+func (_ *Emitter[E]) newDFC(id int) processor {
 	return newDFC[E](id, nil)
 }
 
@@ -173,7 +172,7 @@ var numBuf atomic.Uint32
 
 func init() { numBuf.Store(100) } // See BenchmarkPipe.
 
-func newDFC[E any](id string, ds map[string]processor) DFC[E] {
+func newDFC[E any](id int, ds []processor) DFC[E] {
 	return DFC[E]{
 		id:         id,
 		upstream:   make(chan msg[E], numBuf.Load()),
@@ -182,8 +181,8 @@ func newDFC[E any](id string, ds map[string]processor) DFC[E] {
 }
 
 type emitIface interface {
-	setPColKey(id string)
-	newDFC(id string) processor
+	setPColKey(id int)
+	newDFC(id int) processor
 }
 
 // Emit the element within the current element's context.
@@ -206,7 +205,7 @@ type BundleProc[E any] interface {
 // Forward execution construction from sources to sinks.
 
 func Start() DFC[[]byte] {
-	dfc := newDFC[[]byte]("impulse", nil)
+	dfc := newDFC[[]byte](0, nil)
 	dfc.processStarted = true
 	go func() {
 		dfc.upstream <- msg[[]byte]{
@@ -224,14 +223,14 @@ func Start() DFC[[]byte] {
 func RunDoFn[E any](ctx context.Context, wg *sync.WaitGroup, input processor, prod BundleProc[E]) []processor {
 	dfc := input.(DFC[E])
 
-	procs, downstream := makeEmitters(prod)
-	dfc.downstream = downstream
+	procs := makeEmitters(prod)
+	dfc.downstream = procs
 
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		prod.ProcessBundle(ctx, dfc)
-		for _, p := range downstream {
+		for _, p := range procs {
 			p.stop()
 		}
 	}()
@@ -239,13 +238,12 @@ func RunDoFn[E any](ctx context.Context, wg *sync.WaitGroup, input processor, pr
 	return procs
 }
 
-func makeEmitters(prod any) ([]processor, map[string]processor) {
+func makeEmitters(prod any) []processor {
 	rv := reflect.ValueOf(prod)
 	if rv.Kind() == reflect.Pointer {
 		rv = rv.Elem()
 	}
 	var procs []processor
-	downstream := map[string]processor{}
 	rt := rv.Type()
 	for i := 0; i < rv.NumField(); i++ {
 		fv := rv.Field(i)
@@ -254,80 +252,11 @@ func makeEmitters(prod any) ([]processor, map[string]processor) {
 		}
 		fv = fv.Addr()
 		if emt, ok := fv.Interface().(emitIface); ok {
-			id := fmt.Sprintf("n%d", len(downstream))
+			id := len(procs)
 			emt.setPColKey(id)
 			proc := emt.newDFC(id)
-			downstream[id] = proc
 			procs = append(procs, proc)
 		}
 	}
-	if len(procs) != len(downstream) {
-		panic(fmt.Sprintf("mistmatch between ids and outputs on %T: %v ids, outs %v", prod, len(procs), len(downstream)))
-	}
-	return procs, downstream
-}
-
-// --------------------------------------------------
-// Reverse execution construction from sinks to sources.
-
-// StartConsumer configures any downstream emitters on prepared outputs, and
-// starts the BundleProc's goroutine.
-func StartConsumer[E any](ctx context.Context, wg *sync.WaitGroup, id string, outs []processor, cons BundleProc[E]) DFC[E] {
-	// TODO check type match ups.
-	downstream := setEmitters(cons, outs)
-
-	dfc := newDFC[E](id, downstream)
-	wg.Add(1)
-
-	go func() {
-		defer wg.Done()
-		cons.ProcessBundle(ctx, dfc)
-		for _, p := range downstream {
-			p.stop()
-		}
-	}()
-
-	return dfc
-}
-
-func Wrap(procs ...processor) []processor {
 	return procs
-}
-
-var _ emitIface = &Emitter[int]{}
-
-// Set emitters, initializes the emitters with these ids in this order.
-func setEmitters(cons any, procs []processor) map[string]processor {
-	rv := reflect.ValueOf(cons)
-	if rv.Kind() == reflect.Pointer {
-		rv = rv.Elem()
-	}
-
-	downstream := map[string]processor{}
-	for i := 0; i < rv.NumField(); i++ {
-		fv := rv.Field(i)
-		if !fv.CanAddr() {
-			continue
-		}
-		fv = fv.Addr()
-		if emt, ok := fv.Interface().(emitIface); ok {
-			proc := procs[len(downstream)]
-			emt.setPColKey(proc.identifier())
-			downstream[proc.identifier()] = proc
-		}
-	}
-	if len(procs) != len(downstream) {
-		panic(fmt.Sprintf("mistmatch between ids and outputs on %T: %v ids, outs %v", cons, len(procs), len(downstream)))
-	}
-	return downstream
-}
-
-func Impulse(dfc DFC[[]byte]) {
-	dfc.upstream <- msg[[]byte]{
-		ec: elmContext{
-			eventTime: time.Now(),
-		},
-		elm: []byte{},
-	}
-	close(dfc.upstream)
 }
