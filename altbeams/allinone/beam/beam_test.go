@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"sync"
 	"testing"
-	"time"
 )
 
 type SourceFn struct {
@@ -65,26 +64,26 @@ func TestBuild(t *testing.T) {
 // goarch: amd64
 // pkg: github.com/lostluck/experimental/altbeams/allinone/beam
 // cpu: 12th Gen Intel(R) Core(TM) i7-1260P
-// BenchmarkPipe/fixed_dofns_10_var_buf_0-16         	  331573	      3491 ns/op	       349.0 ns/elm	       0 B/op	       0 allocs/op
-// BenchmarkPipe/fixed_dofns_10_var_buf_1-16         	  434755	      2505 ns/op	       250.0 ns/elm	       0 B/op	       0 allocs/op
-// BenchmarkPipe/fixed_dofns_10_var_buf_10-16        	  880692	      1394 ns/op	       139.0 ns/elm	       0 B/op	       0 allocs/op
-// BenchmarkPipe/fixed_dofns_10_var_buf_100-16       	 2844693	       432.7 ns/op	        43.00 ns/elm	       0 B/op	       0 allocs/op
-// BenchmarkPipe/fixed_dofns_10_var_buf_200-16       	 3171459	       382.1 ns/op	        38.00 ns/elm	       0 B/op	       0 allocs/op
-// BenchmarkPipe/fixed_dofns_10_var_buf_300-16       	 3235420	       368.1 ns/op	        36.00 ns/elm	       0 B/op	       0 allocs/op
-// BenchmarkPipe/fixed_dofns_10_var_buf_500-16       	 3350412	       359.6 ns/op	        35.00 ns/elm	       0 B/op	       0 allocs/op
-// BenchmarkPipe/fixed_dofns_10_var_buf_750-16       	 3263029	       441.0 ns/op	        44.00 ns/elm	       0 B/op	       0 allocs/op
-// BenchmarkPipe/fixed_dofns_10_var_buf_1000-16      	 1761892	       693.1 ns/op	        69.00 ns/elm	       0 B/op	       0 allocs/op
-// BenchmarkPipe/fixed_dofns_10_var_buf_1500-16      	 2617610	       409.1 ns/op	        40.00 ns/elm	       0 B/op	       0 allocs/op
-// BenchmarkPipe/fixed_dofns_10_var_buf_10000-16     	 2949991	       430.1 ns/op	        43.00 ns/elm	       0 B/op	       0 allocs/op
-// BenchmarkPipe/fixed_dofns_10_var_buf_100000-16    	 1672002	       711.9 ns/op	        71.00 ns/elm	       0 B/op	       0 allocs/op
+// BenchmarkPipe/fixed_dofns_10_var_buf_0-16         	  383590	      3304 ns/op	       330.4 ns/elm	       0 B/op	       0 allocs/op
+// BenchmarkPipe/fixed_dofns_10_var_buf_1-16         	  512403	      2311 ns/op	       231.1 ns/elm	       0 B/op	       0 allocs/op
+// BenchmarkPipe/fixed_dofns_10_var_buf_10-16        	 1000000	      1214 ns/op	       121.4 ns/elm	       0 B/op	       0 allocs/op
+// BenchmarkPipe/fixed_dofns_10_var_buf_100-16       	 2955867	       412.5 ns/op	        41.25 ns/elm	       0 B/op	       0 allocs/op
+// BenchmarkPipe/fixed_dofns_10_var_buf_200-16       	 3199198	       375.2 ns/op	        37.52 ns/elm	       0 B/op	       0 allocs/op
+// BenchmarkPipe/fixed_dofns_10_var_buf_300-16       	 3444544	       350.2 ns/op	        35.02 ns/elm	       0 B/op	       0 allocs/op
+// BenchmarkPipe/fixed_dofns_10_var_buf_500-16       	 3316599	       360.2 ns/op	        36.02 ns/elm	       0 B/op	       0 allocs/op
+// BenchmarkPipe/fixed_dofns_10_var_buf_750-16       	 3445196	       531.3 ns/op	        53.13 ns/elm	       0 B/op	       0 allocs/op
+// BenchmarkPipe/fixed_dofns_10_var_buf_1000-16      	 2990779	       366.3 ns/op	        36.62 ns/elm	       0 B/op	       0 allocs/op
+// BenchmarkPipe/fixed_dofns_10_var_buf_1500-16      	 2992812	       404.7 ns/op	        40.47 ns/elm	       0 B/op	       0 allocs/op
+// BenchmarkPipe/fixed_dofns_10_var_buf_10000-16     	 1596625	       730.9 ns/op	        73.09 ns/elm	       0 B/op	       0 allocs/op
+// BenchmarkPipe/fixed_dofns_10_var_buf_100000-16    	 2989074	       400.2 ns/op	        40.02 ns/elm	       0 B/op	       0 allocs/op
 //
-// BenchmarkPipe/var_dofns_0_fixed_buf_100-16        	 9318700	       110.5 ns/op	       110.0 ns/elm	       0 B/op	       0 allocs/op
-// BenchmarkPipe/var_dofns_1_fixed_buf_100-16        	 7519479	       154.1 ns/op	       154.0 ns/elm	       0 B/op	       0 allocs/op
-// BenchmarkPipe/var_dofns_2_fixed_buf_100-16        	 5181753	       238.6 ns/op	       119.0 ns/elm	       0 B/op	       0 allocs/op
-// BenchmarkPipe/var_dofns_3_fixed_buf_100-16        	 4063638	       282.0 ns/op	        94.00 ns/elm	       0 B/op	       0 allocs/op
-// BenchmarkPipe/var_dofns_5_fixed_buf_100-16        	 3542552	       336.5 ns/op	        67.00 ns/elm	       0 B/op	       0 allocs/op
-// BenchmarkPipe/var_dofns_10_fixed_buf_100-16       	 2895020	       413.9 ns/op	        41.00 ns/elm	       0 B/op	       0 allocs/op
-// BenchmarkPipe/var_dofns_100_fixed_buf_100-16      	 1415768	       864.5 ns/op	         8.000 ns/elm	       0 B/op	       0 allocs/op
+// BenchmarkPipe/var_dofns_0_fixed_buf_100-16        	16465645	        72.12 ns/op	        72.12 ns/elm	       0 B/op	       0 allocs/op
+// BenchmarkPipe/var_dofns_1_fixed_buf_100-16        	 7327598	       157.9 ns/op	       157.9 ns/elm	       0 B/op	       0 allocs/op
+// BenchmarkPipe/var_dofns_2_fixed_buf_100-16        	 4987459	       243.0 ns/op	       121.5 ns/elm	       0 B/op	       0 allocs/op
+// BenchmarkPipe/var_dofns_3_fixed_buf_100-16        	 3987898	       290.4 ns/op	        96.79 ns/elm	       0 B/op	       0 allocs/op
+// BenchmarkPipe/var_dofns_5_fixed_buf_100-16        	 3513968	       339.9 ns/op	        67.99 ns/elm	       0 B/op	       0 allocs/op
+// BenchmarkPipe/var_dofns_10_fixed_buf_100-16       	 2932188	       410.9 ns/op	        41.09 ns/elm	       0 B/op	       0 allocs/op
+// BenchmarkPipe/var_dofns_100_fixed_buf_100-16      	 1408825	       854.0 ns/op	         8.540 ns/elm	       0 B/op	       0 allocs/op
 func BenchmarkPipe(b *testing.B) {
 	makeBench := func(numDoFns int, bufSize uint32) func(b *testing.B) {
 		return func(b *testing.B) {
@@ -110,7 +109,7 @@ func BenchmarkPipe(b *testing.B) {
 				div = 1
 			}
 			div = div * b.N
-			b.ReportMetric(float64(d/(time.Duration(div))), "ns/elm")
+			b.ReportMetric(float64(d)/float64(div), "ns/elm")
 		}
 	}
 
