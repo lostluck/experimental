@@ -53,7 +53,7 @@ func (fn *SourceFn) StartBundle(ctx context.Context, bc beam.BundC) error {
 }
 
 func (fn *SourceFn) ProcessElement(ctx context.Context, ec beam.ElmC, _ []byte) error {
-	for i := range fn.Count {
+	for i := 0; i < fn.Count; i++ {
 		fn.processed++
 		fmt.Printf("%v %v\n", fn.Name, i)
 		fn.Output.Emit(ec, i)

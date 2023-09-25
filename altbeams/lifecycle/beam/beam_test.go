@@ -21,7 +21,7 @@ func (fn *SourceFn) StartBundle(ctx context.Context, bc BundC) error {
 }
 
 func (fn *SourceFn) ProcessElement(ctx context.Context, ec ElmC, _ []byte) error {
-	for i := range fn.Count {
+	for i := 0; i < fn.Count; i++ {
 		fn.processed++
 		fn.Output.Emit(ec, i)
 	}
@@ -112,7 +112,7 @@ func BenchmarkPipe(b *testing.B) {
 			p := NewPlan()
 			src := ParDo(ctx, p.Root, &SourceFn{Count: b.N})
 			iden := src
-			for range n {
+			for i := 0; i < n; i++ {
 				iden = ParDo(ctx, iden[0], &IdenFn[int]{})
 			}
 			discard := &DiscardFn[int]{}

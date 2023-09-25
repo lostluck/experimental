@@ -59,7 +59,6 @@ type ElmC struct {
 }
 
 type processor interface {
-	process(elmContext, any) error
 	StartBundle(context.Context) error
 	FinishBundle(context.Context) error
 }
@@ -173,16 +172,6 @@ func (n *node[E]) StartBundle(ctx context.Context) error {
 	return nil
 }
 
-// Process kicks off a root node.
-// In this case, the root nodes are required to be impulses,
-// but in a real system, it would be a DataSource.
-func (n *node[E]) process(ecc elmContext, elm any) error {
-	ec := ElmC{
-		elmContext:   ecc,
-		pcollections: n.pcollections,
-	}
-	return n.fn.ProcessElement(context.TODO(), ec, elm.(E))
-}
 func (n *node[E]) processE(ecc elmContext, elm E) error {
 	ec := ElmC{
 		elmContext:   ecc,
@@ -229,7 +218,7 @@ func makeEmitters(prod any) ([]processor, map[string]processor) {
 	var procs []processor
 	downstream := map[string]processor{}
 	rt := rv.Type()
-	for i := range rv.NumField() {
+	for i := 0; i < rv.NumField(); i++ {
 		fv := rv.Field(i)
 		if !fv.CanAddr() || !rt.Field(i).IsExported() {
 			continue
