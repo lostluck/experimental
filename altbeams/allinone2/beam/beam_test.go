@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"testing"
-	"time"
 
 	"golang.org/x/exp/constraints"
 )
@@ -53,11 +52,12 @@ func (fn *IdenFn[E]) ProcessBundle(ctx context.Context, dfc *DFC[E]) error {
 }
 
 func TestBuild(t *testing.T) {
-	imp := Impulse()
-	src := ParDo(imp, &SourceFn{Count: 10})
-	ParDo(src[0], &DiscardFn[int]{})
-
-	Start(imp)
+	Run(context.TODO(), func(s *Scope) error {
+		imp := Impulse(s)
+		src := ParDo(s, imp, &SourceFn{Count: 10})
+		ParDo(s, src[0], &DiscardFn[int]{})
+		return nil
+	})
 }
 
 // BenchmarkPipe benchmarks along the number of DoFns.
@@ -77,17 +77,18 @@ func BenchmarkPipe(b *testing.B) {
 	makeBench := func(numDoFns int) func(b *testing.B) {
 		return func(b *testing.B) {
 			b.ReportAllocs()
-			imp := Impulse()
-			src := ParDo(imp, &SourceFn{Count: b.N})
-			iden := src
-			for i := 0; i < numDoFns; i++ {
-				iden = ParDo(iden[0], &IdenFn[int]{})
-			}
-			discard := &DiscardFn[int]{}
-			ParDo(iden[0], discard)
-			b.ResetTimer()
 
-			Start(imp)
+			discard := &DiscardFn[int]{}
+			Run(context.TODO(), func(s *Scope) error {
+				imp := Impulse(s)
+				src := ParDo(s, imp, &SourceFn{Count: b.N})
+				iden := src
+				for i := 0; i < numDoFns; i++ {
+					iden = ParDo(s, iden[0], &IdenFn[int]{})
+				}
+				ParDo(s, iden[0], discard)
+				return nil
+			})
 			if discard.processed != b.N {
 				b.Fatalf("processed dodn't match bench number: got %v want %v", discard.processed, b.N)
 			}
@@ -97,7 +98,7 @@ func BenchmarkPipe(b *testing.B) {
 				div = 1
 			}
 			div = div * b.N
-			b.ReportMetric(float64(d/(time.Duration(div))), "ns/elm")
+			b.ReportMetric(float64(d)/float64(div), "ns/elm")
 		}
 	}
 	for _, numDoFns := range []int{0, 1, 2, 3, 5, 10, 100} {
@@ -167,16 +168,18 @@ func (fn *GroupKeyModSum[V]) ProcessBundle(ctx context.Context, dfc *DFC[V]) err
 }
 
 func TestGBKSum(t *testing.T) {
-	imp := Impulse()
-	src := ParDo(imp, &SourceFn{Count: 10})
-	mod := 3
-	keyed := ParDo(src[0], &KeyMod[int]{Mod: mod})
-	grouped := GBK[int, int](keyed[0])
-	sums := ParDo(grouped, &SumByKey[int, int]{})
 
 	discard := &DiscardFn[KV[int, int]]{}
-	ParDo(sums[0], discard)
-	Start(imp)
+	mod := 3
+	Run(context.TODO(), func(s *Scope) error {
+		imp := Impulse(s)
+		src := ParDo(s, imp, &SourceFn{Count: 10})
+		keyed := ParDo(s, src[0], &KeyMod[int]{Mod: mod})
+		grouped := GBK[int, int](s, keyed[0])
+		sums := ParDo(s, grouped, &SumByKey[int, int]{})
+		ParDo(s, sums[0], discard)
+		return nil
+	})
 
 	if got, want := discard.processed, mod; got != want {
 		t.Errorf("got %v, want %v", got, want)
@@ -186,17 +189,16 @@ func TestGBKSum(t *testing.T) {
 func BenchmarkGBKSum_int(b *testing.B) {
 	for _, mod := range []int{2, 3, 5, 10, 100, 1000, 10000} {
 		b.Run(fmt.Sprintf("mod_%v", mod), func(b *testing.B) {
-			imp := Impulse()
-			src := ParDo(imp, &SourceFn{Count: b.N})
-			keyed := ParDo(src[0], &KeyMod[int]{Mod: mod})
-			grouped := GBK[int, int](keyed[0])
-			sums := ParDo(grouped, &SumByKey[int, int]{})
-
 			discard := &DiscardFn[KV[int, int]]{}
-			ParDo(sums[0], discard)
-
-			b.ResetTimer()
-			Start(imp)
+			Run(context.TODO(), func(s *Scope) error {
+				imp := Impulse(s)
+				src := ParDo(s, imp, &SourceFn{Count: b.N})
+				keyed := ParDo(s, src[0], &KeyMod[int]{Mod: mod})
+				grouped := GBK[int, int](s, keyed[0])
+				sums := ParDo(s, grouped, &SumByKey[int, int]{})
+				ParDo(s, sums[0], discard)
+				return nil
+			})
 
 			want := mod
 			if b.N < mod {
@@ -213,15 +215,15 @@ func BenchmarkGBKSum_int(b *testing.B) {
 func BenchmarkGBKSum_Lifted_int(b *testing.B) {
 	for _, mod := range []int{2, 3, 5, 10, 100, 1000, 10000} {
 		b.Run(fmt.Sprintf("mod_%v", mod), func(b *testing.B) {
-			imp := Impulse()
-			src := ParDo(imp, &SourceFn{Count: b.N})
-			keyed := ParDo(src[0], &GroupKeyModSum[int]{Mod: mod})
+
 			discard := &DiscardFn[KV[int, int]]{}
-			ParDo(keyed[0], discard)
-
-			b.ResetTimer()
-			Start(imp)
-
+			Run(context.TODO(), func(s *Scope) error {
+				imp := Impulse(s)
+				src := ParDo(s, imp, &SourceFn{Count: b.N})
+				keyed := ParDo(s, src[0], &GroupKeyModSum[int]{Mod: mod})
+				ParDo(s, keyed[0], discard)
+				return nil
+			})
 			want := mod
 			if b.N < mod {
 				want = b.N

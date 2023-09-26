@@ -8,6 +8,7 @@ package beam
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"reflect"
 	"time"
@@ -174,22 +175,6 @@ type BundleProc[E Elements] interface {
 	ProcessBundle(ctx context.Context, dfc *DFC[E]) error
 }
 
-// --------------------------------------------------
-// Forward execution construction from sources to sinks.
-
-func Impulse() *DFC[[]byte] {
-	return newDFC[[]byte](0, nil)
-}
-
-// ParDo initializes and starts the BundleProc, and prepares inputs for downstream consumers.
-func ParDo[E Elements](input processor, prod BundleProc[E]) []processor {
-	dfc := input.(*DFC[E])
-	dfc.dofn = prod
-	procs := makeEmitters(prod)
-	dfc.downstream = procs
-	return procs
-}
-
 type Iter[V Elements] struct {
 	source func() (V, bool) // source returns true if the element is valid.
 }
@@ -208,8 +193,8 @@ func (it *Iter[V]) All(perElm func(elm V) bool) {
 }
 
 // ParDo initializes and starts the BundleProc, and prepares inputs for downstream consumers.
-func GBK[K Keys, V Elements](input processor) processor {
-	return ParDo(input, &gbk[K, V]{})[0]
+func GBK[K Keys, V Elements](s *Scope, input processor) processor {
+	return ParDo(s, input, &gbk[K, V]{})[0]
 }
 
 // gbk groups by the key type and value type.
@@ -287,4 +272,39 @@ func Start(dfc *DFC[[]byte]) error {
 		return err
 	}
 	return dfc.finish()
+}
+
+// Scope is used for building pipeline graphs.
+//
+// Scope is a hierarchical grouping for composite transforms. Scopes can be
+// enclosed in other scopes and for a tree structure. For pipeline updates,
+// the scope chain form a unique name. The scope chain can also be used for
+// monitoring and visualization purposes.
+type Scope struct {
+	parent *Scope
+
+	root processor
+}
+
+func Impulse(s *Scope) processor {
+	s.root = newDFC[[]byte](0, nil)
+	return s.root
+}
+
+func ParDo[E Elements](s *Scope, input processor, prod BundleProc[E]) []processor {
+	dfc := input.(*DFC[E])
+	dfc.dofn = prod
+	dfc.downstream = makeEmitters(prod)
+	return dfc.downstream
+}
+
+// Run begins executes the pipeline built in the construction function.
+func Run(ctx context.Context, expand func(*Scope) error) error {
+	s := &Scope{parent: nil}
+	if err := expand(s); err != nil {
+		return fmt.Errorf("pipeline construction error:%w", err)
+	}
+
+	// Then use what's in the scope instance to start the pipeline.
+	return Start(s.root.(*DFC[[]byte]))
 }

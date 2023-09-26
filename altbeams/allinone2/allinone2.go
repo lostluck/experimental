@@ -13,7 +13,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"runtime"
 
 	"github.com/lostluck/experimental/altbeams/allinone2/beam"
 )
@@ -122,20 +121,18 @@ func (fn *DiscardFn[E]) ProcessBundle(ctx context.Context, dfc *beam.DFC[E]) err
 }
 
 func main() {
-	ctx := context.Background()
-
-	// Forward Construction approach.
-	imp := beam.Impulse()
-	src := beam.ParDo(ctx, imp, &SourceFn{
-		Name:  "Source",
-		Count: 10,
+	beam.Run(context.TODO(), func(s *beam.Scope) error {
+		imp := beam.Impulse(s)
+		src := beam.ParDo(s, imp, &SourceFn{
+			Name:  "Source",
+			Count: 10,
+		})
+		inc := beam.ParDo(s, src[0], &MyIncDoFn{
+			Name: "IncFn",
+		})
+		beam.ParDo(s, inc[0], &DiscardFn[int]{
+			Name: "DiscardFn",
+		})
+		return nil
 	})
-	inc := beam.ParDo(ctx, src[0], &MyIncDoFn{
-		Name: "IncFn",
-	})
-	beam.ParDo(ctx, inc[0], &DiscardFn[int]{
-		Name: "DiscardFn",
-	})
-	beam.Start(imp)
-	fmt.Println("goroutines", runtime.NumGoroutine())
 }
