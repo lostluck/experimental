@@ -26,7 +26,7 @@ func (fn *SourceFn) ProcessBundle(ctx context.Context, dfc *DFC[[]byte]) error {
 	return nil
 }
 
-type DiscardFn[E Elements] struct {
+type DiscardFn[E Element] struct {
 	processed int
 }
 
@@ -39,7 +39,7 @@ func (fn *DiscardFn[E]) ProcessBundle(ctx context.Context, dfc *DFC[E]) error {
 	return nil
 }
 
-type IdenFn[E Elements] struct {
+type IdenFn[E Element] struct {
 	Output Emitter[E]
 }
 
@@ -145,6 +145,8 @@ type GroupKeyModSum[V constraints.Integer] struct {
 	Mod V
 
 	Output Emitter[KV[V, V]]
+
+	OnBundleFinish
 }
 
 func (fn *GroupKeyModSum[V]) ProcessBundle(ctx context.Context, dfc *DFC[V]) error {
@@ -157,7 +159,7 @@ func (fn *GroupKeyModSum[V]) ProcessBundle(ctx context.Context, dfc *DFC[V]) err
 		return true
 	})
 
-	dfc.FinishBundle(func() error {
+	fn.OnBundleFinish.Do(dfc, func() error {
 		ec := dfc.ToElmC(EOGW) // TODO pull from the window that's been closed.
 		for k, v := range grouped {
 			fn.Output.Emit(ec, KV[V, V]{Key: k, Value: v})
@@ -168,7 +170,6 @@ func (fn *GroupKeyModSum[V]) ProcessBundle(ctx context.Context, dfc *DFC[V]) err
 }
 
 func TestGBKSum(t *testing.T) {
-
 	discard := &DiscardFn[KV[int, int]]{}
 	mod := 3
 	Run(context.TODO(), func(s *Scope) error {

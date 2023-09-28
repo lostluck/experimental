@@ -18,18 +18,18 @@ type Keys interface {
 	comparable
 }
 
-type KV[K Keys, V Elements] struct {
+type KV[K Keys, V Element] struct {
 	Key   K
 	Value V
 }
 
-type Elements interface {
+type Element interface {
 	any // Sadly, can't really restrict this without breaking iterators in GBK results.
 }
 
 // DFC is the DoFn Context for simple DoFns.
-type DFC[E Elements] struct {
-	id int
+type DFC[E Element] struct {
+	id nodeIndex
 
 	dofn       BundleProc[E]
 	downstream []processor
@@ -44,7 +44,7 @@ type elmContext struct {
 	pane      string
 }
 
-func newDFC[E Elements](id int, ds []processor) *DFC[E] {
+func newDFC[E Element](id nodeIndex, ds []processor) *DFC[E] {
 	return &DFC[E]{
 		id:         id,
 		downstream: ds,
@@ -67,7 +67,7 @@ func (c *DFC[E]) Process(perElm func(ec ElmC, elm E) bool) {
 
 // FinishBundle can optionally be called to provide a callback
 // for post bundle tasks.
-func (c *DFC[E]) FinishBundle(finishBundle func() error) {
+func (c *DFC[E]) regBundleFinisher(finishBundle func() error) {
 	if c.finishBundle != nil {
 		panic("FinishBundle called twice")
 	}
@@ -90,8 +90,17 @@ func (c *DFC[E]) ToElmC(eventTime time.Time) ElmC {
 
 // processor allows a uniform type for different generic types.
 type processor interface {
+	update(dofn any, procs []processor)
 	start(ctx context.Context) error
 	finish() error
+}
+
+func (c *DFC[E]) update(dofn any, procs []processor) {
+	if c.dofn != nil {
+		panic(fmt.Sprintf("double updated: dfc %v already has %T, but got %T", c.id, c.dofn, dofn))
+	}
+	c.dofn = dofn.(BundleProc[E])
+	c.downstream = procs
 }
 
 func (c *DFC[E]) processE(ec elmContext, elm E) error {
@@ -142,40 +151,12 @@ func (e *ElmC) EventTime() time.Time {
 	return e.eventTime
 }
 
-type Emitter[E Elements] struct {
-	pcolKey int
-}
-
-type emitIface interface {
-	setPColKey(id int)
-	newDFC(id int) processor
-}
-
-func (emt *Emitter[E]) setPColKey(id int) {
-	emt.pcolKey = id
-}
-
-func (_ *Emitter[E]) newDFC(id int) processor {
-	return newDFC[E](id, nil)
-}
-
-// Emit the element within the current element's context.
-//
-// The ElmC value is sourced from the [DFC.Process] method.
-func (emt Emitter[E]) Emit(ec ElmC, elm E) {
-	// derive the elmContext, and direct the element down to its PCollection handle
-	proc := ec.pcollections[emt.pcolKey]
-
-	dfc := proc.(*DFC[E])
-	dfc.processE(ec.elmContext, elm)
-}
-
 // BundleProc is the only interface that needs to be implemented by most DoFns.
-type BundleProc[E Elements] interface {
+type BundleProc[E Element] interface {
 	ProcessBundle(ctx context.Context, dfc *DFC[E]) error
 }
 
-type Iter[V Elements] struct {
+type Iter[V Element] struct {
 	source func() (V, bool) // source returns true if the element is valid.
 }
 
@@ -193,13 +174,16 @@ func (it *Iter[V]) All(perElm func(elm V) bool) {
 }
 
 // ParDo initializes and starts the BundleProc, and prepares inputs for downstream consumers.
-func GBK[K Keys, V Elements](s *Scope, input processor) processor {
+func GBK[K Keys, V Element](s *Scope, input processor) processor {
+	// TODO, use a real defered gbk edge, instead of the DoFn fake.
 	return ParDo(s, input, &gbk[K, V]{})[0]
 }
 
 // gbk groups by the key type and value type.
-type gbk[K Keys, V Elements] struct {
+type gbk[K Keys, V Element] struct {
 	Output Emitter[KV[K, Iter[V]]]
+
+	OnBundleFinish
 }
 
 var (
@@ -215,7 +199,7 @@ func (fn *gbk[K, V]) ProcessBundle(ctx context.Context, dfc *DFC[KV[K, V]]) erro
 		grouped[elm.Key] = vs
 		return true
 	})
-	dfc.FinishBundle(func() error {
+	fn.OnBundleFinish.Do(dfc, func() error {
 		ec := dfc.ToElmC(EOGW) // TODO pull, from the window that's been closed.
 		for k, vs := range grouped {
 			var i int
@@ -237,32 +221,7 @@ func (fn *gbk[K, V]) ProcessBundle(ctx context.Context, dfc *DFC[KV[K, V]]) erro
 	return nil
 }
 
-func makeEmitters(prod any) []processor {
-	rv := reflect.ValueOf(prod)
-	if rv.Kind() == reflect.Pointer {
-		rv = rv.Elem()
-	}
-	var procs []processor
-	rt := rv.Type()
-	for i := 0; i < rv.NumField(); i++ {
-		fv := rv.Field(i)
-		if !fv.CanAddr() || !rt.Field(i).IsExported() {
-			continue
-		}
-		fv = fv.Addr()
-		if emt, ok := fv.Interface().(emitIface); ok {
-			id := len(procs)
-			emt.setPColKey(id)
-			proc := emt.newDFC(id)
-			procs = append(procs, proc)
-		}
-	}
-	return procs
-}
-
-// --------------------------------------------------
-// Reverse execution construction from sinks to sources.
-func Start(dfc *DFC[[]byte]) error {
+func start(dfc *DFC[[]byte]) error {
 	if err := dfc.start(context.TODO()); err != nil {
 		return err
 	}
@@ -281,30 +240,109 @@ func Start(dfc *DFC[[]byte]) error {
 // the scope chain form a unique name. The scope chain can also be used for
 // monitoring and visualization purposes.
 type Scope struct {
+	name   string
 	parent *Scope
 
 	root processor
+
+	g *graph
 }
 
+func (s *Scope) String() string {
+	if s == nil {
+		return ""
+	}
+	return s.parent.String() + "/" + s.name
+}
+
+type PTuple struct{}
+
+type PCol[E Element] interface {
+	PCollection[E] | PTuple
+}
+
+// func (s *Scope) Expand(subscope string, expand func(s *Scope, input PCollection[E]) error) {
+// 	// ss := &Scope{name: subscope, parent: s, g: g}
+// 	// expand
+// }
+
 func Impulse(s *Scope) processor {
-	s.root = newDFC[[]byte](0, nil)
+	edgeID := s.g.curEdgeIndex()
+	nodeID := s.g.curNodeIndex()
+	s.g.edges = append(s.g.edges, &edgeImpulse{index: edgeID, output: nodeID})
+	s.g.nodes = append(s.g.nodes, &typedNode[[]byte]{index: nodeID, parentEdge: edgeID})
+
+	// This is a fictional input.
+	s.root = newDFC[[]byte](nodeID, nil)
 	return s.root
 }
 
-func ParDo[E Elements](s *Scope, input processor, prod BundleProc[E]) []processor {
+func ParDo[E Element](s *Scope, input processor, dofn BundleProc[E]) []processor {
 	dfc := input.(*DFC[E])
-	dfc.dofn = prod
-	dfc.downstream = makeEmitters(prod)
+
+	edgeID := s.g.curEdgeIndex()
+	ins, outs := s.g.deferDoFn(dofn, dfc.id, edgeID)
+
+	s.g.edges = append(s.g.edges, &edgeDoFn[E]{index: edgeID, dofn: dofn, ins: ins, outs: outs})
+
+	// Probably going away.
+	dfc.dofn = dofn
+	dfc.downstream = makeEmitters(dofn, outs)
 	return dfc.downstream
+}
+
+func makeEmitters(prod any, outs map[string]nodeIndex) []processor {
+	rv := reflect.ValueOf(prod)
+	if rv.Kind() == reflect.Pointer {
+		rv = rv.Elem()
+	}
+	var procs []processor
+	rt := rv.Type()
+	for i := 0; i < rv.NumField(); i++ {
+		fv := rv.Field(i)
+		sf := rt.Field(i)
+		if !fv.CanAddr() || !sf.IsExported() {
+			continue
+		}
+		fv = fv.Addr()
+		if emt, ok := fv.Interface().(emitIface); ok {
+			id := len(procs)
+			emt.setPColKey(id)
+			proc := emt.newDFC(outs[sf.Name])
+			procs = append(procs, proc)
+		}
+	}
+	return procs
 }
 
 // Run begins executes the pipeline built in the construction function.
 func Run(ctx context.Context, expand func(*Scope) error) error {
-	s := &Scope{parent: nil}
+	var g graph
+	s := &Scope{parent: nil, g: &g}
+	g.root = s
+
 	if err := expand(s); err != nil {
 		return fmt.Errorf("pipeline construction error:%w", err)
 	}
 
+	// At this point the graph is complete, and we need to turn serialize/deserialize it
+	// into executing code.
+
+	// Now, we must rebuild it. Make it better, faster, actually executable.
+	roots := g.build()
+	return start(roots[0].(*DFC[[]byte]))
+
+
 	// Then use what's in the scope instance to start the pipeline.
-	return Start(s.root.(*DFC[[]byte]))
+	// return start(s.root.(*DFC[[]byte]))
+}
+
+type PCollection[E Element] struct {
+	id nodeIndex
+
+	g *graph
+}
+
+func ParDoG[E Element](s *Scope, input PCollection[E], prod BundleProc[E]) []processor {
+	return nil
 }

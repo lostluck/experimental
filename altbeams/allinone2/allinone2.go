@@ -21,6 +21,7 @@ type MyDoFn struct {
 	Name string
 
 	Output beam.Emitter[string]
+	beam.OnBundleFinish
 }
 
 func (fn *MyDoFn) ProcessBundle(ctx context.Context, dfc *beam.DFC[string]) error {
@@ -34,7 +35,7 @@ func (fn *MyDoFn) ProcessBundle(ctx context.Context, dfc *beam.DFC[string]) erro
 		fn.Output.Emit(ec, elm)
 	}
 
-	dfc.FinishBundle(func() error {
+	fn.OnBundleFinish.Do(dfc, func() error {
 		// Do some finish bundle work.
 		fmt.Printf("%v finished - %v processsed\n", fn.Name, processed)
 		return nil
@@ -46,6 +47,7 @@ type MyIncDoFn struct {
 	Name string
 
 	Output beam.Emitter[int]
+	beam.OnBundleFinish
 }
 
 func (fn *MyIncDoFn) ProcessBundle(ctx context.Context, dfc *beam.DFC[int]) error {
@@ -60,7 +62,7 @@ func (fn *MyIncDoFn) ProcessBundle(ctx context.Context, dfc *beam.DFC[int]) erro
 		fn.Output.Emit(ec, elm)
 	}
 
-	dfc.FinishBundle(func() error {
+	fn.OnBundleFinish.Do(dfc, func() error {
 		// Do some finish bundle work.
 		fmt.Printf("%v finished - %v processsed\n", fn.Name, processed)
 		return nil
@@ -73,6 +75,7 @@ type SourceFn struct {
 	Count int
 
 	Output beam.Emitter[int]
+	beam.OnBundleFinish
 }
 
 func (fn *SourceFn) ProcessBundle(ctx context.Context, dfc *beam.DFC[[]byte]) error {
@@ -89,7 +92,7 @@ func (fn *SourceFn) ProcessBundle(ctx context.Context, dfc *beam.DFC[[]byte]) er
 		return false
 	})
 
-	dfc.FinishBundle(func() error {
+	fn.OnBundleFinish.Do(dfc, func() error {
 		// Do some finish bundle work.
 		fmt.Printf("%v finished - %v processsed\n", fn.Name, processed)
 		return nil
@@ -99,6 +102,7 @@ func (fn *SourceFn) ProcessBundle(ctx context.Context, dfc *beam.DFC[[]byte]) er
 
 type DiscardFn[E any] struct {
 	Name string
+	beam.OnBundleFinish
 }
 
 func (fn *DiscardFn[E]) ProcessBundle(ctx context.Context, dfc *beam.DFC[E]) error {
@@ -111,7 +115,7 @@ func (fn *DiscardFn[E]) ProcessBundle(ctx context.Context, dfc *beam.DFC[E]) err
 		fmt.Printf("%v %v\n", fn.Name, elm)
 	}
 
-	dfc.FinishBundle(func() error {
+	fn.OnBundleFinish.Do(dfc, func() error {
 		// Do some finish bundle work.
 		fmt.Printf("%v finished - %v processsed\n", fn.Name, processed)
 		return nil
