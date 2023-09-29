@@ -10,7 +10,6 @@ import (
 	"context"
 	"fmt"
 	"math"
-	"reflect"
 	"time"
 )
 
@@ -31,7 +30,7 @@ type Element interface {
 type DFC[E Element] struct {
 	id nodeIndex
 
-	dofn       BundleProc[E]
+	dofn       Transform[E]
 	downstream []processor
 
 	perElm       func(ec ElmC, elm E) bool
@@ -99,7 +98,7 @@ func (c *DFC[E]) update(dofn any, procs []processor) {
 	if c.dofn != nil {
 		panic(fmt.Sprintf("double updated: dfc %v already has %T, but got %T", c.id, c.dofn, dofn))
 	}
-	c.dofn = dofn.(BundleProc[E])
+	c.dofn = dofn.(Transform[E])
 	c.downstream = procs
 }
 
@@ -151,8 +150,8 @@ func (e *ElmC) EventTime() time.Time {
 	return e.eventTime
 }
 
-// BundleProc is the only interface that needs to be implemented by most DoFns.
-type BundleProc[E Element] interface {
+// Transform is the only interface that needs to be implemented by most DoFns.
+type Transform[E Element] interface {
 	ProcessBundle(ctx context.Context, dfc *DFC[E]) error
 }
 
@@ -173,10 +172,10 @@ func (it *Iter[V]) All(perElm func(elm V) bool) {
 	}
 }
 
-// ParDo initializes and starts the BundleProc, and prepares inputs for downstream consumers.
-func GBK[K Keys, V Element](s *Scope, input processor) processor {
+// GBK produces an output PCollection.
+func GBK[K Keys, V Element](s *Scope, input Emitter[KV[K, V]]) Emitter[KV[K, Iter[V]]] {
 	// TODO, use a real defered gbk edge, instead of the DoFn fake.
-	return ParDo(s, input, &gbk[K, V]{})[0]
+	return ParDo(s, input, &gbk[K, V]{}).Output
 }
 
 // gbk groups by the key type and value type.
@@ -243,8 +242,6 @@ type Scope struct {
 	name   string
 	parent *Scope
 
-	root processor
-
 	g *graph
 }
 
@@ -253,66 +250,6 @@ func (s *Scope) String() string {
 		return ""
 	}
 	return s.parent.String() + "/" + s.name
-}
-
-type PTuple struct{}
-
-type PCol[E Element] interface {
-	PCollection[E] | PTuple
-}
-
-// func (s *Scope) Expand(subscope string, expand func(s *Scope, input PCollection[E]) error) {
-// 	// ss := &Scope{name: subscope, parent: s, g: g}
-// 	// expand
-// }
-
-func Impulse(s *Scope) processor {
-	edgeID := s.g.curEdgeIndex()
-	nodeID := s.g.curNodeIndex()
-	s.g.edges = append(s.g.edges, &edgeImpulse{index: edgeID, output: nodeID})
-	s.g.nodes = append(s.g.nodes, &typedNode[[]byte]{index: nodeID, parentEdge: edgeID})
-
-	// This is a fictional input.
-	s.root = newDFC[[]byte](nodeID, nil)
-	return s.root
-}
-
-func ParDo[E Element](s *Scope, input processor, dofn BundleProc[E]) []processor {
-	dfc := input.(*DFC[E])
-
-	edgeID := s.g.curEdgeIndex()
-	ins, outs := s.g.deferDoFn(dofn, dfc.id, edgeID)
-
-	s.g.edges = append(s.g.edges, &edgeDoFn[E]{index: edgeID, dofn: dofn, ins: ins, outs: outs})
-
-	// Probably going away.
-	dfc.dofn = dofn
-	dfc.downstream = makeEmitters(dofn, outs)
-	return dfc.downstream
-}
-
-func makeEmitters(prod any, outs map[string]nodeIndex) []processor {
-	rv := reflect.ValueOf(prod)
-	if rv.Kind() == reflect.Pointer {
-		rv = rv.Elem()
-	}
-	var procs []processor
-	rt := rv.Type()
-	for i := 0; i < rv.NumField(); i++ {
-		fv := rv.Field(i)
-		sf := rt.Field(i)
-		if !fv.CanAddr() || !sf.IsExported() {
-			continue
-		}
-		fv = fv.Addr()
-		if emt, ok := fv.Interface().(emitIface); ok {
-			id := len(procs)
-			emt.setPColKey(id)
-			proc := emt.newDFC(outs[sf.Name])
-			procs = append(procs, proc)
-		}
-	}
-	return procs
 }
 
 // Run begins executes the pipeline built in the construction function.
@@ -331,18 +268,49 @@ func Run(ctx context.Context, expand func(*Scope) error) error {
 	// Now, we must rebuild it. Make it better, faster, actually executable.
 	roots := g.build()
 	return start(roots[0].(*DFC[[]byte]))
-
-
-	// Then use what's in the scope instance to start the pipeline.
-	// return start(s.root.(*DFC[[]byte]))
 }
 
-type PCollection[E Element] struct {
-	id nodeIndex
+func Impulse(s *Scope) Emitter[[]byte] {
+	edgeID := s.g.curEdgeIndex()
+	nodeID := s.g.curNodeIndex()
+	s.g.edges = append(s.g.edges, &edgeImpulse{index: edgeID, output: nodeID})
+	s.g.nodes = append(s.g.nodes, &typedNode[[]byte]{index: nodeID, parentEdge: edgeID})
 
-	g *graph
+	// This is a fictional input.
+	return Emitter[[]byte]{globalIndex: nodeID}
 }
 
-func ParDoG[E Element](s *Scope, input PCollection[E], prod BundleProc[E]) []processor {
-	return nil
+// ParDo takes the users's DoFn and returns the same type for downstream piepline construction.
+//
+// The returned DoFn's emitter fields can then be used as inputs into other DoFns.
+// What if we used Emitters as PCollections directly?
+// Obviously, we'd rename the type PCollection or similar
+// If only to also
+func ParDo[E Element, DF Transform[E]](s *Scope, input Emitter[E], dofn DF) DF {
+	edgeID := s.g.curEdgeIndex()
+	ins, outs := s.g.deferDoFn(dofn, input.globalIndex, edgeID)
+
+	// We do all the expected connections here.
+	// Side inputs, are put on the side input at the DoFn creation time being passed in.
+
+	s.g.edges = append(s.g.edges, &edgeDoFn[E]{index: edgeID, dofn: dofn, ins: ins, outs: outs})
+
+	return dofn
+}
+
+// Composite transforms allow structural re-use of sub pipelines.
+type Composite[O any] interface {
+	Expand(s *Scope) O
+}
+
+func Expand[I Composite[O], O any](s *Scope, name string, comp I) O {
+	// We do all the expected connections here.
+	// Side inputs, are put on the side input at the DoFn creation time being passed in.
+	return comp.Expand(s)
+}
+
+func Flatten[E Element](s *Scope, input Emitter[E], inputs ...Emitter[E]) Emitter[E] {
+	// We do all the expected connections here.
+	// Side inputs, are put on the side input at the DoFn creation time being passed in.
+	return Emitter[E]{}
 }

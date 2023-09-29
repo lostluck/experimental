@@ -55,7 +55,7 @@ func TestBuild(t *testing.T) {
 	Run(context.TODO(), func(s *Scope) error {
 		imp := Impulse(s)
 		src := ParDo(s, imp, &SourceFn{Count: 10})
-		ParDo(s, src[0], &DiscardFn[int]{})
+		ParDo(s, src.Output, &DiscardFn[int]{})
 		return nil
 	})
 }
@@ -82,11 +82,44 @@ func BenchmarkPipe(b *testing.B) {
 			Run(context.TODO(), func(s *Scope) error {
 				imp := Impulse(s)
 				src := ParDo(s, imp, &SourceFn{Count: b.N})
-				iden := src
+				iden := src.Output
 				for i := 0; i < numDoFns; i++ {
-					iden = ParDo(s, iden[0], &IdenFn[int]{})
+					iden = ParDo(s, iden, &IdenFn[int]{}).Output
 				}
-				ParDo(s, iden[0], discard)
+				ParDo(s, iden, discard)
+				return nil
+			})
+			if discard.processed != b.N {
+				b.Fatalf("processed dodn't match bench number: got %v want %v", discard.processed, b.N)
+			}
+			d := b.Elapsed()
+			div := numDoFns
+			if div == 0 {
+				div = 1
+			}
+			div = div * b.N
+			b.ReportMetric(float64(d)/float64(div), "ns/elm")
+		}
+	}
+	for _, numDoFns := range []int{0, 1, 2, 3, 5, 10, 100} {
+		b.Run(fmt.Sprintf("var_dofns_%d", numDoFns), makeBench(numDoFns))
+	}
+}
+
+func BenchmarkMagicPipe(b *testing.B) {
+	makeBench := func(numDoFns int) func(b *testing.B) {
+		return func(b *testing.B) {
+			b.ReportAllocs()
+
+			discard := &DiscardFn[int]{}
+			Run(context.TODO(), func(s *Scope) error {
+				imp := Impulse(s)
+				src := ParDo(s, imp, &SourceFn{Count: b.N})
+				iden := src.Output
+				for i := 0; i < numDoFns; i++ {
+					iden = ParDo(s, iden, &IdenFn[int]{}).Output
+				}
+				ParDo(s, iden, discard)
 				return nil
 			})
 			if discard.processed != b.N {
@@ -175,10 +208,10 @@ func TestGBKSum(t *testing.T) {
 	Run(context.TODO(), func(s *Scope) error {
 		imp := Impulse(s)
 		src := ParDo(s, imp, &SourceFn{Count: 10})
-		keyed := ParDo(s, src[0], &KeyMod[int]{Mod: mod})
-		grouped := GBK[int, int](s, keyed[0])
+		keyed := ParDo(s, src.Output, &KeyMod[int]{Mod: mod})
+		grouped := GBK[int, int](s, keyed.Output)
 		sums := ParDo(s, grouped, &SumByKey[int, int]{})
-		ParDo(s, sums[0], discard)
+		ParDo(s, sums.Output, discard)
 		return nil
 	})
 
@@ -194,10 +227,10 @@ func BenchmarkGBKSum_int(b *testing.B) {
 			Run(context.TODO(), func(s *Scope) error {
 				imp := Impulse(s)
 				src := ParDo(s, imp, &SourceFn{Count: b.N})
-				keyed := ParDo(s, src[0], &KeyMod[int]{Mod: mod})
-				grouped := GBK[int, int](s, keyed[0])
+				keyed := ParDo(s, src.Output, &KeyMod[int]{Mod: mod})
+				grouped := GBK[int, int](s, keyed.Output)
 				sums := ParDo(s, grouped, &SumByKey[int, int]{})
-				ParDo(s, sums[0], discard)
+				ParDo(s, sums.Output, discard)
 				return nil
 			})
 
@@ -221,8 +254,8 @@ func BenchmarkGBKSum_Lifted_int(b *testing.B) {
 			Run(context.TODO(), func(s *Scope) error {
 				imp := Impulse(s)
 				src := ParDo(s, imp, &SourceFn{Count: b.N})
-				keyed := ParDo(s, src[0], &GroupKeyModSum[int]{Mod: mod})
-				ParDo(s, keyed[0], discard)
+				keyed := ParDo(s, src.Output, &GroupKeyModSum[int]{Mod: mod})
+				ParDo(s, keyed.Output, discard)
 				return nil
 			})
 			want := mod

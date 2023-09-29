@@ -90,7 +90,7 @@ func (e *edgeGBK[E]) outputs() map[string]nodeIndex {
 type edgeDoFn[E Element] struct {
 	index edgeIndex
 
-	dofn      BundleProc[E]
+	dofn      Transform[E]
 	ins, outs map[string]nodeIndex
 }
 
@@ -144,12 +144,10 @@ func (g *graph) deferDoFn(dofn any, input nodeIndex, global edgeIndex) (ins, out
 		fv = fv.Addr()
 		if emt, ok := fv.Interface().(emitIface); ok {
 			localIndex := len(outs)
-			emt.setPColKey(localIndex)
-
 			globalIndex := g.curNodeIndex()
+			emt.setPColKey(globalIndex, localIndex)
 			node := emt.newNode(globalIndex, global, g.nodes[input].bounded())
 			g.nodes = append(g.nodes, node)
-
 			outs[sf.Name] = globalIndex
 		}
 	}
@@ -208,7 +206,7 @@ func (g *graph) build() []processor {
 			for name, nodeID := range outs {
 				fv := rv.FieldByName(name)
 				emt := fv.Addr().Interface().(emitIface)
-				emt.setPColKey(len(procs)) // set the output index
+				emt.setPColKey(nodeID, len(procs)) // set the output index
 				proc := emt.newDFC(nodeID)
 				procs = append(procs, proc)
 

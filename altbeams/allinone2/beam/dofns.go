@@ -3,18 +3,20 @@ package beam
 // dofns.go is about the different mix-ins and addons that can be added.
 
 type Emitter[E Element] struct {
+	globalIndex          nodeIndex
 	localDownstreamIndex int
 }
 
 type emitIface interface {
-	setPColKey(id int)
+	setPColKey(global nodeIndex, id int)
 	newDFC(id nodeIndex) processor
 	newNode(global nodeIndex, parent edgeIndex, bounded bool) node
 }
 
 var _ emitIface = (*Emitter[any])(nil)
 
-func (emt *Emitter[E]) setPColKey(id int) {
+func (emt *Emitter[E]) setPColKey(global nodeIndex, id int) {
+	emt.globalIndex = global
 	emt.localDownstreamIndex = id
 }
 
@@ -133,7 +135,7 @@ type TimerProcessing struct{ timer }
 //
 // Triggers, Windowing, CustomWindowFn,
 // Metrics
-// Partition 
+// Partition
 // Flatten
 // GroupIntoBatches (With Sharded Key)
 //
@@ -147,3 +149,7 @@ type TimerProcessing struct{ timer }
 // Preserve Keys, Observe Keys
 //
 // DisplayData, Annotations
+//
+// DoFn Sampler and State Caching
+//
+// logging is slog.

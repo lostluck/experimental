@@ -131,10 +131,10 @@ func main() {
 			Name:  "Source",
 			Count: 10,
 		})
-		inc := beam.ParDo(s, src[0], &MyIncDoFn{
+		inc := beam.ParDo(s, src.Output, &MyIncDoFn{
 			Name: "IncFn",
 		})
-		beam.ParDo(s, inc[0], &DiscardFn[int]{
+		beam.ParDo(s, inc.Output, &DiscardFn[int]{
 			Name: "DiscardFn",
 		})
 		return nil
