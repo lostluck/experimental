@@ -120,15 +120,28 @@ func (fn *ModPartition[V]) ProcessBundle(ctx context.Context, dfc *DFC[V]) error
 	return nil
 }
 
+type WideNarrow struct {
+	Wide int
+
+	In Emitter[int]
+}
+
+var _ = Composite[struct{ Out Emitter[int] }]((*WideNarrow)(nil))
+
+func (src *WideNarrow) Expand(s *Scope) (out struct{ Out Emitter[int] }) {
+	partition := ParDo(s, src.In, &ModPartition[int]{Outputs: make([]Emitter[int], src.Wide)})
+	out.Out = Flatten(s, partition.Outputs...)
+	return out
+}
+
 func TestPartitionFlatten(t *testing.T) {
 	discard := &DiscardFn[int]{}
 	count, mod := 100, 10
 	Run(context.TODO(), func(s *Scope) error {
 		imp := Impulse(s)
 		src := ParDo(s, imp, &SourceFn{Count: count})
-		partition := ParDo(s, src.Output, &ModPartition[int]{Outputs: make([]Emitter[int], mod)})
-		flat := Flatten(s, partition.Outputs...)
-		ParDo(s, flat, discard)
+		exp := Expand(s, "WideNarrow", &WideNarrow{Wide: mod, In: src.Output})
+		ParDo(s, exp.Out, discard)
 		return nil
 	})
 	if discard.processed != count {
@@ -157,9 +170,8 @@ func BenchmarkPartitionPipe(b *testing.B) {
 			Run(context.TODO(), func(s *Scope) error {
 				imp := Impulse(s)
 				src := ParDo(s, imp, &SourceFn{Count: b.N})
-				partition := ParDo(s, src.Output, &ModPartition[int]{Outputs: make([]Emitter[int], numPartitions)})
-				flat := Flatten(s, partition.Outputs...)
-				ParDo(s, flat, discard)
+				exp := Expand(s, "WideNarrow", &WideNarrow{Wide: numPartitions, In: src.Output})
+				ParDo(s, exp.Out, discard)
 				return nil
 			})
 			if discard.processed != b.N {

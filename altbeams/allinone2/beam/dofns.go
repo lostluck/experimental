@@ -5,6 +5,7 @@ package beam
 type Emitter[E Element] struct {
 	globalIndex          nodeIndex
 	localDownstreamIndex int
+	downstream           *DFC[E]
 }
 
 type emitIface interface {
@@ -31,10 +32,8 @@ func (_ *Emitter[E]) newNode(global nodeIndex, parent edgeIndex, bounded bool) n
 // Emit the element within the current element's context.
 //
 // The ElmC value is sourced from the [DFC.Process] method.
-func (emt Emitter[E]) Emit(ec ElmC, elm E) {
-	// derive the elmContext, and direct the element down to its PCollection handle
+func (emt *Emitter[E]) Emit(ec ElmC, elm E) {
 	proc := ec.pcollections[emt.localDownstreamIndex]
-
 	dfc := proc.(*DFC[E])
 	dfc.processE(ec.elmContext, elm)
 }
@@ -90,8 +89,7 @@ func (*AfterBundle) Do(dfc bundleFinalizer, finalizeBundle func() error) {
 }
 
 // How do we make SDFs work as expected with this paradigm, and be more construction time
-// safe. Eg. Require both the marker, and certain methods to be implemented on the DoFn.
-//
+// safe? Eg. Require both the marker, and certain methods to be implemented on the DoFn.
 
 type Restriction interface {
 	Element
@@ -133,18 +131,21 @@ type TimerProcessing struct{ timer }
 
 // what else am I missing?
 //
+// Error and panic propagation.
+//
 // Triggers, Windowing, CustomWindowFn,
 // Metrics
-// Partition
-// Flatten
 // GroupIntoBatches (With Sharded Key)
+// CoGBK
 //
 // CombineFns.
 //
-// CreateAccumulator() A
-// AddInput[I, A](I, A) A
-// MergeAccumulators[A](A, A) A
-// ExtractOutput[A, O](A) O
+//  - CreateAccumulator() A
+//  - AddInput[I, A](I, A) A
+//  - MergeAccumulators[A](A, A) A
+//  - ExtractOutput[A, O](A) O
+//
+//  CoCombine?
 //
 // Preserve Keys, Observe Keys
 //

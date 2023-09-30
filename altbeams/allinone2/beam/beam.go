@@ -322,7 +322,8 @@ type Composite[O any] interface {
 	Expand(s *Scope) O
 }
 
-func Expand[I Composite[O], O any](s *Scope, name string, comp I) O {
+func Expand[I Composite[O], O any](parent *Scope, name string, comp I) O {
+	s := &Scope{name: name, parent: parent, g: parent.g}
 	// We do all the expected connections here.
 	// Side inputs, are put on the side input at the DoFn creation time being passed in.
 	return comp.Expand(s)
