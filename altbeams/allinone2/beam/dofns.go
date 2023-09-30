@@ -5,7 +5,6 @@ package beam
 type Emitter[E Element] struct {
 	globalIndex          nodeIndex
 	localDownstreamIndex int
-	downstream           *DFC[E]
 }
 
 type emitIface interface {
