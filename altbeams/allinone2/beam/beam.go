@@ -108,6 +108,10 @@ func (c *DFC[E]) processE(ec elmContext, elm E) error {
 }
 
 func (c *DFC[E]) start(ctx context.Context) error {
+	// Defend against multiple initializations due to SDK side flattens.
+	if c.perElm != nil {
+		return nil
+	}
 	c.dofn.ProcessBundle(ctx, c)
 	for _, proc := range c.downstream {
 		if err := proc.start(ctx); err != nil {
@@ -128,6 +132,9 @@ func (c *DFC[E]) finish() error {
 			return err
 		}
 	}
+	// Clear away state for re-uses of this bundle plan.
+	c.perElm = nil
+	c.finishBundle = nil
 	return nil
 }
 
@@ -216,6 +223,18 @@ func (fn *gbk[K, V]) ProcessBundle(ctx context.Context, dfc *DFC[KV[K, V]]) erro
 			fn.Output.Emit(ec, out)
 		}
 		return nil
+	})
+	return nil
+}
+
+type flatten[E Element] struct {
+	Output Emitter[E]
+}
+
+func (fn *flatten[E]) ProcessBundle(ctx context.Context, dfc *DFC[E]) error {
+	dfc.Process(func(ec ElmC, elm E) bool {
+		fn.Output.Emit(ec, elm)
+		return true
 	})
 	return nil
 }
@@ -309,8 +328,22 @@ func Expand[I Composite[O], O any](s *Scope, name string, comp I) O {
 	return comp.Expand(s)
 }
 
-func Flatten[E Element](s *Scope, input Emitter[E], inputs ...Emitter[E]) Emitter[E] {
+func Flatten[E Element](s *Scope, inputs ...Emitter[E]) Emitter[E] {
+	edgeID := s.g.curEdgeIndex()
+	nodeID := s.g.curNodeIndex()
+	if s.g.consumers == nil {
+		s.g.consumers = map[nodeIndex][]edgeIndex{}
+	}
+	var ins []nodeIndex
+	for _, emt := range inputs {
+		in := emt.globalIndex
+		ins = append(ins, in)
+		s.g.consumers[in] = append(s.g.consumers[in], edgeID)
+	}
+	s.g.edges = append(s.g.edges, &edgeFlatten[E]{index: edgeID, ins: ins, output: nodeID})
+	s.g.nodes = append(s.g.nodes, &typedNode[E]{index: nodeID, parentEdge: edgeID})
+
 	// We do all the expected connections here.
 	// Side inputs, are put on the side input at the DoFn creation time being passed in.
-	return Emitter[E]{}
+	return Emitter[E]{globalIndex: nodeID}
 }

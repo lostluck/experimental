@@ -51,7 +51,7 @@ func (fn *IdenFn[E]) ProcessBundle(ctx context.Context, dfc *DFC[E]) error {
 	return nil
 }
 
-func TestBuild(t *testing.T) {
+func TestSimple(t *testing.T) {
 	Run(context.TODO(), func(s *Scope) error {
 		imp := Impulse(s)
 		src := ParDo(s, imp, &SourceFn{Count: 10})
@@ -106,8 +106,50 @@ func BenchmarkPipe(b *testing.B) {
 	}
 }
 
-func BenchmarkMagicPipe(b *testing.B) {
-	makeBench := func(numDoFns int) func(b *testing.B) {
+type ModPartition[V constraints.Integer] struct {
+	Outputs []Emitter[V] // The count needs to be properly serialized, ultimately.
+}
+
+func (fn *ModPartition[V]) ProcessBundle(ctx context.Context, dfc *DFC[V]) error {
+	mod := V(len(fn.Outputs))
+	dfc.Process(func(ec ElmC, elm V) bool {
+		rem := elm % mod
+		fn.Outputs[rem].Emit(ec, elm)
+		return true
+	})
+	return nil
+}
+
+func TestPartitionFlatten(t *testing.T) {
+	discard := &DiscardFn[int]{}
+	count, mod := 100, 10
+	Run(context.TODO(), func(s *Scope) error {
+		imp := Impulse(s)
+		src := ParDo(s, imp, &SourceFn{Count: count})
+		partition := ParDo(s, src.Output, &ModPartition[int]{Outputs: make([]Emitter[int], mod)})
+		flat := Flatten(s, partition.Outputs...)
+		ParDo(s, flat, discard)
+		return nil
+	})
+	if discard.processed != count {
+		t.Fatalf("processed dodn't match bench number: got %v want %v", discard.processed, count)
+	}
+}
+
+// BenchmarkPartitionPipe benchmarks dispatch across arbitrary partioning, and a flatten.
+//
+// goos: linux
+// goarch: amd64
+// pkg: github.com/lostluck/experimental/altbeams/allinone2/beam
+// cpu: 12th Gen Intel(R) Core(TM) i7-1260P
+// BenchmarkPartitionPipe/num_partitions_1-16         	26054823	        45.68 ns/op	       0 B/op	       0 allocs/op
+// BenchmarkPartitionPipe/num_partitions_2-16         	25842020	        45.76 ns/op	       0 B/op	       0 allocs/op
+// BenchmarkPartitionPipe/num_partitions_3-16         	26205663	        45.62 ns/op	       0 B/op	       0 allocs/op
+// BenchmarkPartitionPipe/num_partitions_5-16         	26325379	        45.63 ns/op	       0 B/op	       0 allocs/op
+// BenchmarkPartitionPipe/num_partitions_10-16        	26314922	        45.64 ns/op	       0 B/op	       0 allocs/op
+// BenchmarkPartitionPipe/num_partitions_100-16       	26035390	        45.79 ns/op	       0 B/op	       0 allocs/op
+func BenchmarkPartitionPipe(b *testing.B) {
+	makeBench := func(numPartitions int) func(b *testing.B) {
 		return func(b *testing.B) {
 			b.ReportAllocs()
 
@@ -115,27 +157,18 @@ func BenchmarkMagicPipe(b *testing.B) {
 			Run(context.TODO(), func(s *Scope) error {
 				imp := Impulse(s)
 				src := ParDo(s, imp, &SourceFn{Count: b.N})
-				iden := src.Output
-				for i := 0; i < numDoFns; i++ {
-					iden = ParDo(s, iden, &IdenFn[int]{}).Output
-				}
-				ParDo(s, iden, discard)
+				partition := ParDo(s, src.Output, &ModPartition[int]{Outputs: make([]Emitter[int], numPartitions)})
+				flat := Flatten(s, partition.Outputs...)
+				ParDo(s, flat, discard)
 				return nil
 			})
 			if discard.processed != b.N {
 				b.Fatalf("processed dodn't match bench number: got %v want %v", discard.processed, b.N)
 			}
-			d := b.Elapsed()
-			div := numDoFns
-			if div == 0 {
-				div = 1
-			}
-			div = div * b.N
-			b.ReportMetric(float64(d)/float64(div), "ns/elm")
 		}
 	}
-	for _, numDoFns := range []int{0, 1, 2, 3, 5, 10, 100} {
-		b.Run(fmt.Sprintf("var_dofns_%d", numDoFns), makeBench(numDoFns))
+	for _, numDoFns := range []int{1, 2, 3, 5, 10, 100} {
+		b.Run(fmt.Sprintf("num_partitions_%d", numDoFns), makeBench(numDoFns))
 	}
 }
 

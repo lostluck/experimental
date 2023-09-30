@@ -3,6 +3,8 @@ package beam
 import (
 	"fmt"
 	"reflect"
+	"strconv"
+	"strings"
 )
 
 // graph.go holds the structures for the deferred processing graph.
@@ -112,6 +114,54 @@ func (e *edgeDoFn[E]) bundleProc() any {
 	return e.dofn
 }
 
+var _ = bundleProcer((*edgeDoFn[int])(nil))
+
+// edgeFlatten represents a Flatten transform.
+type edgeFlatten[E Element] struct {
+	index edgeIndex
+
+	ins    []nodeIndex
+	output nodeIndex
+
+	// exec build time instances.
+	instance *flatten[E]
+	procs    []processor
+}
+
+// inputs for flattens are plural
+func (e *edgeFlatten[E]) inputs() map[string]nodeIndex {
+	ins := map[string]nodeIndex{}
+	for i, input := range e.ins {
+		ins[fmt.Sprintf("i%d", i)] = input
+	}
+	return ins
+}
+
+// outputs for Flattens are one.
+func (e *edgeFlatten[E]) outputs() map[string]nodeIndex {
+	return map[string]nodeIndex{"o0": e.output}
+}
+
+func (e *edgeFlatten[E]) flatten() (any, []processor, bool) {
+	var first bool
+	if e.instance == nil {
+		first = true
+		e.instance = &flatten[E]{
+			Output: Emitter[E]{globalIndex: e.output},
+		}
+		e.procs = []processor{e.instance.Output.newDFC(e.output)}
+	}
+	return e.instance, e.procs, first
+}
+
+type flattener interface {
+	multiEdge
+	// Returns the flatten instance, the downstream processors, and if this was the first call to dedup setting downstream consumers
+	flatten() (any, []processor, bool)
+}
+
+var _ = flattener((*edgeFlatten[int])(nil))
+
 func (g *graph) curNodeIndex() nodeIndex {
 	return nodeIndex(len(g.nodes))
 }
@@ -131,9 +181,10 @@ func (g *graph) deferDoFn(dofn any, input nodeIndex, global edgeIndex) (ins, out
 	}
 	ins = map[string]nodeIndex{
 		"parallel": input,
-		// TODO, side inputs
+		// TODO, side inputs.
 	}
 	outs = map[string]nodeIndex{}
+	efaceRT := reflect.TypeOf((*emitIface)(nil)).Elem()
 	rt := rv.Type()
 	for i := 0; i < rv.NumField(); i++ {
 		fv := rv.Field(i)
@@ -141,17 +192,41 @@ func (g *graph) deferDoFn(dofn any, input nodeIndex, global edgeIndex) (ins, out
 		if !fv.CanAddr() || !sf.IsExported() {
 			continue
 		}
-		fv = fv.Addr()
-		if emt, ok := fv.Interface().(emitIface); ok {
-			localIndex := len(outs)
-			globalIndex := g.curNodeIndex()
-			emt.setPColKey(globalIndex, localIndex)
-			node := emt.newNode(globalIndex, global, g.nodes[input].bounded())
-			g.nodes = append(g.nodes, node)
-			outs[sf.Name] = globalIndex
+		switch sf.Type.Kind() {
+		case reflect.Array, reflect.Slice:
+			// Should we also allow for maps? Holy shit, we could also allow for maps....
+			ptrEt := reflect.PointerTo(sf.Type.Elem())
+			if !ptrEt.Implements(efaceRT) {
+				continue
+			}
+			// Slice or Array
+			for j := 0; j < fv.Len(); j++ {
+				fvj := fv.Index(j).Addr()
+				g.initEmitter(fvj.Interface().(emitIface), global, input, fmt.Sprintf("%s%%%d", sf.Name, j), outs)
+			}
+		case reflect.Struct:
+			fv = fv.Addr()
+			if emt, ok := fv.Interface().(emitIface); ok {
+				g.initEmitter(emt, global, input, sf.Name, outs)
+			}
+			// TODO side inputs
+		case reflect.Chan:
+			panic("field %v is a channel")
+		default:
+			// Don't do anything with pointers, or other types.
+
 		}
 	}
 	return ins, outs
+}
+
+func (g *graph) initEmitter(emt emitIface, global edgeIndex, input nodeIndex, name string, outs map[string]nodeIndex) {
+	localIndex := len(outs)
+	globalIndex := g.curNodeIndex()
+	emt.setPColKey(globalIndex, localIndex)
+	node := emt.newNode(globalIndex, global, g.nodes[input].bounded())
+	g.nodes = append(g.nodes, node)
+	outs[name] = globalIndex
 }
 
 // build returns the root processors
@@ -202,9 +277,22 @@ func (g *graph) build() []processor {
 				rv = rv.Elem()
 			}
 			var procs []processor // Needs to be set on the incoming DFC.
-			outs := e.outputs()
-			for name, nodeID := range outs {
-				fv := rv.FieldByName(name)
+			for name, nodeID := range e.outputs() {
+				splitName := strings.Split(name, "%")
+				var fv reflect.Value
+				switch len(splitName) {
+				case 1:
+					fv = rv.FieldByName(name)
+				case 2:
+					fv = rv.FieldByName(splitName[0])
+					fid, err := strconv.Atoi(splitName[1])
+					if err != nil {
+						panic(err)
+					}
+					fv = fv.Index(fid)
+				default:
+					panic("unexpected name value")
+				}
 				emt := fv.Addr().Interface().(emitIface)
 				emt.setPColKey(nodeID, len(procs)) // set the output index
 				proc := emt.newDFC(nodeID)
@@ -217,9 +305,22 @@ func (g *graph) build() []processor {
 			}
 			// Needs to be set on the incoming DFC.
 			c.input.update(dofn, procs)
-
+		case flattener: // Can't type assert generic types.
+			// The same flatten edge will be re-invoked multiple times, once for each input node.
+			// But those nodes just need to point to the same dofn instance, and outputs
+			dofn, procs, first := e.flatten()
+			c.input.update(dofn, procs)
+			if first {
+				// There's only one, so the loop is the best way out.
+				for _, nodeID := range e.outputs() {
+					for _, v := range g.consumers[nodeID] {
+						stack = append(stack, consumer{input: procs[0], edge: g.edges[v]})
+					}
+					break
+				}
+			}
 		default:
-			// skip non-roots
+			panic(fmt.Sprintf("unknown edge type %#v", e))
 		}
 	}
 	return roots
