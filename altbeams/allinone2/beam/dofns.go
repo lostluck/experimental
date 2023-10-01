@@ -1,8 +1,17 @@
 package beam
 
+import "fmt"
+
 // dofns.go is about the different mix-ins and addons that can be added.
 
+// Emitter represents an output of a DoFn.
+//
+// At pipeline construction time, they represent an output PCollection, and
+// can be connected as an input to downstream DoFns. At pipeline execution
+// time, they are used in a ProcessBundle method to emit outputs and pass along
+// per element context, such as the EventTime and Window.
 type Emitter[E Element] struct {
+	valid                bool
 	globalIndex          nodeIndex
 	localDownstreamIndex int
 }
@@ -16,6 +25,7 @@ type emitIface interface {
 var _ emitIface = (*Emitter[any])(nil)
 
 func (emt *Emitter[E]) setPColKey(global nodeIndex, id int) {
+	emt.valid = true
 	emt.globalIndex = global
 	emt.localDownstreamIndex = id
 }
@@ -60,15 +70,59 @@ func (*ObserveWindow) Get(ec ElmC) any {
 // Below here are Not Yet Implemented field flavours. //
 ////////////////////////////////////////////////////////
 
-type sideInput struct{}
+type sideInputCommon struct {
+	valid  bool
+	global nodeIndex
+}
 
-func (*sideInput) isSideInput() {}
+func (si *sideInputCommon) sideInput() nodeIndex {
+	return si.global
+}
 
-type sideIface interface{ isSideInput() }
+type sideIface interface{ sideInput() nodeIndex }
 
-type IterSideInput[E Element] struct{ sideInput }
+type IterSideInput[E Element] struct{ sideInputCommon }
 
-type MapSideInput[E Element] struct{ sideInput }
+var _ sideIface = &IterSideInput[int]{}
+
+func (si *IterSideInput[E]) All(ec ElmC) func(perElm func(elm E) bool) {
+	return func(perElm func(elm E) bool) {
+		panic("uninitialized side input iterator")
+	}
+}
+
+func validateSideInput[E any](emt Emitter[E]) {
+	if !emt.valid {
+		panic("emitter is invalid")
+	}
+	var e E
+	if isUnencodable(e) {
+		panic(fmt.Sprintf("type %T cannot be used as a side input value", e))
+	}
+}
+
+// AsSideIter initializes an IterSideInput from a valid upstream Emitter.
+// It allows access to the data of that Emitter's PCollection,
+func AsSideIter[E Element](emt Emitter[E]) IterSideInput[E] {
+	validateSideInput(emt)
+	return IterSideInput[E]{sideInputCommon{true, emt.globalIndex}}
+}
+
+// MapSideInput allows a side input to be accessed via key lookups.
+type MapSideInput[K Keys, V Element] struct{ sideInputCommon }
+
+var _ sideIface = &MapSideInput[int, int]{}
+
+// Get looks up an iterator of values associated with the key.
+func (si *MapSideInput[K, V]) Get(ec ElmC, k K) Iter[V] {
+	return Iter[V]{source: nil}
+}
+
+// AsSideMap initializes a MapSideInput from a valid upstream Emitter.
+func AsSideMap[K Keys, V Element](emt Emitter[KV[K, V]]) MapSideInput[K, V] {
+	validateSideInput(emt)
+	return MapSideInput[K, V]{sideInputCommon{true, emt.globalIndex}}
+}
 
 // AfterBundle allows a DoFn to register a function that runs after
 // the bundle has been durably committed. Emiting elements here will fail.

@@ -92,8 +92,9 @@ func (e *edgeGBK[E]) outputs() map[string]nodeIndex {
 type edgeDoFn[E Element] struct {
 	index edgeIndex
 
-	dofn      Transform[E]
-	ins, outs map[string]nodeIndex
+	dofn       Transform[E]
+	ins, outs  map[string]nodeIndex
+	parallelIn nodeIndex
 }
 
 func (e *edgeDoFn[E]) inputs() map[string]nodeIndex {
@@ -108,13 +109,18 @@ func (e *edgeDoFn[E]) outputs() map[string]nodeIndex {
 type bundleProcer interface {
 	multiEdge
 	bundleProc() any
+	parallelInput() nodeIndex
 }
 
 func (e *edgeDoFn[E]) bundleProc() any {
 	return e.dofn
 }
 
-var _ = bundleProcer((*edgeDoFn[int])(nil))
+func (e *edgeDoFn[E]) parallelInput() nodeIndex {
+	return e.parallelIn
+}
+
+var _ bundleProcer = (*edgeDoFn[int])(nil)
 
 // edgeFlatten represents a Flatten transform.
 type edgeFlatten[E Element] struct {
@@ -160,7 +166,7 @@ type flattener interface {
 	flatten() (any, []processor, bool)
 }
 
-var _ = flattener((*edgeFlatten[int])(nil))
+var _ flattener = (*edgeFlatten[int])(nil)
 
 func (g *graph) curNodeIndex() nodeIndex {
 	return nodeIndex(len(g.nodes))
@@ -209,6 +215,10 @@ func (g *graph) deferDoFn(dofn any, input nodeIndex, global edgeIndex) (ins, out
 			if emt, ok := fv.Interface().(emitIface); ok {
 				g.initEmitter(emt, global, input, sf.Name, outs)
 			}
+			if si, ok := fv.Interface().(sideIface); ok {
+				fmt.Println("initialising side intput: ", si, global, sf.Name, ins)
+				g.initSideInput(si, global, sf.Name, ins)
+			}
 			// TODO side inputs
 		case reflect.Chan:
 			panic("field %v is a channel")
@@ -227,6 +237,13 @@ func (g *graph) initEmitter(emt emitIface, global edgeIndex, input nodeIndex, na
 	node := emt.newNode(globalIndex, global, g.nodes[input].bounded())
 	g.nodes = append(g.nodes, node)
 	outs[name] = globalIndex
+}
+
+func (g *graph) initSideInput(si sideIface, global edgeIndex, name string, ins map[string]nodeIndex) {
+	globalIndex := si.sideInput()
+	// Put into a special side input consumers list?
+	g.consumers[globalIndex] = append(g.consumers[globalIndex], global)
+	ins[name] = globalIndex
 }
 
 // build returns the root processors
@@ -253,6 +270,23 @@ func (g *graph) build() []processor {
 			panic(fmt.Sprintf("\ncur consumer %#v\nstack %#v\nroots %v\ngraph %#v\noriginal panic: %v", c, stack, roots, g, e))
 		}
 	}()
+	addConsumers := func(proc processor, nodeID nodeIndex) {
+		consumers := g.consumers[nodeID]
+		switch n := len(consumers); n {
+		case 0:
+			proc.discard()
+		case 1:
+			// Easiest way to get a single value out of a map is to iterate.
+			for _, v := range consumers {
+				stack = append(stack, consumer{input: proc, edge: g.edges[v]})
+			}
+		default:
+			procs := proc.multiplex(n)
+			for i, v := range consumers {
+				stack = append(stack, consumer{input: procs[i], edge: g.edges[v]})
+			}
+		}
+	}
 	for {
 		if len(stack) == 0 {
 			break
@@ -264,17 +298,35 @@ func (g *graph) build() []processor {
 		case *edgeImpulse:
 			imp := newDFC[[]byte](e.output, nil)
 			roots = append(roots, imp)
-
-			// TODO add the multiplexing logic.
-			for _, v := range g.consumers[e.output] {
-				stack = append(stack, consumer{input: imp, edge: g.edges[v]})
-			}
+			addConsumers(imp, e.output)
 		case bundleProcer: // Can't type assert generic types.
 			dofn := e.bundleProc()
 
 			rv := reflect.ValueOf(dofn)
 			if rv.Kind() == reflect.Pointer {
 				rv = rv.Elem()
+			}
+			// Check if this is a side input. If so, only the p
+			if e.parallelInput() != c.input.pcollection() {
+				// Find the side input with which this input is associated
+				var siFieldName string
+				for name, nodeID := range e.inputs() {
+					fmt.Println("name", name, "input", nodeID, "parallelInput:", e.parallelInput() == nodeID)
+					if nodeID == c.input.pcollection() {
+						siFieldName = name
+						break
+					}
+				}
+				fv := rv.FieldByName(siFieldName)
+				si := fv.Addr().Interface().(sideIface)
+
+				si.sideInput()
+
+				// We now have the side input and the field that it's accessed from.
+				// We need to pass this notion to the edgeDoFn, and update the received input
+				// with a buffer that is connected to a "wait" for the primary input, so the 
+				// buffers can notify the wait when they have their inputs.
+
 			}
 			var procs []processor // Needs to be set on the incoming DFC.
 			for name, nodeID := range e.outputs() {
@@ -298,12 +350,9 @@ func (g *graph) build() []processor {
 				proc := emt.newDFC(nodeID)
 				procs = append(procs, proc)
 
-				// Need to add to consumer stack
-				for _, v := range g.consumers[nodeID] {
-					stack = append(stack, consumer{input: proc, edge: g.edges[v]})
-				}
+				addConsumers(proc, nodeID)
 			}
-			// Needs to be set on the incoming DFC.
+			// If this is the parallel input, the dofn needs to be set on the incoming DFC.
 			c.input.update(dofn, procs)
 		case flattener: // Can't type assert generic types.
 			// The same flatten edge will be re-invoked multiple times, once for each input node.
@@ -313,9 +362,7 @@ func (g *graph) build() []processor {
 			if first {
 				// There's only one, so the loop is the best way out.
 				for _, nodeID := range e.outputs() {
-					for _, v := range g.consumers[nodeID] {
-						stack = append(stack, consumer{input: procs[0], edge: g.edges[v]})
-					}
+					addConsumers(procs[0], nodeID)
 					break
 				}
 			}

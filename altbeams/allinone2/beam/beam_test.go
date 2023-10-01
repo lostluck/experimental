@@ -27,14 +27,24 @@ func (fn *SourceFn) ProcessBundle(ctx context.Context, dfc *DFC[[]byte]) error {
 }
 
 type DiscardFn[E Element] struct {
-	processed int
+	start, processed, finished int
+
+	OnBundleFinish
 }
 
 func (fn *DiscardFn[E]) ProcessBundle(ctx context.Context, dfc *DFC[E]) error {
 	fn.processed = 0
+	fn.start++
 	dfc.Process(func(ec ElmC, elm E) bool {
 		fn.processed++
 		return true
+	})
+	fn.OnBundleFinish.Do(dfc, func() error {
+		fn.finished++
+		if fn.finished > fn.start {
+			return fmt.Errorf("DiscardFn finished more times than started: %v > %v", fn.finished, fn.start)
+		}
+		return nil
 	})
 	return nil
 }
@@ -60,6 +70,15 @@ func TestSimple(t *testing.T) {
 	})
 }
 
+func TestAutomaticDiscard(t *testing.T) {
+	Run(context.TODO(), func(s *Scope) error {
+		imp := Impulse(s)
+		ParDo(s, imp, &SourceFn{Count: 10})
+		// drop the output.
+		return nil
+	})
+}
+
 // BenchmarkPipe benchmarks along the number of DoFns.
 //
 // goos: linux
@@ -79,7 +98,7 @@ func BenchmarkPipe(b *testing.B) {
 			b.ReportAllocs()
 
 			discard := &DiscardFn[int]{}
-			Run(context.TODO(), func(s *Scope) error {
+			if err := Run(context.TODO(), func(s *Scope) error {
 				imp := Impulse(s)
 				src := ParDo(s, imp, &SourceFn{Count: b.N})
 				iden := src.Output
@@ -88,9 +107,14 @@ func BenchmarkPipe(b *testing.B) {
 				}
 				ParDo(s, iden, discard)
 				return nil
-			})
+			}); err != nil {
+				b.Errorf("Run error: %v", err)
+			}
 			if discard.processed != b.N {
-				b.Fatalf("processed dodn't match bench number: got %v want %v", discard.processed, b.N)
+				b.Fatalf("processed didn't match bench number: got %v want %v", discard.processed, b.N)
+			}
+			if discard.finished != 1 {
+				b.Fatalf("finished didn't match bundle counter: got %v want %v", discard.finished, 1)
 			}
 			d := b.Elapsed()
 			div := numDoFns
@@ -126,7 +150,7 @@ type WideNarrow struct {
 	In Emitter[int]
 }
 
-var _ = Composite[struct{ Out Emitter[int] }]((*WideNarrow)(nil))
+var _ Composite[struct{ Out Emitter[int] }] = ((*WideNarrow)(nil))
 
 func (src *WideNarrow) Expand(s *Scope) (out struct{ Out Emitter[int] }) {
 	partition := ParDo(s, src.In, &ModPartition[int]{Outputs: make([]Emitter[int], src.Wide)})
@@ -146,6 +170,9 @@ func TestPartitionFlatten(t *testing.T) {
 	})
 	if discard.processed != count {
 		t.Fatalf("processed dodn't match bench number: got %v want %v", discard.processed, count)
+	}
+	if discard.finished != 1 {
+		t.Fatalf("finished didn't match bundle countr: got %v want %v", discard.finished, 1)
 	}
 }
 
@@ -209,7 +236,7 @@ type SumByKey[K Keys, V constraints.Integer | constraints.Float] struct {
 func (fn *SumByKey[K, V]) ProcessBundle(ctx context.Context, dfc *DFC[KV[K, Iter[V]]]) error {
 	dfc.Process(func(ec ElmC, elm KV[K, Iter[V]]) bool {
 		var sum V
-		elm.Value.All(func(elm V) bool {
+		elm.Value.All()(func(elm V) bool {
 			sum += elm
 			return true
 		})
@@ -312,5 +339,88 @@ func BenchmarkGBKSum_Lifted_int(b *testing.B) {
 				b.Errorf("got %v, want %v", got, want)
 			}
 		})
+	}
+}
+
+func TestTwoSubGraphs(t *testing.T) {
+	discard1, discard2 := &DiscardFn[int]{}, &DiscardFn[int]{}
+	count := 10
+	Run(context.TODO(), func(s *Scope) error {
+		imp1, imp2 := Impulse(s), Impulse(s)
+		src1, src2 := ParDo(s, imp1, &SourceFn{Count: 10}), ParDo(s, imp2, &SourceFn{Count: count})
+		ParDo(s, src1.Output, discard1)
+		ParDo(s, src2.Output, discard2)
+		return nil
+	})
+
+	if got, want := discard1.processed, count; got != want {
+		t.Errorf("discard1 got %v, want %v", got, want)
+	}
+	if got, want := discard2.processed, count; got != want {
+		t.Errorf("discard2 got %v, want %v", got, want)
+	}
+	if discard1.finished != 1 {
+		t.Fatalf("finished didn't match bundle counter: got %v want %v", discard1.finished, 1)
+	}
+	if discard2.finished != 1 {
+		t.Fatalf("finished didn't match bundle counter: got %v want %v", discard1.finished, 1)
+	}
+}
+
+func TestMultiplex(t *testing.T) {
+	discard1, discard2 := &DiscardFn[int]{}, &DiscardFn[int]{}
+	count := 10
+	Run(context.TODO(), func(s *Scope) error {
+		imp := Impulse(s)
+		src1, src2 := ParDo(s, imp, &SourceFn{Count: 10}), ParDo(s, imp, &SourceFn{Count: count})
+		ParDo(s, src1.Output, discard1)
+		ParDo(s, src2.Output, discard2)
+		return nil
+	})
+
+	if got, want := discard1.processed, count; got != want {
+		t.Errorf("discard1 got %v, want %v", got, want)
+	}
+	if got, want := discard2.processed, count; got != want {
+		t.Errorf("discard2 got %v, want %v", got, want)
+	}
+	if discard1.finished != 1 {
+		t.Fatalf("finished didn't match bundle counter: got %v want %v", discard1.finished, 1)
+	}
+	if discard2.finished != 1 {
+		t.Fatalf("finished didn't match bundle counter: got %v want %v", discard1.finished, 1)
+	}
+}
+
+type OnlySideIter[E Element] struct {
+	Side IterSideInput[E]
+
+	Out Emitter[E]
+}
+
+func (fn *OnlySideIter[E]) ProcessBundle(ctx context.Context, dfc *DFC[[]byte]) error {
+	dfc.Process(func(ec ElmC, elm []byte) bool {
+		fn.Side.All(ec)(func(elm E) bool {
+			fn.Out.Emit(ec, elm)
+			return true
+		})
+		return true
+	})
+	return nil
+}
+
+func TestSideInputIter(t *testing.T) {
+	t.Skip("currently insufficiently implemented")
+	discard := &DiscardFn[int]{}
+	Run(context.TODO(), func(s *Scope) error {
+		imp := Impulse(s)
+		src := ParDo(s, imp, &SourceFn{Count: 10})
+		onlySide := ParDo(s, imp, &OnlySideIter[int]{Side: AsSideIter(src.Output)})
+		ParDo(s, onlySide.Out, discard)
+		return nil
+	})
+
+	if got, want := discard.processed, 10; got != want {
+		t.Errorf("got %v, want %v", got, want)
 	}
 }

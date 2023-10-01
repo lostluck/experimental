@@ -52,15 +52,21 @@ func newDFC[E Element](id nodeIndex, ds []processor) *DFC[E] {
 
 // Process is what the user calls to handle the bundle of elements.
 //
+// Per the issued FAQ, probably won't make process loop compatible,
+// since it's going to cause issues with error returns and similar.
+//
 //	for ec := range dfc.Process {
 //	    // Do some processing with ec.Elm()
 //	}
 //
 // Process can't return a function since we can't reprocess bundle data.
+//
+// TODO
 func (c *DFC[E]) Process(perElm func(ec ElmC, elm E) bool) {
 	if c.perElm != nil {
 		panic("Process called twice")
 	}
+	// TODO obesrved windows can have a wrapper set to do the downstream explode.
 	c.perElm = perElm
 }
 
@@ -89,9 +95,19 @@ func (c *DFC[E]) ToElmC(eventTime time.Time) ElmC {
 
 // processor allows a uniform type for different generic types.
 type processor interface {
+	pcollection() nodeIndex // The pcollection to be processed.
 	update(dofn any, procs []processor)
+	discard()
+	multiplex(int) []processor
+
 	start(ctx context.Context) error
 	finish() error
+}
+
+var _ processor = &DFC[int]{}
+
+func (c *DFC[E]) pcollection() nodeIndex {
+	return c.id
 }
 
 func (c *DFC[E]) update(dofn any, procs []processor) {
@@ -102,9 +118,27 @@ func (c *DFC[E]) update(dofn any, procs []processor) {
 	c.downstream = procs
 }
 
-func (c *DFC[E]) processE(ec elmContext, elm E) error {
-	c.perElm(ElmC{ec, c.downstream}, elm)
-	return nil
+func (c *DFC[E]) discard() {
+	c.dofn = &discard[E]{}
+}
+
+func (c *DFC[E]) multiplex(numOut int) []processor {
+	mplex := &multiplex[E]{Outs: make([]Emitter[E], numOut)}
+	var procs []processor
+	for i := range mplex.Outs {
+		emt := &mplex.Outs[i] // Get a pointer to the emitter, rather than a value copy from the loop.
+		emt.setPColKey(c.id, i)
+		procs = append(procs, emt.newDFC(c.id))
+	}
+	c.dofn = mplex
+	c.downstream = procs
+	return procs
+}
+
+func (c *DFC[E]) processE(ec elmContext, elm E) {
+	if !c.perElm(ElmC{ec, c.downstream}, elm) {
+		panic(fmt.Errorf("short iteration"))
+	}
 }
 
 func (c *DFC[E]) start(ctx context.Context) error {
@@ -166,15 +200,30 @@ type Iter[V Element] struct {
 	source func() (V, bool) // source returns true if the element is valid.
 }
 
+func (Iter[V]) unencodable() {}
+
+var _ unencodable = Iter[int]{}
+
+type unencodable interface {
+	unencodable()
+}
+
+func isUnencodable(v any) bool {
+	_, ok := v.(unencodable)
+	return ok
+}
+
 // All allows a single iteration of its stream of values.
-func (it *Iter[V]) All(perElm func(elm V) bool) {
-	for {
-		v, ok := it.source()
-		if !ok {
-			return
-		}
-		if !perElm(v) {
-			return
+func (it *Iter[V]) All() func(perElm func(elm V) bool) {
+	return func(perElm func(elm V) bool) {
+		for {
+			v, ok := it.source()
+			if !ok {
+				return
+			}
+			if !perElm(v) {
+				return
+			}
 		}
 	}
 }
@@ -206,7 +255,7 @@ func (fn *gbk[K, V]) ProcessBundle(ctx context.Context, dfc *DFC[KV[K, V]]) erro
 		return true
 	})
 	fn.OnBundleFinish.Do(dfc, func() error {
-		ec := dfc.ToElmC(EOGW) // TODO pull, from the window that's been closed.
+		ec := dfc.ToElmC(EOGW) // TODO pull time, from the window that's been closed.
 		for k, vs := range grouped {
 			var i int
 			out := KV[K, Iter[V]]{Key: k, Value: Iter[V]{
@@ -243,12 +292,10 @@ func start(dfc *DFC[[]byte]) error {
 	if err := dfc.start(context.TODO()); err != nil {
 		return err
 	}
-	if err := dfc.processE(elmContext{
+	dfc.processE(elmContext{
 		eventTime: time.Now(),
-	}, []byte{}); err != nil {
-		return err
-	}
-	return dfc.finish()
+	}, []byte{1, 2, 3, 4, 5, 6, 7, 7})
+	return nil
 }
 
 // Scope is used for building pipeline graphs.
@@ -286,7 +333,17 @@ func Run(ctx context.Context, expand func(*Scope) error) error {
 
 	// Now, we must rebuild it. Make it better, faster, actually executable.
 	roots := g.build()
-	return start(roots[0].(*DFC[[]byte]))
+	for _, root := range roots {
+		if err := start(root.(*DFC[[]byte])); err != nil {
+			return err
+		}
+	}
+	for _, root := range roots {
+		if err := root.finish(); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func Impulse(s *Scope) Emitter[[]byte] {
@@ -312,7 +369,7 @@ func ParDo[E Element, DF Transform[E]](s *Scope, input Emitter[E], dofn DF) DF {
 	// We do all the expected connections here.
 	// Side inputs, are put on the side input at the DoFn creation time being passed in.
 
-	s.g.edges = append(s.g.edges, &edgeDoFn[E]{index: edgeID, dofn: dofn, ins: ins, outs: outs})
+	s.g.edges = append(s.g.edges, &edgeDoFn[E]{index: edgeID, dofn: dofn, ins: ins, outs: outs, parallelIn: input.globalIndex})
 
 	return dofn
 }
