@@ -1,0 +1,1 @@
+Code copied from https://github.com/apache/beam/tree/master/sdks/go/pkg/beam/model
