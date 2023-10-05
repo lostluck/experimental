@@ -1,4 +1,4 @@
-package beam
+package coders
 
 import (
 	"encoding/binary"
