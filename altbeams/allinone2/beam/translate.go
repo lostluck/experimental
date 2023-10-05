@@ -99,7 +99,7 @@ func (g *graph) marshal(typeReg map[string]reflect.Type) *pipepb.Pipeline {
 					json.MarshalFuncV2(func(enc *jsontext.Encoder, err emitIface, opts json.Options) error {
 						return enc.WriteToken(jsontext.Null)
 					}),
-			)))
+				)))
 			if err != nil {
 				panic(err)
 			}
@@ -114,7 +114,6 @@ func (g *graph) marshal(typeReg map[string]reflect.Type) *pipepb.Pipeline {
 					Payload: wrappedPayload,
 				},
 			})
-			fmt.Printf("marshalling dofn: %v -> %q\n", uniqueName, payload)
 
 			spec = &pipepb.FunctionSpec{
 				Urn:     "beam:transform:pardo:v1",
@@ -266,12 +265,12 @@ func unmarshalToGraph(typeReg map[string]reflect.Type, pbd subGraphProto) *graph
 
 			var unwrappedPayload dofnPayloadStruct
 			if err := json.Unmarshal(dofnSpec.GetPayload(), &unwrappedPayload, json.DefaultOptionsV2(),
-			json.WithUnmarshalers(
-				json.UnmarshalFuncV2(func(dec *jsontext.Decoder, val *emitIface, opts json.Options) error {
-					dec.ReadToken()
-					return json.SkipFunc
-				}),
-			)); err != nil {
+				json.WithUnmarshalers(
+					json.UnmarshalFuncV2(func(dec *jsontext.Decoder, val *emitIface, opts json.Options) error {
+						dec.ReadToken()
+						return json.SkipFunc
+					}),
+				)); err != nil {
 				panic(err)
 			}
 			dofnRT, ok := typeReg[unwrappedPayload.TypeName]
@@ -287,9 +286,6 @@ func unmarshalToGraph(typeReg map[string]reflect.Type, pbd subGraphProto) *graph
 
 			dfcRT := pbm.Type.In(2).Elem()
 			proc := reflect.New(dfcRT).Interface().(processor)
-
-			fmt.Printf("dofn found! %v %v %#v\n\n", dfcRT, dofnPtrRT, proc)
-
 			if len(pt.Inputs) > 1 {
 				panic(fmt.Sprintf("unimplemented: transform %v has side inputs: %v", name, pt.Inputs))
 			}
