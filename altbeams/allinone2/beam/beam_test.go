@@ -85,17 +85,18 @@ func TestAutomaticDiscard(t *testing.T) {
 // goarch: amd64
 // pkg: github.com/lostluck/experimental/altbeams/allinone2/beam
 // cpu: 12th Gen Intel(R) Core(TM) i7-1260P
-// BenchmarkPipe/var_dofns_0-16         	97536266	        11.86 ns/op	        11.00 ns/elm	       0 B/op	       0 allocs/op
-// BenchmarkPipe/var_dofns_1-16         	38748386	        30.96 ns/op	        30.00 ns/elm	       0 B/op	       0 allocs/op
-// BenchmarkPipe/var_dofns_2-16         	24103524	        49.15 ns/op	        24.00 ns/elm	       0 B/op	       0 allocs/op
-// BenchmarkPipe/var_dofns_3-16         	17758483	        67.46 ns/op	        22.00 ns/elm	       0 B/op	       0 allocs/op
-// BenchmarkPipe/var_dofns_5-16         	11575345	       103.7 ns/op	        20.00 ns/elm	       0 B/op	       0 allocs/op
-// BenchmarkPipe/var_dofns_10-16        	 6107569	       196.5 ns/op	        19.00 ns/elm	       0 B/op	       0 allocs/op
-// BenchmarkPipe/var_dofns_100-16       	  450638	      2234 ns/op	        22.00 ns/elm	       0 B/op	       0 allocs/op
+// BenchmarkPipe/var_dofns_0-16         	70822042	        16.65 ns/op	 480.54 MB/s	        16.65 ns/elm	       0 B/op	       0 allocs/op
+// BenchmarkPipe/var_dofns_1-16         	35603048	        33.70 ns/op	 474.83 MB/s	        33.70 ns/elm	       0 B/op	       0 allocs/op
+// BenchmarkPipe/var_dofns_2-16         	24342855	        48.95 ns/op	 490.25 MB/s	        24.48 ns/elm	       0 B/op	       0 allocs/op
+// BenchmarkPipe/var_dofns_3-16         	17800094	        66.13 ns/op	 483.91 MB/s	        22.04 ns/elm	       0 B/op	       0 allocs/op
+// BenchmarkPipe/var_dofns_5-16         	12088483	        99.11 ns/op	 484.32 MB/s	        19.82 ns/elm	       0 B/op	       0 allocs/op
+// BenchmarkPipe/var_dofns_10-16        	 6605112	       181.5 ns/op	 484.75 MB/s	        18.15 ns/elm	       0 B/op	       0 allocs/op
+// BenchmarkPipe/var_dofns_100-16       	  582006	      2030 ns/op	 398.00 MB/s	        20.30 ns/elm	       0 B/op	       0 allocs/op
 func BenchmarkPipe(b *testing.B) {
 	makeBench := func(numDoFns int) func(b *testing.B) {
 		return func(b *testing.B) {
 			b.ReportAllocs()
+			b.SetBytes(8 * int64(numDoFns+1))
 
 			discard := &DiscardFn[int]{}
 			if err := Run(context.TODO(), func(s *Scope) error {
@@ -126,7 +127,7 @@ func BenchmarkPipe(b *testing.B) {
 		}
 	}
 	for _, numDoFns := range []int{0, 1, 2, 3, 5, 10, 100} {
-		b.Run(fmt.Sprintf("var_dofns_%d", numDoFns), makeBench(numDoFns))
+		b.Run(fmt.Sprintf("dofns=%d", numDoFns), makeBench(numDoFns))
 	}
 }
 
