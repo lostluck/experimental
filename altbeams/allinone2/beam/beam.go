@@ -10,6 +10,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"reflect"
 	"time"
 )
 
@@ -100,6 +101,9 @@ type processor interface {
 	discard()
 	multiplex(int) []processor
 
+	produceTypedNode(id nodeIndex, bounded bool) node
+	produceTypedEdge(id edgeIndex, dofn any, ins, outs map[string]nodeIndex) multiEdge
+
 	start(ctx context.Context) error
 	finish() error
 }
@@ -108,6 +112,16 @@ var _ processor = &DFC[int]{}
 
 func (c *DFC[E]) pcollection() nodeIndex {
 	return c.id
+}
+
+func (c *DFC[E]) produceTypedNode(id nodeIndex, bounded bool) node {
+	c.id = id
+	return &typedNode[E]{index: id, isBounded: bounded}
+}
+
+func (c *DFC[E]) produceTypedEdge(id edgeIndex, dofn any, ins, outs map[string]nodeIndex) multiEdge {
+	c.dofn = dofn.(Transform[E])
+	return &edgeDoFn[E]{index: id, parallelIn: c.id, dofn: c.dofn, ins: ins, outs: outs}
 }
 
 func (c *DFC[E]) update(dofn any, procs []processor) {
@@ -330,9 +344,12 @@ func Run(ctx context.Context, expand func(*Scope) error) error {
 
 	// At this point the graph is complete, and we need to turn serialize/deserialize it
 	// into executing code.
+	typeReg := map[string]reflect.Type{}
+	pipe := g.marshal(typeReg)
+	newG := unmarshalToGraph(typeReg, pipe.GetComponents())
 
 	// Now, we must rebuild it. Make it better, faster, actually executable.
-	roots := g.build()
+	roots := newG.build()
 	for _, root := range roots {
 		if err := start(root.(*DFC[[]byte])); err != nil {
 			return err

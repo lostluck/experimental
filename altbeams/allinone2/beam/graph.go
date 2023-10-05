@@ -5,12 +5,22 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+
+	pipepb "github.com/lostluck/experimental/altbeams/allinone2/beam/internal/model/pipeline_v1"
 )
 
 // graph.go holds the structures for the deferred processing graph.
 
 type nodeIndex int
 type edgeIndex int
+
+func (i nodeIndex) String() string {
+	return fmt.Sprintf("n%d", i)
+}
+
+func (i edgeIndex) String() string {
+	return fmt.Sprintf("e%d", i)
+}
 
 // graph replicates the structure for a beam pipeline graph.
 type graph struct {
@@ -28,11 +38,15 @@ type node interface {
 	elmType() reflect.Type
 	bounded() bool
 	windowingStrat()
+	addCoder(intern map[string]string, coders map[string]*pipepb.Coder) string
+	setParent(parent edgeIndex)
 }
+
+var _ node = &typedNode[int]{}
 
 type typedNode[E Element] struct {
 	index      nodeIndex
-	parentEdge edgeIndex
+	parentEdge edgeIndex // for debugging
 
 	elementType E
 	isBounded   bool
@@ -48,6 +62,10 @@ func (n *typedNode[E]) bounded() bool {
 
 func (n *typedNode[E]) windowingStrat() {
 	// TODO, add windowing strategies.
+}
+
+func (n *typedNode[E]) setParent(parent edgeIndex) {
+	n.parentEdge = parent
 }
 
 // multiEdges represent transforms.
@@ -73,21 +91,30 @@ func (e *edgeImpulse) outputs() map[string]nodeIndex {
 }
 
 // EdgeGBK represents a Group By Key transform.
-type edgeGBK[E Element] struct {
+type edgeGBK[K Keys, V Element] struct {
 	index edgeIndex
 
 	input, output nodeIndex
 }
 
 // inputs for GBKs are one.
-func (e *edgeGBK[E]) inputs() map[string]nodeIndex {
+func (e *edgeGBK[K, V]) inputs() map[string]nodeIndex {
 	return map[string]nodeIndex{"i0": e.input}
 }
 
 // inputs for GBKs are one.
-func (e *edgeGBK[E]) outputs() map[string]nodeIndex {
+func (e *edgeGBK[K, V]) outputs() map[string]nodeIndex {
 	return map[string]nodeIndex{"o0": e.output}
 }
+
+func (e *edgeGBK[K, V]) groupby() {}
+
+type keygrouper interface {
+	multiEdge
+	groupby()
+}
+
+var _ keygrouper = (*edgeGBK[int, int])(nil)
 
 type edgeDoFn[E Element] struct {
 	index edgeIndex
@@ -246,7 +273,7 @@ func (g *graph) initSideInput(si sideIface, global edgeIndex, name string, ins m
 	ins[name] = globalIndex
 }
 
-// build returns the root processors
+// build returns the root processors for SDK worker side execution.
 func (g *graph) build() []processor {
 	type consumer struct {
 		input processor
@@ -324,7 +351,7 @@ func (g *graph) build() []processor {
 
 				// We now have the side input and the field that it's accessed from.
 				// We need to pass this notion to the edgeDoFn, and update the received input
-				// with a buffer that is connected to a "wait" for the primary input, so the 
+				// with a buffer that is connected to a "wait" for the primary input, so the
 				// buffers can notify the wait when they have their inputs.
 
 			}
