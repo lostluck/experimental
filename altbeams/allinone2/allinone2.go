@@ -29,11 +29,12 @@ func (fn *MyDoFn) ProcessBundle(ctx context.Context, dfc *beam.DFC[string]) erro
 	fmt.Printf("%v started\n", fn.Name)
 	processed := 0
 
-	for ec, elm := range dfc.Process {
+	dfc.Process(func(ec beam.ElmC, elm string) bool {
 		processed++
 		fmt.Printf("%v \n", fn.Name)
 		fn.Output.Emit(ec, elm)
-	}
+		return true
+	})
 
 	fn.OnBundleFinish.Do(dfc, func() error {
 		// Do some finish bundle work.
@@ -55,12 +56,13 @@ func (fn *MyIncDoFn) ProcessBundle(ctx context.Context, dfc *beam.DFC[int]) erro
 	fmt.Printf("%v started\n", fn.Name)
 	processed := 0
 
-	for ec, elm := range dfc.Process {
+	dfc.Process(func(ec beam.ElmC, elm int) bool {
 		processed++
 		elm += 1
 		fmt.Printf("%v %v\n", fn.Name, elm)
 		fn.Output.Emit(ec, elm)
-	}
+		return true
+	})
 
 	fn.OnBundleFinish.Do(dfc, func() error {
 		// Do some finish bundle work.
@@ -84,12 +86,12 @@ func (fn *SourceFn) ProcessBundle(ctx context.Context, dfc *beam.DFC[[]byte]) er
 	processed := 0
 
 	dfc.Process(func(ec beam.ElmC, _ []byte) bool {
-		for i := range fn.Count {
+		for i := 0; i < fn.Count; i++ {
 			processed++
 			fmt.Printf("%v %v\n", fn.Name, i)
 			fn.Output.Emit(ec, i)
 		}
-		return false
+		return true
 	})
 
 	fn.OnBundleFinish.Do(dfc, func() error {
@@ -110,10 +112,11 @@ func (fn *DiscardFn[E]) ProcessBundle(ctx context.Context, dfc *beam.DFC[E]) err
 	fmt.Printf("%v started\n", fn.Name)
 	processed := 0
 
-	for _, elm := range dfc.Process {
+	dfc.Process(func(ec beam.ElmC, elm E) bool {
 		processed++
 		fmt.Printf("%v %v\n", fn.Name, elm)
-	}
+		return true
+	})
 
 	fn.OnBundleFinish.Do(dfc, func() error {
 		// Do some finish bundle work.
