@@ -63,6 +63,7 @@ func (*OnBundleFinish) Do(dfc bundleFinisher, finishBundle func() error) {
 type ObserveWindow struct{}
 
 func (*ObserveWindow) Get(ec ElmC) any {
+	// When windows are observable, only a single window is present.
 	return ec.windows[0]
 }
 
