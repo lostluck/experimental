@@ -11,9 +11,9 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-type dofnPayloadStruct struct {
+type dofnWrap struct {
 	TypeName string
-	Payload  []byte
+	DoFn     any
 }
 
 // marshal turns a pipeline graph into a normalized Beam pipeline proto.
@@ -91,19 +91,23 @@ func (g *graph) marshal(typeReg map[string]reflect.Type) *pipepb.Pipeline {
 			if rv.Kind() == reflect.Pointer {
 				rv = rv.Elem()
 			}
+			// Register types with the lookup table.
 			uniqueName = rv.Type().Name()
 			typeReg[uniqueName] = rv.Type()
 
-			dofnPld, err := json.Marshal(dofn, json.DefaultOptionsV2(), json.WithMarshalers(
+			wrappedPayload, err := json.Marshal(dofnWrap{
+				TypeName: uniqueName,
+				DoFn:     dofn,
+			}, json.DefaultOptionsV2(), json.WithMarshalers(
 				json.NewMarshalers(
-					json.MarshalFuncV2(func(enc *jsontext.Encoder, err emitIface, opts json.Options) error {
-						return enc.WriteToken(jsontext.Null)
+					// Turn all beam mixins into {} by default, as state should be reconstrutable from
+					// the types anyway.
+					json.MarshalFuncV2(func(enc *jsontext.Encoder, byp bypassInterface, opts json.Options) error {
+						enc.WriteToken(jsontext.ObjectStart)
+						enc.WriteToken(jsontext.ObjectEnd)
+						return nil
 					}),
 				)))
-			if err != nil {
-				panic(err)
-			}
-			wrappedPayload, err := json.Marshal(dofnPayloadStruct{TypeName: uniqueName, Payload: dofnPld})
 			if err != nil {
 				panic(err)
 			}
@@ -263,22 +267,50 @@ func unmarshalToGraph(typeReg map[string]reflect.Type, pbd subGraphProto) *graph
 				panic(fmt.Sprintf("unknown pardo urn in transform %q: urn %q\n", name, dofnSpec.GetUrn()))
 			}
 
-			var unwrappedPayload dofnPayloadStruct
-			if err := json.Unmarshal(dofnSpec.GetPayload(), &unwrappedPayload, json.DefaultOptionsV2(),
+			var wrap dofnWrap
+			// Do the tricky thing here by using the closure decoding, so we can use the type lookup map
+			// and avoid multiple parses or manual base 64 bytes handling in the encoding.
+			if err := json.Unmarshal(dofnSpec.GetPayload(), &wrap, json.DefaultOptionsV2(),
 				json.WithUnmarshalers(
-					json.UnmarshalFuncV2(func(dec *jsontext.Decoder, val *emitIface, opts json.Options) error {
-						dec.ReadToken()
-						return json.SkipFunc
-					}),
+					json.NewUnmarshalers(
+						json.UnmarshalFuncV2(func(dec *jsontext.Decoder, val bypassInterface, opts json.Options) error {
+							return dec.SkipValue()
+						}),
+						json.UnmarshalFuncV2(func(dec *jsontext.Decoder, val *dofnWrap, opts json.Options) error {
+							for {
+								tok, err := dec.ReadToken()
+								if err != nil {
+									return err
+								}
+								switch tok.Kind() {
+								case '"':
+									switch tok.String() {
+									case "TypeName":
+										tok2, err := dec.ReadToken()
+										if err != nil {
+											return err
+										}
+										val.TypeName = tok2.String()
+										continue
+									case "DoFn":
+										dofnRT, ok := typeReg[val.TypeName]
+										if !ok {
+											panic(fmt.Sprintf("unknown pardo in transform %v: payload %q", name, val.TypeName))
+										}
+										val.DoFn = reflect.New(dofnRT).Interface()
+										if err := json.UnmarshalDecode(dec, val.DoFn, opts); err != nil {
+											return err
+										}
+										_, err = dec.ReadToken() // '}' (finish reading the value)
+										return err
+									}
+								}
+							}
+						})),
 				)); err != nil {
 				panic(err)
 			}
-			dofnRT, ok := typeReg[unwrappedPayload.TypeName]
-			if !ok {
-				panic(fmt.Sprintf("unknown pardo in transform %v: payload %q", name, string(unwrappedPayload.TypeName)))
-			}
-			dofnPtrRT := reflect.PointerTo(dofnRT)
-
+			dofnPtrRT := reflect.TypeOf(wrap.DoFn)
 			pbm, ok := dofnPtrRT.MethodByName("ProcessBundle")
 			if !ok {
 				panic(fmt.Sprintf("type in transform %v doesn't have a ProcessBundle method: %v", name, dofnPtrRT))
@@ -310,13 +342,7 @@ func unmarshalToGraph(typeReg map[string]reflect.Type, pbd subGraphProto) *graph
 				outs[local] = id
 			}
 
-			// Deserialize DoFn config data here:
-			dofn := reflect.New(dofnRT).Interface()
-			if err := json.Unmarshal(unwrappedPayload.Payload, dofn, json.DefaultOptionsV2()); err != nil {
-				panic(err)
-			}
-
-			g.edges = append(g.edges, proc.produceTypedEdge(edgeID, dofn, ins, outs))
+			g.edges = append(g.edges, proc.produceTypedEdge(edgeID, wrap.DoFn, ins, outs))
 
 			// But what we want now is to get a *DFC[E], and use that to produce a
 			// typedNode if it's needed.

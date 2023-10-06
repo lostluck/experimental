@@ -2,6 +2,16 @@ package beam
 
 import "fmt"
 
+// beamMixin is added to all DoFn beam field types to allow them to bypass
+// encoding
+type beamMixin struct{}
+
+func (beamMixin) beamBypass() {}
+
+type bypassInterface interface {
+	beamBypass()
+}
+
 // dofns.go is about the different mix-ins and addons that can be added.
 
 // Emitter represents an output of a DoFn.
@@ -11,6 +21,8 @@ import "fmt"
 // time, they are used in a ProcessBundle method to emit outputs and pass along
 // per element context, such as the EventTime and Window.
 type Emitter[E Element] struct {
+	beamMixin
+
 	valid                bool
 	globalIndex          nodeIndex
 	localDownstreamIndex int
@@ -72,6 +84,8 @@ func (*ObserveWindow) Get(ec ElmC) any {
 ////////////////////////////////////////////////////////
 
 type sideInputCommon struct {
+	beamMixin
+
 	valid  bool
 	global nodeIndex
 }
@@ -106,7 +120,7 @@ func validateSideInput[E any](emt Emitter[E]) {
 // It allows access to the data of that Emitter's PCollection,
 func AsSideIter[E Element](emt Emitter[E]) IterSideInput[E] {
 	validateSideInput(emt)
-	return IterSideInput[E]{sideInputCommon{true, emt.globalIndex}}
+	return IterSideInput[E]{sideInputCommon{valid: true, global: emt.globalIndex}}
 }
 
 // MapSideInput allows a side input to be accessed via key lookups.
@@ -122,7 +136,7 @@ func (si *MapSideInput[K, V]) Get(ec ElmC, k K) Iter[V] {
 // AsSideMap initializes a MapSideInput from a valid upstream Emitter.
 func AsSideMap[K Keys, V Element](emt Emitter[KV[K, V]]) MapSideInput[K, V] {
 	validateSideInput(emt)
-	return MapSideInput[K, V]{sideInputCommon{true, emt.globalIndex}}
+	return MapSideInput[K, V]{sideInputCommon{valid: true, global: emt.globalIndex}}
 }
 
 // AfterBundle allows a DoFn to register a function that runs after
@@ -132,7 +146,7 @@ func AsSideMap[K Keys, V Element](emt Emitter[KV[K, V]]) MapSideInput[K, V] {
 // Upside, not likely to try to incorrectly emit in the closure.
 // Downside, the caching for anything to finalize needs to be stored in the DoFn struct
 // this violates the potential of a ConfigOnly DoFn.
-type AfterBundle struct{}
+type AfterBundle struct{ beamMixin }
 
 type bundleFinalizer interface {
 	regBundleFinalizer(finalizeBundle func() error)
@@ -166,7 +180,7 @@ func (*Splittable[E, R, T]) InitialSplits(func(R) []R) {}
 // State and Timers //
 //////////////////////
 
-type state struct{}
+type state struct{ beamMixin }
 
 func (state) state() {}
 
@@ -176,7 +190,7 @@ type StateCombining[E Element] struct{ state }
 type StateMap[K, V Element] struct{ state }
 type StateSet[E Element] struct{ state }
 
-type timer struct{}
+type timer struct{ beamMixin }
 
 func (timer) timer() {}
 
