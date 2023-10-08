@@ -11,7 +11,8 @@ type Options interface {
 // Struct is the combination of all options in struct form.
 // This is efficient to pass down the call stack and to query.
 type Struct struct {
-	Name string // Set the name of
+	Name     string // The configured name of the options target. Otherwise it's autogeneerated.
+	Endpoint string // The configured URL for a service.
 }
 
 func (dst *Struct) BeamOptions(internal.NotForPublicUse) {}
@@ -22,6 +23,9 @@ func (dst *Struct) Join(srcs ...Options) {
 		case *Struct:
 			if src.Name != "" {
 				dst.Name = src.Name
+			}
+			if src.Endpoint != "" {
+				dst.Endpoint = src.Endpoint
 			}
 		}
 	}

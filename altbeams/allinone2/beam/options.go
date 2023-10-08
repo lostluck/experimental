@@ -14,3 +14,11 @@ func Name(name string) Options {
 		Name: name,
 	}
 }
+
+// Endpoint sets the url when applicable, such as the JobManagement endpoint for submitting jobs
+// or for configuring a target for expansion services.
+func Endpoint(endpoint string) Options {
+	return &beamopts.Struct{
+		Endpoint: endpoint,
+	}
+}
