@@ -10,7 +10,8 @@ import (
 
 // DFC is the DoFn Context for simple DoFns.
 type DFC[E Element] struct {
-	id nodeIndex
+	id        nodeIndex
+	transform string
 
 	dofn       Transform[E]
 	downstream []processor
@@ -19,6 +20,10 @@ type DFC[E Element] struct {
 	finishBundle func() error
 
 	metrics *metricsStore
+}
+
+func (c *DFC[E]) transformID() string {
+	return c.transform
 }
 
 type elmContext struct {
@@ -84,13 +89,13 @@ func (c *DFC[E]) ToElmC(eventTime time.Time) ElmC {
 // processor allows a uniform type for different generic types.
 type processor interface {
 	pcollection() nodeIndex // The pcollection to be processed.
-	update(dofn any, procs []processor, mets *metricsStore)
+	update(transform string, dofn any, procs []processor, mets *metricsStore)
 	discard()
 	multiplex(int) []processor
-	flatten() flattener
+	flatten(transform string) flattener
 
 	produceTypedNode(id nodeIndex, bounded bool) node
-	produceTypedEdge(id edgeIndex, dofn any, ins, outs map[string]nodeIndex, opts beamopts.Struct) multiEdge
+	produceTypedEdge(transform string, id edgeIndex, dofn any, ins, outs map[string]nodeIndex, opts beamopts.Struct) multiEdge
 
 	start(ctx context.Context) error
 	finish() error
@@ -109,15 +114,16 @@ func (c *DFC[E]) produceTypedNode(id nodeIndex, bounded bool) node {
 	return &typedNode[E]{index: id, isBounded: bounded}
 }
 
-func (c *DFC[E]) produceTypedEdge(id edgeIndex, dofn any, ins, outs map[string]nodeIndex, opts beamopts.Struct) multiEdge {
+func (c *DFC[E]) produceTypedEdge(transform string, id edgeIndex, dofn any, ins, outs map[string]nodeIndex, opts beamopts.Struct) multiEdge {
 	c.dofn = dofn.(Transform[E])
-	return &edgeDoFn[E]{index: id, parallelIn: c.id, dofn: c.dofn, ins: ins, outs: outs, opts: opts}
+	return &edgeDoFn[E]{transform: transform, index: id, parallelIn: c.id, dofn: c.dofn, ins: ins, outs: outs, opts: opts}
 }
 
-func (c *DFC[E]) update(dofn any, procs []processor, mets *metricsStore) {
+func (c *DFC[E]) update(transform string, dofn any, procs []processor, mets *metricsStore) {
 	if c.dofn != nil {
 		panic(fmt.Sprintf("double updated: dfc %v already has %T, but got %T", c.id, c.dofn, dofn))
 	}
+	c.transform = transform
 	c.dofn = dofn.(Transform[E])
 	c.downstream = procs
 	c.metrics = mets
@@ -127,8 +133,8 @@ func (c *DFC[E]) discard() {
 	c.dofn = &discard[E]{}
 }
 
-func (c *DFC[E]) flatten() flattener {
-	return &edgeFlatten[E]{}
+func (c *DFC[E]) flatten(transform string) flattener {
+	return &edgeFlatten[E]{transform: transform}
 }
 
 func (c *DFC[E]) multiplex(numOut int) []processor {

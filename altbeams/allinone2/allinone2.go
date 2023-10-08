@@ -140,9 +140,9 @@ func main() {
 		})
 		beam.ParDo(s, inc.Output, &DiscardFn[int]{
 			Name: "DiscardFn",
-		})
+		}, beam.Name("sink"))
 		return nil
-	})
+	}, beam.Name("testjob"), beam.Endpoint("localhost:8073"))
 
 	if err != nil {
 		fmt.Println("error:", err)

@@ -21,7 +21,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math"
 	"net"
 	"sync"
 	"time"
@@ -29,22 +28,21 @@ import (
 	"github.com/lostluck/experimental/altbeams/allinone2/beam/internal/harness"
 	fnpb "github.com/lostluck/experimental/altbeams/allinone2/beam/internal/model/fnexecution_v1"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 )
 
 // StartLoopback initializes a Loopback ExternalWorkerService, at the given port.
-func StartLoopback(ctx context.Context, port int) (*Loopback, error) {
+func StartLoopback(ctx context.Context, port int, exec harness.ExecFunc) (*Loopback, error) {
 	lis, err := net.Listen("tcp", fmt.Sprintf("localhost:%d", port))
 	if err != nil {
 		return nil, err
 	}
 
-	slog.InfoContext(ctx, "starting Loopback server", "endpoint", lis.Addr())
+	//slog.InfoContext(ctx, "starting Loopback server", "endpoint", lis.Addr())
 	grpcServer := grpc.NewServer()
 	root, cancel := context.WithCancel(ctx)
 	s := &Loopback{lis: lis, root: root, rootCancel: cancel, workers: map[string]context.CancelFunc{},
-		grpcServer: grpcServer}
+		grpcServer: grpcServer, exec: exec}
 	fnpb.RegisterBeamFnExternalWorkerPoolServer(grpcServer, s)
 	go grpcServer.Serve(lis)
 	return s, nil
@@ -62,6 +60,8 @@ type Loopback struct {
 	workers map[string]context.CancelFunc
 
 	grpcServer *grpc.Server
+
+	exec harness.ExecFunc
 }
 
 // StartWorker initializes a new worker harness, implementing BeamFnExternalWorkerPoolServer.StartWorker.
@@ -95,7 +95,7 @@ func (s *Loopback) StartWorker(ctx context.Context, req *fnpb.StartWorkerRequest
 
 	opts := harnessOptions(ctx, req.GetProvisionEndpoint().GetUrl())
 
-	go harness.Main(ctx, req.GetControlEndpoint().GetUrl(), opts)
+	go harness.Main(ctx, req.GetControlEndpoint().GetUrl(), opts, s.exec)
 	return &fnpb.StartWorkerResponse{}, nil
 }
 
@@ -118,7 +118,7 @@ func harnessOptions(ctx context.Context, endpoint string) harness.Options {
 
 // StopWorker terminates a worker harness, implementing BeamFnExternalWorkerPoolServer.StopWorker.
 func (s *Loopback) StopWorker(ctx context.Context, req *fnpb.StopWorkerRequest) (*fnpb.StopWorkerResponse, error) {
-	slog.InfoContext(ctx, "stopping worker", "worker_id", req.GetWorkerId())
+	slog.DebugContext(ctx, "stopping worker", "worker_id", req.GetWorkerId())
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.workers == nil {
@@ -173,7 +173,7 @@ func WriteWorkerID(ctx context.Context, id string) context.Context {
 
 // ProvisionInfo returns the runtime provisioning info for the worker.
 func ProvisionInfo(ctx context.Context, endpoint string) (*fnpb.ProvisionInfo, error) {
-	cc, err := Dial(ctx, endpoint, 2*time.Minute)
+	cc, err := harness.Dial(ctx, endpoint, 2*time.Minute)
 	if err != nil {
 		return nil, err
 	}
@@ -189,23 +189,4 @@ func ProvisionInfo(ctx context.Context, endpoint string) (*fnpb.ProvisionInfo, e
 		return nil, errors.New("empty manifest")
 	}
 	return resp.GetInfo(), nil
-}
-
-// Dial is a convenience wrapper over grpc.Dial. It can be overridden
-// to provide a customized dialing behavior.
-var Dial = DefaultDial
-
-// DefaultDial is a dialer that specifies an insecure blocking connection with a timeout.
-func DefaultDial(ctx context.Context, endpoint string, timeout time.Duration) (*grpc.ClientConn, error) {
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	cc, err := grpc.DialContext(ctx, endpoint,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithBlock(),
-		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(math.MaxInt32)))
-	if err != nil {
-		return nil, fmt.Errorf("failed to dial server at %v: %w", endpoint, err)
-	}
-	return cc, nil
 }

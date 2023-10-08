@@ -118,7 +118,8 @@ type keygrouper interface {
 var _ keygrouper = (*edgeGBK[int, int])(nil)
 
 type edgeDoFn[E Element] struct {
-	index edgeIndex
+	index     edgeIndex
+	transform string
 
 	dofn       Transform[E]
 	ins, outs  map[string]nodeIndex
@@ -158,7 +159,8 @@ var _ bundleProcer = (*edgeDoFn[int])(nil)
 
 // edgeFlatten represents a Flatten transform.
 type edgeFlatten[E Element] struct {
-	index edgeIndex
+	index     edgeIndex
+	transform string
 
 	ins    []nodeIndex
 	output nodeIndex
@@ -182,7 +184,7 @@ func (e *edgeFlatten[E]) outputs() map[string]nodeIndex {
 	return map[string]nodeIndex{"o0": e.output}
 }
 
-func (e *edgeFlatten[E]) flatten() (any, []processor, bool) {
+func (e *edgeFlatten[E]) flatten() (string, any, []processor, bool) {
 	var first bool
 	if e.instance == nil {
 		first = true
@@ -191,13 +193,13 @@ func (e *edgeFlatten[E]) flatten() (any, []processor, bool) {
 		}
 		e.procs = []processor{e.instance.Output.newDFC(e.output)}
 	}
-	return e.instance, e.procs, first
+	return e.transform, e.instance, e.procs, first
 }
 
 type flattener interface {
 	multiEdge
 	// Returns the flatten instance, the downstream processors, and if this was the first call to dedup setting downstream consumers
-	flatten() (any, []processor, bool)
+	flatten() (string, any, []processor, bool)
 }
 
 var _ flattener = (*edgeFlatten[int])(nil)
@@ -298,9 +300,9 @@ func (g *graph) build() ([]processor, *metricsStore) {
 
 	var roots []processor
 	mets := metricsStore{
-		metricNames: map[int]string{},
+		metricNames: map[int]metricLabels{},
 	}
-	mets.initMetric("dummy", nil)
+	mets.initMetric("none", "dummy", nil)
 
 	var c consumer
 	defer func() {
@@ -394,16 +396,16 @@ func (g *graph) build() ([]processor, *metricsStore) {
 			for i := 0; i < rv.NumField(); i++ {
 				fv := rv.Field(i)
 				if mn, ok := fv.Addr().Interface().(metricNamer); ok {
-					mn.setName(fmt.Sprintf("%s.%s", uniqueName, rt.Field(i).Name))
+					mn.setName(rt.Field(i).Name)
 				}
 			}
 			// If this is the parallel input, the dofn needs to be set on the incoming DFC.
-			c.input.update(dofn, procs, &mets)
+			c.input.update(uniqueName, dofn, procs, &mets)
 		case flattener: // Can't type assert generic types.
 			// The same flatten edge will be re-invoked multiple times, once for each input node.
 			// But those nodes just need to point to the same dofn instance, and outputs
-			dofn, procs, first := e.flatten()
-			c.input.update(dofn, procs, &mets)
+			transform, dofn, procs, first := e.flatten()
+			c.input.update(transform, dofn, procs, &mets)
 			if first {
 				// There's only one, so the loop is the best way out.
 				for _, nodeID := range e.outputs() {
@@ -416,10 +418,10 @@ func (g *graph) build() ([]processor, *metricsStore) {
 			case "flatten":
 				// use the input to generate the flatten edge.
 				if e.trueEdge == nil {
-					e.trueEdge = c.input.flatten()
+					e.trueEdge = c.input.flatten(e.transform)
 				}
-				dofn, procs, first := e.trueEdge.(flattener).flatten()
-				c.input.update(dofn, procs, &mets)
+				transform, dofn, procs, first := e.trueEdge.(flattener).flatten()
+				c.input.update(transform, dofn, procs, &mets)
 				if first {
 					// There's only one, so the loop is the best way out.
 					for _, nodeID := range e.outputs() {
@@ -442,6 +444,8 @@ func (g *graph) build() ([]processor, *metricsStore) {
 // It needs to be produced while building the graph.
 type edgePlaceholder struct {
 	id        edgeIndex
+	transform string
+
 	kind      string // Indicates what sort of node this is a placeholder for.
 	ins, outs map[string]nodeIndex
 

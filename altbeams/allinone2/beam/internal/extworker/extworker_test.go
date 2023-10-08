@@ -35,7 +35,7 @@ func TestLoopback(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	server, err := StartLoopback(ctx, 0)
+	server, err := StartLoopback(ctx, 0, nil)
 	if err != nil {
 		t.Fatalf("Unable to start server: %v", err)
 	}

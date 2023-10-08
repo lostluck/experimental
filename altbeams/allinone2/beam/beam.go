@@ -10,9 +10,16 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"strconv"
 	"time"
 
 	"github.com/lostluck/experimental/altbeams/allinone2/beam/internal/beamopts"
+	"github.com/lostluck/experimental/altbeams/allinone2/beam/internal/extworker"
+	"github.com/lostluck/experimental/altbeams/allinone2/beam/internal/harness"
+	fnpb "github.com/lostluck/experimental/altbeams/allinone2/beam/internal/model/fnexecution_v1"
+	pipepb "github.com/lostluck/experimental/altbeams/allinone2/beam/internal/model/pipeline_v1"
+	"github.com/lostluck/experimental/altbeams/allinone2/beam/internal/runner/universal"
+	"google.golang.org/protobuf/proto"
 )
 
 type Keys interface {
@@ -121,7 +128,12 @@ func (s *Scope) String() string {
 }
 
 // Run begins executes the pipeline built in the construction function.
-func Run(ctx context.Context, expand func(*Scope) error) (Pipeline, error) {
+func Run(ctx context.Context, expand func(*Scope) error, opts ...Options) (Pipeline, error) {
+	opt := beamopts.Struct{
+		Endpoint: "localhost:8073",
+	}
+	opt.Join(opts...)
+
 	var g graph
 	s := &Scope{parent: nil, g: &g}
 	g.root = s
@@ -134,25 +146,73 @@ func Run(ctx context.Context, expand func(*Scope) error) (Pipeline, error) {
 	// into executing code.
 	typeReg := map[string]reflect.Type{}
 	pipe := g.marshal(typeReg)
-	newG := unmarshalToGraph(typeReg, pipe.GetComponents())
 
-	// Now, we must rebuild it. Make it better, faster, actually executable.
-	roots, mets := newG.build()
-	for _, root := range roots {
-		if err := start(root.(*DFC[[]byte])); err != nil {
-			return Pipeline{}, err
+	// TODO(BEAM-10610): Allow user configuration of this port, rather than kernel selected.
+	srv, err := extworker.StartLoopback(ctx, 0, func(comps harness.SubGraphProto) (*fnpb.ProcessBundleResponse, map[string]*pipepb.MonitoringInfo, error) {
+
+		newG := unmarshalToGraph(typeReg, comps)
+		roots, mets := newG.build()
+		for _, root := range roots {
+			if err := start(root.(*DFC[[]byte])); err != nil {
+				return nil, nil, err
+			}
 		}
+		for _, root := range roots {
+			if err := root.finish(); err != nil {
+				return nil, nil, err
+			}
+		}
+
+		mons := mets.MonitoringInfos()
+
+		pylds := map[string][]byte{}
+		labels := map[string]*pipepb.MonitoringInfo{}
+		for i, mon := range mons {
+			key := strconv.FormatInt(int64(i), 36)
+			pylds[key] = mon.GetPayload()
+			labels[key] = &pipepb.MonitoringInfo{
+				Urn:    mon.GetUrn(),
+				Type:   mon.GetType(),
+				Labels: mon.GetLabels(),
+			}
+		}
+
+		return &fnpb.ProcessBundleResponse{
+			// ResidualRoots:        rRoots,
+			MonitoringData:  pylds,
+			MonitoringInfos: mons,
+			// RequiresFinalization: requiresFinalization,
+		}, labels, nil
+	})
+
+	if err != nil {
+		return Pipeline{}, err
 	}
-	for _, root := range roots {
-		if err := root.finish(); err != nil {
-			return Pipeline{}, err
-		}
+	defer srv.Stop(ctx)
+	serializedPayload, err := proto.Marshal(&pipepb.ExternalPayload{Endpoint: &pipepb.ApiServiceDescriptor{Url: srv.EnvironmentConfig(ctx)}})
+	if err != nil {
+		return Pipeline{}, err
+	}
+
+	env := &pipepb.Environment{
+		Urn:          "beam:env:external:v1",
+		Payload:      serializedPayload,
+		Capabilities: nil, // TODO
+	}
+	pipe.Components.Environments["go"] = env
+	handle, err := universal.Execute(ctx, pipe, opt)
+	if err != nil {
+		return Pipeline{}, err
+	}
+
+	r, err := handle.Metrics(ctx)
+	if err != nil {
+		return Pipeline{}, err
 	}
 
 	p := Pipeline{
-		Counters: mets.counters(),
+		Counters: r.UserCounters(),
 	}
-
 	return p, nil
 }
 

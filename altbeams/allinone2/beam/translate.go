@@ -339,7 +339,7 @@ func unmarshalToGraph(typeReg map[string]reflect.Type, pbd subGraphProto) *graph
 		spec := pt.GetSpec()
 
 		switch spec.GetUrn() {
-		case "beam:transform:impulse:v1":
+		case "beam:transform:impulse:v1", "beam:runner:source:v1":
 			for _, global := range pt.GetOutputs() {
 				id := edgeIndex(len(g.edges))
 				g.edges = append(g.edges, &edgeImpulse{
@@ -363,8 +363,9 @@ func unmarshalToGraph(typeReg map[string]reflect.Type, pbd subGraphProto) *graph
 			}
 			// Add a dummy edge.
 			g.edges = append(g.edges, &edgePlaceholder{
-				kind: "flatten",
-				id:   edgeID, ins: ins, outs: outs,
+				transform: name,
+				kind:      "flatten",
+				id:        edgeID, ins: ins, outs: outs,
 			})
 		case "beam:transform:group_by_key:v1":
 		case "beam:transform:pardo:v1":
@@ -395,10 +396,10 @@ func unmarshalToGraph(typeReg map[string]reflect.Type, pbd subGraphProto) *graph
 				outs[local] = id
 			}
 			opt := beamopts.Struct{
-				Name: pt.UniqueName,
+				Name: name,
 			}
 
-			g.edges = append(g.edges, proc.produceTypedEdge(edgeID, wrap.DoFn, ins, outs, opt))
+			g.edges = append(g.edges, proc.produceTypedEdge(name, edgeID, wrap.DoFn, ins, outs, opt))
 
 			// But what we want now is to get a *DFC[E], and use that to produce a
 			// typedNode if it's needed.
@@ -411,6 +412,8 @@ func unmarshalToGraph(typeReg map[string]reflect.Type, pbd subGraphProto) *graph
 			// That needs to be given a canonical ID and a mapping in the graph.
 			// Same thing with all the nodes (which are technically done first).
 			// Then our existing build logic should simply work.
+		default:
+			panic(fmt.Sprintf("translate failed: unknown urn: %v", spec.GetUrn()))
 		}
 
 	}
