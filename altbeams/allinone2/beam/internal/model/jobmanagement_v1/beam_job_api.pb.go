@@ -28,7 +28,7 @@
 package jobmanagement_v1
 
 import (
-	pipeline_v1 "github.com/apache/beam/sdks/v2/go/pkg/beam/model/pipeline_v1"
+	pipeline_v1 "github.com/lostluck/experimental/altbeams/allinone2/beam/internal/model/pipeline_v1"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	structpb "google.golang.org/protobuf/types/known/structpb"
