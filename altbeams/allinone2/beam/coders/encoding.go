@@ -58,7 +58,7 @@ func (e *Encoder) Bytes(arg []byte) {
 	n := len(arg)
 	prefix := protowire.SizeVarint(uint64(n))
 	data := e.Grow(prefix + n)
-	protowire.AppendVarint(data[:prefix], uint64(n))
+	protowire.AppendVarint(data[:0], uint64(n))
 	copy(data[prefix:], arg)
 }
 
@@ -70,7 +70,7 @@ func (e *Encoder) StringUtf8(arg string) {
 	n := len(arg)
 	prefix := protowire.SizeVarint(uint64(n))
 	data := e.Grow(prefix + n)
-	protowire.AppendVarint(data[:prefix], uint64(n))
+	protowire.AppendVarint(data[:0], uint64(n))
 	copy(data[prefix:], arg)
 }
 
@@ -91,7 +91,7 @@ func (e *Encoder) Bool(arg bool) {
 // This matches with "beam:coder:varint:v1" of the beam_runner_api.proto coders.
 func (e *Encoder) Varint(i uint64) {
 	data := e.Grow(protowire.SizeVarint(i))
-	protowire.AppendVarint(data, i)
+	protowire.AppendVarint(data[:0], i)
 }
 
 // Double encodes the floating point value as a big-endian 64-bit integer
