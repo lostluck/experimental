@@ -87,6 +87,7 @@ type processor interface {
 	update(dofn any, procs []processor, mets *metricsStore)
 	discard()
 	multiplex(int) []processor
+	flatten() flattener
 
 	produceTypedNode(id nodeIndex, bounded bool) node
 	produceTypedEdge(id edgeIndex, dofn any, ins, outs map[string]nodeIndex, opts beamopts.Struct) multiEdge
@@ -124,6 +125,10 @@ func (c *DFC[E]) update(dofn any, procs []processor, mets *metricsStore) {
 
 func (c *DFC[E]) discard() {
 	c.dofn = &discard[E]{}
+}
+
+func (c *DFC[E]) flatten() flattener {
+	return &edgeFlatten[E]{}
 }
 
 func (c *DFC[E]) multiplex(numOut int) []processor {

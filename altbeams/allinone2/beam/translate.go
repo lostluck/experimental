@@ -223,9 +223,19 @@ func (g *graph) marshal(typeReg map[string]reflect.Type) *pipepb.Pipeline {
 }
 
 func (n *typedNode[E]) addCoder(intern map[string]string, coders map[string]*pipepb.Coder) string {
+	return addCoder[E](intern, coders)
+}
+
+// structuralCoder is a helper interface to handle structural types.
+// Implementers must populate the coders map.
+type structuralCoder interface {
+	addCoder(intern map[string]string, coders map[string]*pipepb.Coder) string
+}
+
+func addCoder[E any](intern map[string]string, coders map[string]*pipepb.Coder) string {
 	var t E
 	at := any(t)
-	rt := n.elmType()
+	rt := reflect.TypeOf(t)
 	if rt.Kind() == reflect.Pointer {
 		rt = rt.Elem()
 	}
@@ -234,7 +244,7 @@ func (n *typedNode[E]) addCoder(intern map[string]string, coders map[string]*pip
 	}
 
 	var urn string
-	switch at.(type) {
+	switch at := at.(type) {
 	case []byte:
 		urn = "beam:coder:bytes:v1"
 	case bool:
@@ -245,6 +255,8 @@ func (n *typedNode[E]) addCoder(intern map[string]string, coders map[string]*pip
 		urn = "beam:coder:double:v1"
 	case string:
 		urn = "beam:coder:string_utf8:v1"
+	case structuralCoder:
+		return at.addCoder(intern, coders)
 	default:
 		panic(fmt.Sprintf("unknown coder type: generic %T, resolved %v", t, rt))
 	}
@@ -269,6 +281,32 @@ func (n *typedNode[E]) addCoder(intern map[string]string, coders map[string]*pip
 	// urnTimerCoder               = "beam:coder:timer:v1"
 	// urnRowCoder                 = "beam:coder:row:v1"
 	// urnNullableCoder            = "beam:coder:nullable:v1"
+}
+
+func (KV[K, V]) addCoder(intern map[string]string, coders map[string]*pipepb.Coder) string {
+	kID, vID := addCoder[K](intern, coders), addCoder[V](intern, coders)
+	id := fmt.Sprintf("c%d", len(coders))
+	coders[id] = &pipepb.Coder{
+		Spec: &pipepb.FunctionSpec{
+			Urn:     "beam:coder:kv:v1",
+			Payload: nil,
+		},
+		ComponentCoderIds: []string{kID, vID},
+	}
+	return id
+}
+
+func (Iter[V]) addCoder(intern map[string]string, coders map[string]*pipepb.Coder) string {
+	vID := addCoder[V](intern, coders)
+	id := fmt.Sprintf("c%d", len(coders))
+	coders[id] = &pipepb.Coder{
+		Spec: &pipepb.FunctionSpec{
+			Urn:     "beam:coder:iterable:v1",
+			Payload: nil,
+		},
+		ComponentCoderIds: []string{vID},
+	}
+	return id
 }
 
 // Figure out the necessary unmarshalling for coders.
@@ -310,30 +348,29 @@ func unmarshalToGraph(typeReg map[string]reflect.Type, pbd subGraphProto) *graph
 				})
 			}
 		case "beam:transform:flatten:v1":
+			// NOTE This is similar to how DataSource needs to be added.
+			edgeID := edgeIndex(len(g.edges))
+			ins := map[string]nodeIndex{}
+			for local, global := range pt.GetInputs() {
+				id := pcolToIndex[global]
+				ins[local] = id
+				g.consumers[id] = append(g.consumers[id], edgeID)
+			}
+			outs := map[string]nodeIndex{}
+			for local, global := range pt.GetOutputs() {
+				id := pcolToIndex[global]
+				outs[local] = id
+			}
+			// Add a dummy edge.
+			g.edges = append(g.edges, &edgePlaceholder{
+				kind: "flatten",
+				id:   edgeID, ins: ins, outs: outs,
+			})
 		case "beam:transform:group_by_key:v1":
 		case "beam:transform:pardo:v1":
-			var dofnPayload pipepb.ParDoPayload
-			if err := proto.Unmarshal(spec.GetPayload(), &dofnPayload); err != nil {
-				panic(err)
-			}
-			dofnSpec := dofnPayload.GetDoFn()
-
-			if dofnSpec.GetUrn() != "beam:go:transform:dofn:v2" {
-				panic(fmt.Sprintf("unknown pardo urn in transform %q: urn %q\n", name, dofnSpec.GetUrn()))
-			}
-
 			var wrap dofnWrap
-			if err := json.Unmarshal(dofnSpec.GetPayload(), &wrap, json.DefaultOptionsV2(), jsonDoFnUnmarshallers(typeReg, name)); err != nil {
-				panic(err)
-			}
-			dofnPtrRT := reflect.TypeOf(wrap.DoFn)
-			pbm, ok := dofnPtrRT.MethodByName("ProcessBundle")
-			if !ok {
-				panic(fmt.Sprintf("type in transform %v doesn't have a ProcessBundle method: %v", name, dofnPtrRT))
-			}
+			proc := decodeDoFn(spec.GetPayload(), &wrap, typeReg, name)
 
-			dfcRT := pbm.Type.In(2).Elem()
-			proc := reflect.New(dfcRT).Interface().(processor)
 			if len(pt.Inputs) > 1 {
 				panic(fmt.Sprintf("unimplemented: transform %v has side inputs: %v", name, pt.Inputs))
 			}
@@ -348,7 +385,7 @@ func unmarshalToGraph(typeReg map[string]reflect.Type, pbd subGraphProto) *graph
 				if g.nodes[id] == nil {
 					g.nodes[id] = proc.produceTypedNode(id, pbd.GetPcollections()[global].GetIsBounded() == pipepb.IsBounded_BOUNDED)
 				} else {
-					fmt.Printf("node %v already created\n", global)
+					//	fmt.Printf("node %v already created\n", global)
 				}
 			}
 
@@ -378,4 +415,27 @@ func unmarshalToGraph(typeReg map[string]reflect.Type, pbd subGraphProto) *graph
 
 	}
 	return &g
+}
+
+func decodeDoFn(payload []byte, wrap *dofnWrap, typeReg map[string]reflect.Type, name string) processor {
+	var dofnPayload pipepb.ParDoPayload
+	if err := proto.Unmarshal(payload, &dofnPayload); err != nil {
+		panic(err)
+	}
+	dofnSpec := dofnPayload.GetDoFn()
+
+	if dofnSpec.GetUrn() != "beam:go:transform:dofn:v2" {
+		panic(fmt.Sprintf("unknown pardo urn in transform %q: urn %q\n", name, dofnSpec.GetUrn()))
+	}
+
+	if err := json.Unmarshal(dofnSpec.GetPayload(), &wrap, json.DefaultOptionsV2(), jsonDoFnUnmarshallers(typeReg, name)); err != nil {
+		panic(err)
+	}
+	dofnPtrRT := reflect.TypeOf(wrap.DoFn)
+	pbm, ok := dofnPtrRT.MethodByName("ProcessBundle")
+	if !ok {
+		panic(fmt.Sprintf("type in transform %v doesn't have a ProcessBundle method: %v", name, dofnPtrRT))
+	}
+	dfcRT := pbm.Type.In(2).Elem()
+	return reflect.New(dfcRT).Interface().(processor)
 }

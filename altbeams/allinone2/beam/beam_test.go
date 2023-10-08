@@ -324,7 +324,7 @@ func BenchmarkGBKSum_int(b *testing.B) {
 				keyed := ParDo(s, src.Output, &KeyMod[int]{Mod: mod})
 				grouped := GBK[int, int](s, keyed.Output)
 				sums := ParDo(s, grouped, &SumByKey[int, int]{})
-				ParDo(s, sums.Output, discard)
+				ParDo(s, sums.Output, discard, Name("sink"))
 				return nil
 			})
 			if err != nil {
@@ -386,7 +386,7 @@ func TestTwoSubGraphs(t *testing.T) {
 	if got, want := int(pr.Counters["sink1.Finished"]), 1; got != want {
 		t.Fatalf("finished didn't match bundle counter: got %v want %v", got, want)
 	}
-	if got, want := int(pr.Counters["sink2.Processed"]), 1; got != want {
+	if got, want := int(pr.Counters["sink2.Finished"]), 1; got != want {
 		t.Fatalf("finished didn't match bundle counter: got %v want %v", got, want)
 	}
 }
@@ -409,10 +409,10 @@ func TestMultiplex(t *testing.T) {
 	if got, want := int(pr.Counters["sink2.Processed"]), count+2; got != want {
 		t.Errorf("discard2 got %v, want %v", got, want)
 	}
-	if got, want := int(pr.Counters["sink1.Processed"]), 1; got != want {
+	if got, want := int(pr.Counters["sink1.Finished"]), 1; got != want {
 		t.Fatalf("finished didn't match bundle counter: got %v want %v", got, want)
 	}
-	if got, want := int(pr.Counters["sink2.Processed"]), 1; got != want {
+	if got, want := int(pr.Counters["sink2.Finished"]), 1; got != want {
 		t.Fatalf("finished didn't match bundle counter: got %v want %v", got, want)
 	}
 }

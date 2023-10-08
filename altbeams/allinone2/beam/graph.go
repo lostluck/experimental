@@ -131,7 +131,6 @@ func (e *edgeDoFn[E]) inputs() map[string]nodeIndex {
 	return e.ins
 }
 
-// inputs for GBKs are one.
 func (e *edgeDoFn[E]) outputs() map[string]nodeIndex {
 	return e.outs
 }
@@ -251,7 +250,7 @@ func (g *graph) deferDoFn(dofn any, input nodeIndex, global edgeIndex) (ins, out
 				g.initEmitter(emt, global, input, sf.Name, outs)
 			}
 			if si, ok := fv.Interface().(sideIface); ok {
-				fmt.Println("initialising side intput: ", si, global, sf.Name, ins)
+				// fmt.Println("initialising side intput: ", si, global, sf.Name, ins)
 				g.initSideInput(si, global, sf.Name, ins)
 			}
 			// TODO side inputs
@@ -345,21 +344,21 @@ func (g *graph) build() ([]processor, *metricsStore) {
 			if rv.Kind() == reflect.Pointer {
 				rv = rv.Elem()
 			}
-			// Check if this is a side input. If so, only the p
+			// Check if this is a side input.
 			if e.parallelInput() != c.input.pcollection() {
 				// Find the side input with which this input is associated
-				var siFieldName string
-				for name, nodeID := range e.inputs() {
-					fmt.Println("name", name, "input", nodeID, "parallelInput:", e.parallelInput() == nodeID)
-					if nodeID == c.input.pcollection() {
-						siFieldName = name
-						break
-					}
-				}
-				fv := rv.FieldByName(siFieldName)
-				si := fv.Addr().Interface().(sideIface)
+				// var siFieldName string
+				// for name, nodeID := range e.inputs() {
+				// 	fmt.Println("name", name, "input", nodeID, "parallelInput:", e.parallelInput() == nodeID)
+				// 	if nodeID == c.input.pcollection() {
+				// 		siFieldName = name
+				// 		break
+				// 	}
+				// }
+				// fv := rv.FieldByName(siFieldName)
+				// si := fv.Addr().Interface().(sideIface)
 
-				si.sideInput()
+				// si.sideInput()
 
 				// We now have the side input and the field that it's accessed from.
 				// We need to pass this notion to the edgeDoFn, and update the received input
@@ -412,9 +411,47 @@ func (g *graph) build() ([]processor, *metricsStore) {
 					break
 				}
 			}
+		case *edgePlaceholder:
+			switch e.kind {
+			case "flatten":
+				// use the input to generate the flatten edge.
+				if e.trueEdge == nil {
+					e.trueEdge = c.input.flatten()
+				}
+				dofn, procs, first := e.trueEdge.(flattener).flatten()
+				c.input.update(dofn, procs, &mets)
+				if first {
+					// There's only one, so the loop is the best way out.
+					for _, nodeID := range e.outputs() {
+						addConsumers(procs[0], nodeID)
+						break
+					}
+				}
+			default:
+				panic(fmt.Sprintf("unknown placeholder kind: %v", e.kind))
+			}
+		//	addConsumers(proc, nodeID)
 		default:
 			panic(fmt.Sprintf("unknown edge type %#v", e))
 		}
 	}
 	return roots, &mets
+}
+
+// edgePlaceholder represents a transform that can't be created at translation time.
+// It needs to be produced while building the graph.
+type edgePlaceholder struct {
+	id        edgeIndex
+	kind      string // Indicates what sort of node this is a placeholder for.
+	ins, outs map[string]nodeIndex
+
+	trueEdge multiEdge
+}
+
+func (e *edgePlaceholder) inputs() map[string]nodeIndex {
+	return e.ins
+}
+
+func (e *edgePlaceholder) outputs() map[string]nodeIndex {
+	return e.outs
 }
