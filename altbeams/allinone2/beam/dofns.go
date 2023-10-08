@@ -3,7 +3,7 @@ package beam
 import "fmt"
 
 // beamMixin is added to all DoFn beam field types to allow them to bypass
-// encoding
+// encoding. Only needed when the value has state and shouldn't be embedded.
 type beamMixin struct{}
 
 func (beamMixin) beamBypass() {}
@@ -55,6 +55,7 @@ func (_ *Emitter[E]) newNode(global nodeIndex, parent edgeIndex, bounded bool) n
 // The ElmC value is sourced from the [DFC.Process] method.
 func (emt *Emitter[E]) Emit(ec ElmC, elm E) {
 	proc := ec.pcollections[emt.localDownstreamIndex]
+	// TODO: PCollection metrics are correct here.
 	dfc := proc.(*DFC[E])
 	dfc.processE(ec.elmContext, elm)
 }
@@ -72,16 +73,18 @@ func (*OnBundleFinish) Do(dfc bundleFinisher, finishBundle func() error) {
 	dfc.regBundleFinisher(finishBundle)
 }
 
-type ObserveWindow struct{}
-
-func (*ObserveWindow) Get(ec ElmC) any {
-	// When windows are observable, only a single window is present.
-	return ec.windows[0]
-}
-
 ////////////////////////////////////////////////////////
 // Below here are Not Yet Implemented field flavours. //
 ////////////////////////////////////////////////////////
+
+// ObserveWindow indicates this DoFn needs to be aware of windows explicitly.
+// Typical use is to embed ObserveWindows as a field.
+type ObserveWindow struct{ beamMixin }
+
+func (*ObserveWindow) Of(ec ElmC) any {
+	// When windows are observable, only a single window is present.
+	return ec.windows[0]
+}
 
 type sideInputCommon struct {
 	beamMixin
@@ -173,6 +176,33 @@ type Splittable[E Element, R Restriction, T Tracker[R]] struct{}
 func (*Splittable[E, R, T]) CreateInitialRestriction(func(E) R) {}
 
 func (*Splittable[E, R, T]) InitialSplits(func(R) []R) {}
+
+func (*Splittable[E, R, T]) SplitRestriction() {}
+
+func (*Splittable[E, R, T]) CreateTracker() T {
+	var t T
+	return t
+}
+
+// SDFs
+// PairWithRestriction + Size Restriction
+// Initial Splits / Split Restriction
+// ProcessBundle(E, R[P], T[R])
+//  -> GetInitialPosition(R) P
+//  -> for T.Claim(P) {
+//       DoWork emit whatever
+//    }
+//
+////
+/// But what if we Combine Claim and the position into a callback loop?
+//
+// T.ProcessClaims(initialPosition	func(R)P,  func(P) P, error)
+//
+//
+
+// OK, so we want to avoid users specifying manual looping, claiming etc. It's a feels bad API.
+//
+//
 
 // TODO Watermark Estimators and ProcessContinuations for StreamingDoFn
 

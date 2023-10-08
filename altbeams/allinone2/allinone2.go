@@ -105,22 +105,23 @@ func (fn *SourceFn) ProcessBundle(ctx context.Context, dfc *beam.DFC[[]byte]) er
 type DiscardFn[E any] struct {
 	Name string
 	beam.OnBundleFinish
+
+	Processed beam.Counter
 }
 
 func (fn *DiscardFn[E]) ProcessBundle(ctx context.Context, dfc *beam.DFC[E]) error {
 	// Do some startbundle work.
 	fmt.Printf("%v started\n", fn.Name)
-	processed := 0
 
 	dfc.Process(func(ec beam.ElmC, elm E) bool {
-		processed++
+		fn.Processed.Inc(dfc, 1)
 		fmt.Printf("%v %v\n", fn.Name, elm)
 		return true
 	})
 
 	fn.OnBundleFinish.Do(dfc, func() error {
 		// Do some finish bundle work.
-		fmt.Printf("%v finished - %v processsed\n", fn.Name, processed)
+		fmt.Printf("%v finished\n", fn.Name)
 		return nil
 	})
 
@@ -128,7 +129,7 @@ func (fn *DiscardFn[E]) ProcessBundle(ctx context.Context, dfc *beam.DFC[E]) err
 }
 
 func main() {
-	beam.Run(context.TODO(), func(s *beam.Scope) error {
+	pr, err := beam.Run(context.TODO(), func(s *beam.Scope) error {
 		imp := beam.Impulse(s)
 		src := beam.ParDo(s, imp, &SourceFn{
 			Name:  "Source",
@@ -142,4 +143,10 @@ func main() {
 		})
 		return nil
 	})
+
+	if err != nil {
+		fmt.Println("error:", err)
+	} else {
+		fmt.Println("results:", pr)
+	}
 }

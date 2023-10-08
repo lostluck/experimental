@@ -6,6 +6,7 @@ import (
 
 	"github.com/go-json-experiment/json"
 	"github.com/go-json-experiment/json/jsontext"
+	"github.com/lostluck/experimental/altbeams/allinone2/beam/internal/beamopts"
 	pipepb "github.com/lostluck/experimental/altbeams/allinone2/beam/internal/model/pipeline_v1"
 	"github.com/lostluck/experimental/altbeams/allinone2/beam/internal/pipelinex"
 	"google.golang.org/protobuf/proto"
@@ -147,14 +148,21 @@ func (g *graph) marshal(typeReg map[string]reflect.Type) *pipepb.Pipeline {
 				rv = rv.Elem()
 			}
 			// Register types with the lookup table.
-			uniqueName = rv.Type().Name()
-			typeReg[uniqueName] = rv.Type()
+			typeName := rv.Type().Name()
+			typeReg[typeName] = rv.Type()
+
+			opts := e.options()
+			if opts.Name == "" {
+				uniqueName = typeName
+			} else {
+				uniqueName = opts.Name
+			}
 
 			wrap := dofnWrap{
-				TypeName: uniqueName,
+				TypeName: typeName,
 				DoFn:     dofn,
 			}
-			wrappedPayload, err := json.Marshal(wrap, json.DefaultOptionsV2(), jsonDoFnMarshallers())
+			wrappedPayload, err := json.Marshal(&wrap, json.DefaultOptionsV2(), jsonDoFnMarshallers())
 			if err != nil {
 				panic(err)
 			}
@@ -315,8 +323,6 @@ func unmarshalToGraph(typeReg map[string]reflect.Type, pbd subGraphProto) *graph
 			}
 
 			var wrap dofnWrap
-			// Do the tricky thing here by using the closure decoding, so we can use the type lookup map
-			// and avoid multiple parses or manual base 64 bytes handling in the encoding.
 			if err := json.Unmarshal(dofnSpec.GetPayload(), &wrap, json.DefaultOptionsV2(), jsonDoFnUnmarshallers(typeReg, name)); err != nil {
 				panic(err)
 			}
@@ -351,8 +357,11 @@ func unmarshalToGraph(typeReg map[string]reflect.Type, pbd subGraphProto) *graph
 				id := pcolToIndex[global]
 				outs[local] = id
 			}
+			opt := beamopts.Struct{
+				Name: pt.UniqueName,
+			}
 
-			g.edges = append(g.edges, proc.produceTypedEdge(edgeID, wrap.DoFn, ins, outs))
+			g.edges = append(g.edges, proc.produceTypedEdge(edgeID, wrap.DoFn, ins, outs, opt))
 
 			// But what we want now is to get a *DFC[E], and use that to produce a
 			// typedNode if it's needed.

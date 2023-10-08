@@ -27,23 +27,18 @@ func (fn *SourceFn) ProcessBundle(ctx context.Context, dfc *DFC[[]byte]) error {
 }
 
 type DiscardFn[E Element] struct {
-	start, processed, finished int
-
 	OnBundleFinish
+
+	Processed, Finished Counter
 }
 
 func (fn *DiscardFn[E]) ProcessBundle(ctx context.Context, dfc *DFC[E]) error {
-	fn.processed = 0
-	fn.start++
 	dfc.Process(func(ec ElmC, elm E) bool {
-		fn.processed++
+		fn.Processed.Inc(dfc, 1)
 		return true
 	})
 	fn.OnBundleFinish.Do(dfc, func() error {
-		fn.finished++
-		if fn.finished > fn.start {
-			return fmt.Errorf("DiscardFn finished more times than started: %v > %v", fn.finished, fn.start)
-		}
+		fn.Finished.Inc(dfc, 1)
 		return nil
 	})
 	return nil
@@ -62,21 +57,42 @@ func (fn *IdenFn[E]) ProcessBundle(ctx context.Context, dfc *DFC[E]) error {
 }
 
 func TestSimple(t *testing.T) {
-	Run(context.TODO(), func(s *Scope) error {
+	_, err := Run(context.TODO(), func(s *Scope) error {
 		imp := Impulse(s)
 		src := ParDo(s, imp, &SourceFn{Count: 10})
 		ParDo(s, src.Output, &DiscardFn[int]{})
 		return nil
 	})
+	if err != nil {
+		t.Error(err)
+	}
 }
 
 func TestAutomaticDiscard(t *testing.T) {
-	Run(context.TODO(), func(s *Scope) error {
+	_, err := Run(context.TODO(), func(s *Scope) error {
 		imp := Impulse(s)
 		ParDo(s, imp, &SourceFn{Count: 10})
 		// drop the output.
 		return nil
 	})
+	if err != nil {
+		t.Error(err)
+	}
+}
+
+func TestSimpleNamed(t *testing.T) {
+	pr, err := Run(context.TODO(), func(s *Scope) error {
+		imp := Impulse(s)
+		src := ParDo(s, imp, &SourceFn{Count: 10})
+		ParDo(s, src.Output, &DiscardFn[int]{}, Name("sink"))
+		return nil
+	})
+	if err != nil {
+		t.Error(err)
+	}
+	if got, want := int(pr.Counters["sink.Processed"]), 10; got != want {
+		t.Fatalf("processed didn't match bench number: got %v want %v", got, want)
+	}
 }
 
 // BenchmarkPipe benchmarks along the number of DoFns.
@@ -98,24 +114,24 @@ func BenchmarkPipe(b *testing.B) {
 			b.ReportAllocs()
 			b.SetBytes(8 * int64(numDoFns+1))
 
-			discard := &DiscardFn[int]{}
-			if err := Run(context.TODO(), func(s *Scope) error {
+			pr, err := Run(context.TODO(), func(s *Scope) error {
 				imp := Impulse(s)
 				src := ParDo(s, imp, &SourceFn{Count: b.N})
 				iden := src.Output
 				for i := 0; i < numDoFns; i++ {
 					iden = ParDo(s, iden, &IdenFn[int]{}).Output
 				}
-				ParDo(s, iden, discard)
+				ParDo(s, iden, &DiscardFn[int]{}, Name("sink"))
 				return nil
-			}); err != nil {
+			})
+			if err != nil {
 				b.Errorf("Run error: %v", err)
 			}
-			if discard.processed != b.N {
-				b.Fatalf("processed didn't match bench number: got %v want %v", discard.processed, b.N)
+			if got, want := int(pr.Counters["sink.Processed"]), b.N; got != want {
+				b.Fatalf("processed didn't match bench number: got %v want %v", got, want)
 			}
-			if discard.finished != 1 {
-				b.Fatalf("finished didn't match bundle counter: got %v want %v", discard.finished, 1)
+			if got, want := int(pr.Counters["sink.Finished"]), 1; got != want {
+				b.Fatalf("finished didn't match bundle counter: got %v want %v", got, want)
 			}
 			d := b.Elapsed()
 			div := numDoFns
@@ -160,20 +176,22 @@ func (src *WideNarrow) Expand(s *Scope) (out struct{ Out Emitter[int] }) {
 }
 
 func TestPartitionFlatten(t *testing.T) {
-	discard := &DiscardFn[int]{}
 	count, mod := 100, 10
-	Run(context.TODO(), func(s *Scope) error {
+	pr, err := Run(context.TODO(), func(s *Scope) error {
 		imp := Impulse(s)
 		src := ParDo(s, imp, &SourceFn{Count: count})
 		exp := Expand(s, "WideNarrow", &WideNarrow{Wide: mod, In: src.Output})
-		ParDo(s, exp.Out, discard)
+		ParDo(s, exp.Out, &DiscardFn[int]{}, Name("sink"))
 		return nil
 	})
-	if discard.processed != count {
-		t.Fatalf("processed dodn't match bench number: got %v want %v", discard.processed, count)
+	if err != nil {
+		t.Error(err)
 	}
-	if discard.finished != 1 {
-		t.Fatalf("finished didn't match bundle countr: got %v want %v", discard.finished, 1)
+	if got, want := int(pr.Counters["sink.Processed"]), count; got != want {
+		t.Fatalf("processed didn't match bench number: got %v want %v", got, want)
+	}
+	if got, want := int(pr.Counters["sink.Finished"]), 1; got != want {
+		t.Fatalf("finished didn't match bundle countr: got %v want %v", got, want)
 	}
 }
 
@@ -194,16 +212,18 @@ func BenchmarkPartitionPipe(b *testing.B) {
 		return func(b *testing.B) {
 			b.ReportAllocs()
 
-			discard := &DiscardFn[int]{}
-			Run(context.TODO(), func(s *Scope) error {
+			pr, err := Run(context.TODO(), func(s *Scope) error {
 				imp := Impulse(s)
 				src := ParDo(s, imp, &SourceFn{Count: b.N})
 				exp := Expand(s, "WideNarrow", &WideNarrow{Wide: numPartitions, In: src.Output})
-				ParDo(s, exp.Out, discard)
+				ParDo(s, exp.Out, &DiscardFn[int]{}, Name("sink"))
 				return nil
 			})
-			if discard.processed != b.N {
-				b.Fatalf("processed dodn't match bench number: got %v want %v", discard.processed, b.N)
+			if err != nil {
+				b.Error(err)
+			}
+			if got, want := int(pr.Counters["sink.Processed"]), b.N; got != want {
+				b.Fatalf("processed didn't match bench number: got %v want %v", got, want)
 			}
 		}
 	}
@@ -276,20 +296,21 @@ func (fn *GroupKeyModSum[V]) ProcessBundle(ctx context.Context, dfc *DFC[V]) err
 }
 
 func TestGBKSum(t *testing.T) {
-	discard := &DiscardFn[KV[int, int]]{}
 	mod := 3
-	Run(context.TODO(), func(s *Scope) error {
+	pr, err := Run(context.TODO(), func(s *Scope) error {
 		imp := Impulse(s)
 		src := ParDo(s, imp, &SourceFn{Count: 10})
 		keyed := ParDo(s, src.Output, &KeyMod[int]{Mod: mod})
 		grouped := GBK[int, int](s, keyed.Output)
 		sums := ParDo(s, grouped, &SumByKey[int, int]{})
-		ParDo(s, sums.Output, discard)
+		ParDo(s, sums.Output, &DiscardFn[KV[int, int]]{}, Name("sink"))
 		return nil
 	})
-
-	if got, want := discard.processed, mod; got != want {
-		t.Errorf("got %v, want %v", got, want)
+	if err != nil {
+		t.Error(err)
+	}
+	if got, want := int(pr.Counters["sink.Processed"]), mod; got != want {
+		t.Fatalf("processed didn't match bench number: got %v want %v", got, want)
 	}
 }
 
@@ -297,7 +318,7 @@ func BenchmarkGBKSum_int(b *testing.B) {
 	for _, mod := range []int{2, 3, 5, 10, 100, 1000, 10000} {
 		b.Run(fmt.Sprintf("mod_%v", mod), func(b *testing.B) {
 			discard := &DiscardFn[KV[int, int]]{}
-			Run(context.TODO(), func(s *Scope) error {
+			pr, err := Run(context.TODO(), func(s *Scope) error {
 				imp := Impulse(s)
 				src := ParDo(s, imp, &SourceFn{Count: b.N})
 				keyed := ParDo(s, src.Output, &KeyMod[int]{Mod: mod})
@@ -306,14 +327,15 @@ func BenchmarkGBKSum_int(b *testing.B) {
 				ParDo(s, sums.Output, discard)
 				return nil
 			})
-
+			if err != nil {
+				b.Error(err)
+			}
 			want := mod
 			if b.N < mod {
 				want = b.N
 			}
-
-			if got := discard.processed; got != want {
-				b.Errorf("got %v, want %v", got, want)
+			if got, want := int(pr.Counters["sink.Processed"]), want; got != want {
+				b.Fatalf("processed didn't match bench number: got %v want %v", got, want)
 			}
 		})
 	}
@@ -322,74 +344,76 @@ func BenchmarkGBKSum_int(b *testing.B) {
 func BenchmarkGBKSum_Lifted_int(b *testing.B) {
 	for _, mod := range []int{2, 3, 5, 10, 100, 1000, 10000} {
 		b.Run(fmt.Sprintf("mod_%v", mod), func(b *testing.B) {
-
-			discard := &DiscardFn[KV[int, int]]{}
-			Run(context.TODO(), func(s *Scope) error {
+			pr, err := Run(context.TODO(), func(s *Scope) error {
 				imp := Impulse(s)
 				src := ParDo(s, imp, &SourceFn{Count: b.N})
 				keyed := ParDo(s, src.Output, &GroupKeyModSum[int]{Mod: mod})
-				ParDo(s, keyed.Output, discard)
+				ParDo(s, keyed.Output, &DiscardFn[KV[int, int]]{}, Name("sink"))
 				return nil
 			})
+			if err != nil {
+				b.Error(err)
+			}
 			want := mod
 			if b.N < mod {
 				want = b.N
 			}
-
-			if got := discard.processed; got != want {
-				b.Errorf("got %v, want %v", got, want)
+			if got, want := int(pr.Counters["sink.Processed"]), want; got != want {
+				b.Fatalf("processed didn't match bench number: got %v want %v", got, want)
 			}
 		})
 	}
 }
 
 func TestTwoSubGraphs(t *testing.T) {
-	discard1, discard2 := &DiscardFn[int]{}, &DiscardFn[int]{}
 	count := 10
-	Run(context.TODO(), func(s *Scope) error {
+	pr, err := Run(context.TODO(), func(s *Scope) error {
 		imp1, imp2 := Impulse(s), Impulse(s)
-		src1, src2 := ParDo(s, imp1, &SourceFn{Count: 10}), ParDo(s, imp2, &SourceFn{Count: count})
-		ParDo(s, src1.Output, discard1)
-		ParDo(s, src2.Output, discard2)
+		src1, src2 := ParDo(s, imp1, &SourceFn{Count: count + 1}), ParDo(s, imp2, &SourceFn{Count: count + 2})
+		ParDo(s, src1.Output, &DiscardFn[int]{}, Name("sink1"))
+		ParDo(s, src2.Output, &DiscardFn[int]{}, Name("sink2"))
 		return nil
 	})
-
-	if got, want := discard1.processed, count; got != want {
+	if err != nil {
+		t.Error(err)
+	}
+	if got, want := int(pr.Counters["sink1.Processed"]), count+1; got != want {
 		t.Errorf("discard1 got %v, want %v", got, want)
 	}
-	if got, want := discard2.processed, count; got != want {
+	if got, want := int(pr.Counters["sink2.Processed"]), count+2; got != want {
 		t.Errorf("discard2 got %v, want %v", got, want)
 	}
-	if discard1.finished != 1 {
-		t.Fatalf("finished didn't match bundle counter: got %v want %v", discard1.finished, 1)
+	if got, want := int(pr.Counters["sink1.Finished"]), 1; got != want {
+		t.Fatalf("finished didn't match bundle counter: got %v want %v", got, want)
 	}
-	if discard2.finished != 1 {
-		t.Fatalf("finished didn't match bundle counter: got %v want %v", discard1.finished, 1)
+	if got, want := int(pr.Counters["sink2.Processed"]), 1; got != want {
+		t.Fatalf("finished didn't match bundle counter: got %v want %v", got, want)
 	}
 }
 
 func TestMultiplex(t *testing.T) {
-	discard1, discard2 := &DiscardFn[int]{}, &DiscardFn[int]{}
 	count := 10
-	Run(context.TODO(), func(s *Scope) error {
+	pr, err := Run(context.TODO(), func(s *Scope) error {
 		imp := Impulse(s)
-		src1, src2 := ParDo(s, imp, &SourceFn{Count: 10}), ParDo(s, imp, &SourceFn{Count: count})
-		ParDo(s, src1.Output, discard1)
-		ParDo(s, src2.Output, discard2)
+		src1, src2 := ParDo(s, imp, &SourceFn{Count: count + 1}), ParDo(s, imp, &SourceFn{Count: count + 2})
+		ParDo(s, src1.Output, &DiscardFn[int]{}, Name("sink1"))
+		ParDo(s, src2.Output, &DiscardFn[int]{}, Name("sink2"))
 		return nil
 	})
-
-	if got, want := discard1.processed, count; got != want {
+	if err != nil {
+		t.Error(err)
+	}
+	if got, want := int(pr.Counters["sink1.Processed"]), count+1; got != want {
 		t.Errorf("discard1 got %v, want %v", got, want)
 	}
-	if got, want := discard2.processed, count; got != want {
+	if got, want := int(pr.Counters["sink2.Processed"]), count+2; got != want {
 		t.Errorf("discard2 got %v, want %v", got, want)
 	}
-	if discard1.finished != 1 {
-		t.Fatalf("finished didn't match bundle counter: got %v want %v", discard1.finished, 1)
+	if got, want := int(pr.Counters["sink1.Processed"]), 1; got != want {
+		t.Fatalf("finished didn't match bundle counter: got %v want %v", got, want)
 	}
-	if discard2.finished != 1 {
-		t.Fatalf("finished didn't match bundle counter: got %v want %v", discard1.finished, 1)
+	if got, want := int(pr.Counters["sink2.Processed"]), 1; got != want {
+		t.Fatalf("finished didn't match bundle counter: got %v want %v", got, want)
 	}
 }
 
@@ -412,16 +436,18 @@ func (fn *OnlySideIter[E]) ProcessBundle(ctx context.Context, dfc *DFC[[]byte]) 
 
 func TestSideInputIter(t *testing.T) {
 	t.Skip("currently insufficiently implemented")
-	discard := &DiscardFn[int]{}
-	Run(context.TODO(), func(s *Scope) error {
+	pr, err := Run(context.TODO(), func(s *Scope) error {
 		imp := Impulse(s)
 		src := ParDo(s, imp, &SourceFn{Count: 10})
 		onlySide := ParDo(s, imp, &OnlySideIter[int]{Side: AsSideIter(src.Output)})
-		ParDo(s, onlySide.Out, discard)
+		ParDo(s, onlySide.Out, &DiscardFn[int]{}, Name("sink"))
 		return nil
 	})
+	if err != nil {
+		t.Error(err)
+	}
 
-	if got, want := discard.processed, 10; got != want {
-		t.Errorf("got %v, want %v", got, want)
+	if got, want := int(pr.Counters["sink.Processed"]), 10; got != want {
+		t.Errorf("discard1 got %v, want %v", got, want)
 	}
 }

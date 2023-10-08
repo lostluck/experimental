@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/lostluck/experimental/altbeams/allinone2/beam/internal/beamopts"
 	pipepb "github.com/lostluck/experimental/altbeams/allinone2/beam/internal/model/pipeline_v1"
 )
 
@@ -122,6 +123,8 @@ type edgeDoFn[E Element] struct {
 	dofn       Transform[E]
 	ins, outs  map[string]nodeIndex
 	parallelIn nodeIndex
+
+	opts beamopts.Struct
 }
 
 func (e *edgeDoFn[E]) inputs() map[string]nodeIndex {
@@ -137,6 +140,7 @@ type bundleProcer interface {
 	multiEdge
 	bundleProc() any
 	parallelInput() nodeIndex
+	options() beamopts.Struct
 }
 
 func (e *edgeDoFn[E]) bundleProc() any {
@@ -145,6 +149,10 @@ func (e *edgeDoFn[E]) bundleProc() any {
 
 func (e *edgeDoFn[E]) parallelInput() nodeIndex {
 	return e.parallelIn
+}
+
+func (e *edgeDoFn[E]) options() beamopts.Struct {
+	return e.opts
 }
 
 var _ bundleProcer = (*edgeDoFn[int])(nil)
@@ -274,7 +282,7 @@ func (g *graph) initSideInput(si sideIface, global edgeIndex, name string, ins m
 }
 
 // build returns the root processors for SDK worker side execution.
-func (g *graph) build() []processor {
+func (g *graph) build() ([]processor, *metricsStore) {
 	type consumer struct {
 		input processor
 		edge  multiEdge
@@ -290,6 +298,10 @@ func (g *graph) build() []processor {
 	}
 
 	var roots []processor
+	mets := metricsStore{
+		metricNames: map[int]string{},
+	}
+	mets.initMetric("dummy", nil)
 
 	var c consumer
 	defer func() {
@@ -320,7 +332,6 @@ func (g *graph) build() []processor {
 		}
 		c = stack[len(stack)-1]
 		stack = stack[0 : len(stack)-1]
-
 		switch e := c.edge.(type) {
 		case *edgeImpulse:
 			imp := newDFC[[]byte](e.output, nil)
@@ -328,6 +339,7 @@ func (g *graph) build() []processor {
 			addConsumers(imp, e.output)
 		case bundleProcer: // Can't type assert generic types.
 			dofn := e.bundleProc()
+			uniqueName := e.options().Name
 
 			rv := reflect.ValueOf(dofn)
 			if rv.Kind() == reflect.Pointer {
@@ -353,7 +365,6 @@ func (g *graph) build() []processor {
 				// We need to pass this notion to the edgeDoFn, and update the received input
 				// with a buffer that is connected to a "wait" for the primary input, so the
 				// buffers can notify the wait when they have their inputs.
-
 			}
 			var procs []processor // Needs to be set on the incoming DFC.
 			for name, nodeID := range e.outputs() {
@@ -379,13 +390,21 @@ func (g *graph) build() []processor {
 
 				addConsumers(proc, nodeID)
 			}
+
+			rt := rv.Type()
+			for i := 0; i < rv.NumField(); i++ {
+				fv := rv.Field(i)
+				if mn, ok := fv.Addr().Interface().(metricNamer); ok {
+					mn.setName(fmt.Sprintf("%s.%s", uniqueName, rt.Field(i).Name))
+				}
+			}
 			// If this is the parallel input, the dofn needs to be set on the incoming DFC.
-			c.input.update(dofn, procs)
+			c.input.update(dofn, procs, &mets)
 		case flattener: // Can't type assert generic types.
 			// The same flatten edge will be re-invoked multiple times, once for each input node.
 			// But those nodes just need to point to the same dofn instance, and outputs
 			dofn, procs, first := e.flatten()
-			c.input.update(dofn, procs)
+			c.input.update(dofn, procs, &mets)
 			if first {
 				// There's only one, so the loop is the best way out.
 				for _, nodeID := range e.outputs() {
@@ -397,5 +416,5 @@ func (g *graph) build() []processor {
 			panic(fmt.Sprintf("unknown edge type %#v", e))
 		}
 	}
-	return roots
+	return roots, &mets
 }
