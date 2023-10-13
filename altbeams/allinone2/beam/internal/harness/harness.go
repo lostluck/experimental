@@ -26,7 +26,7 @@ type SubGraphProto interface {
 	GetWindowingStrategies() map[string]*pipepb.WindowingStrategy
 }
 
-type ExecFunc func(SubGraphProto) (*fnpb.ProcessBundleResponse, map[string]*pipepb.MonitoringInfo, error)
+type ExecFunc func(SubGraphProto, DataContext) (*fnpb.ProcessBundleResponse, map[string]*pipepb.MonitoringInfo, error)
 
 // Options for harness.Main that affect execution of the harness, such as runner capabilities.
 type Options struct {
@@ -70,6 +70,7 @@ func Main(ctx context.Context, controlEndpoint string, opts Options, exec ExecFu
 		slog.DebugContext(ctx, "control response channel closed")
 	}()
 
+	dataMan := &DataChannelManager{}
 	// gRPC requires all readers of a stream be the same goroutine, so this goroutine
 	// is responsible for managing the network data. All it does is pull data from
 	// the stream, and hand off the message to a goroutine to actually be handled,
@@ -90,7 +91,7 @@ func Main(ctx context.Context, controlEndpoint string, opts Options, exec ExecFu
 
 		// Launch a goroutine to handle the control message.
 		fn := func(ctx context.Context, req *fnpb.InstructionRequest) {
-			resp := handleInstruction(ctx, req, lookupDesc, exec)
+			resp := handleInstruction(ctx, req, lookupDesc, exec, dataMan)
 
 			if resp != nil && atomic.LoadInt32(&shutdown) == 0 {
 				respc <- resp
@@ -136,7 +137,7 @@ func DefaultDial(ctx context.Context, endpoint string, timeout time.Duration) (*
 
 var cachedLabels map[string]*pipepb.MonitoringInfo
 
-func handleInstruction(ctx context.Context, req *fnpb.InstructionRequest, fetchBD func(id bundleDescriptorID) (*fnpb.ProcessBundleDescriptor, error), exec ExecFunc) *fnpb.InstructionResponse {
+func handleInstruction(ctx context.Context, req *fnpb.InstructionRequest, fetchBD func(id bundleDescriptorID) (*fnpb.ProcessBundleDescriptor, error), exec ExecFunc, dataMan *DataChannelManager) *fnpb.InstructionResponse {
 	instID := instructionID(req.GetInstructionId())
 	//ctx = metrics.SetBundleID(ctx, string(instID))
 
@@ -159,15 +160,17 @@ func handleInstruction(ctx context.Context, req *fnpb.InstructionRequest, fetchB
 
 	case req.GetProcessBundle() != nil:
 		msg := req.GetProcessBundle()
+		
 
-		// NOTE: the harness sends a 0-length process bundle request to sources (changed?)
 		bdID := bundleDescriptorID(msg.GetProcessBundleDescriptorId())
 
 		bd, err := fetchBD(bdID)
 		if err != nil {
 			return fail(ctx, instID, "process bundle failed %v", err)
 		}
-		pbr, labels, err := exec(bd)
+		data := NewScopedDataManager(dataMan, instID)
+
+		pbr, labels, err := exec(bd, DataContext{Data: data /* State: state*/})
 		if err != nil {
 			return fail(ctx, instID, "process bundle failed %v", err)
 		}

@@ -4,6 +4,9 @@ import (
 	"context"
 	"math"
 	"time"
+
+	"github.com/lostluck/experimental/altbeams/allinone2/beam/coders"
+	"github.com/lostluck/experimental/altbeams/allinone2/beam/internal/harness"
 )
 
 // workerfns.go is where direct runner or SDK side transforms live.
@@ -47,6 +50,81 @@ func (fn *flatten[E]) ProcessBundle(ctx context.Context, dfc *DFC[E]) error {
 	dfc.Process(func(ec ElmC, elm E) bool {
 		fn.Output.Emit(ec, elm)
 		return true
+	})
+	return nil
+}
+
+type datasource[E Element] struct {
+	DC  harness.DataContext
+	SID harness.StreamID
+
+	// Window Coder to produce windows
+	Coder coders.Coder[E]
+
+	Output Emitter[E]
+}
+
+func (fn *datasource[E]) ProcessBundle(ctx context.Context, dfc *DFC[[]byte]) error {
+	// Connect to Data service
+	elmsChan, err := fn.DC.Data.OpenElementChan(ctx, fn.SID, nil)
+	if err != nil {
+		return err
+	}
+	// TODO outputing to timers callbacks
+	dfc.Process(func(ec ElmC, _ []byte) bool {
+		for dataElm := range elmsChan {
+			// Start reading byte blobs.
+			dec := coders.NewDecoder(dataElm.Data)
+			for !dec.Empty() {
+
+				et, ws, pn := coders.DecodeWindowedValueHeader[coders.GWC](dec)
+				e := fn.Coder.Decode(dec)
+
+				fn.Output.Emit(ElmC{
+					elmContext: elmContext{
+						eventTime: et,
+						windows:   ws,
+						pane:      pn,
+					},
+					pcollections: ec.pcollections,
+				}, e)
+			}
+		}
+		return true
+	})
+	return nil
+}
+
+type datasink[E Element] struct {
+	DC  harness.DataContext
+	SID harness.StreamID
+
+	// Window Coder to produce windows
+	Coder coders.Coder[E]
+
+	OnBundleFinish
+}
+
+func (fn *datasink[E]) ProcessBundle(ctx context.Context, dfc *DFC[E]) error {
+	// Connect to Data service
+	wc, err := fn.DC.Data.OpenWrite(ctx, fn.SID)
+	if err != nil {
+		return err
+	}
+
+	enc := coders.NewEncoder()
+	// TODO outputing to timers callbacks
+	dfc.Process(func(ec ElmC, elm E) bool {
+		enc.Reset(100)
+		coders.EncodeWindowedValueHeader(enc, ec.EventTime(), []coders.GWC{{}}, coders.PaneInfo{})
+
+		fn.Coder.Encode(enc, elm)
+
+		wc.Write(enc.Data())
+		return true
+	})
+	fn.OnBundleFinish.Do(dfc, func() error {
+		return wc.Close()
 	})
 	return nil
 }

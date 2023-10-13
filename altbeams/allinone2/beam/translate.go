@@ -7,6 +7,8 @@ import (
 	"github.com/go-json-experiment/json"
 	"github.com/go-json-experiment/json/jsontext"
 	"github.com/lostluck/experimental/altbeams/allinone2/beam/internal/beamopts"
+	"github.com/lostluck/experimental/altbeams/allinone2/beam/internal/harness"
+	fnpb "github.com/lostluck/experimental/altbeams/allinone2/beam/internal/model/fnexecution_v1"
 	pipepb "github.com/lostluck/experimental/altbeams/allinone2/beam/internal/model/pipeline_v1"
 	"github.com/lostluck/experimental/altbeams/allinone2/beam/internal/pipelinex"
 	"google.golang.org/protobuf/proto"
@@ -142,7 +144,7 @@ func (g *graph) marshal(typeReg map[string]reflect.Type) *pipepb.Pipeline {
 			envID = "" // Runner transforms are left blank.
 			uniqueName = "GroupByKey"
 		case bundleProcer:
-			dofn := e.bundleProc()
+			dofn := e.actualTransform()
 			rv := reflect.ValueOf(dofn)
 			if rv.Kind() == reflect.Pointer {
 				rv = rv.Elem()
@@ -322,6 +324,7 @@ func unmarshalToGraph(typeReg map[string]reflect.Type, pbd subGraphProto) *graph
 	var g graph
 	g.consumers = map[nodeIndex][]edgeIndex{}
 
+	pcolParents := map[nodeIndex]edgeIndex{}
 	pcolToIndex := map[string]nodeIndex{}
 	for name := range pbd.GetPcollections() {
 		// Get placeholder nodes in the graph, and avoid reconstructing nodes multiple times.
@@ -332,6 +335,41 @@ func unmarshalToGraph(typeReg map[string]reflect.Type, pbd subGraphProto) *graph
 		pcolToIndex[name] = id
 	}
 
+	routeInputs := func(pt *pipepb.PTransform, edgeID edgeIndex) map[string]nodeIndex {
+		ret := map[string]nodeIndex{}
+		for local, global := range pt.GetInputs() {
+			id := pcolToIndex[global]
+			ret[local] = id
+			g.consumers[id] = append(g.consumers[id], edgeID)
+		}
+		return ret
+	}
+	routeOutputs := func(pt *pipepb.PTransform, parent edgeIndex) map[string]nodeIndex {
+		ret := map[string]nodeIndex{}
+		for local, global := range pt.GetOutputs() {
+			id := pcolToIndex[global]
+			ret[local] = id
+			pcolParents[id] = parent
+		}
+		return ret
+	}
+
+	var placeholders []edgeIndex
+	addPlaceholder := func(pt *pipepb.PTransform, name, kind string) {
+		edgeID := edgeIndex(len(g.edges))
+		ins := routeInputs(pt, edgeID)
+		outs := routeOutputs(pt, edgeID)
+		// Add a dummy edge.
+		g.edges = append(g.edges, &edgePlaceholder{
+			id:        edgeID,
+			transform: name,
+			kind:      kind,
+			ins:       ins, outs: outs,
+			payload: pt.GetSpec().GetPayload(),
+		})
+		placeholders = append(placeholders, edgeID)
+	}
+
 	for name, pt := range pbd.GetTransforms() {
 		if len(pt.GetSubtransforms()) > 0 { // I don't think we need to worry about these though...
 			panic(fmt.Sprintf("can't handle composites yet:, contained by %v", name))
@@ -339,7 +377,7 @@ func unmarshalToGraph(typeReg map[string]reflect.Type, pbd subGraphProto) *graph
 		spec := pt.GetSpec()
 
 		switch spec.GetUrn() {
-		case "beam:transform:impulse:v1", "beam:runner:source:v1":
+		case "beam:transform:impulse:v1":
 			for _, global := range pt.GetOutputs() {
 				id := edgeIndex(len(g.edges))
 				g.edges = append(g.edges, &edgeImpulse{
@@ -347,27 +385,14 @@ func unmarshalToGraph(typeReg map[string]reflect.Type, pbd subGraphProto) *graph
 					output: pcolToIndex[global],
 				})
 			}
+		case "beam:runner:source:v1":
+			addPlaceholder(pt, name, "source")
+		case "beam:runner:sink:v1":
+			addPlaceholder(pt, name, "sink")
 		case "beam:transform:flatten:v1":
-			// NOTE This is similar to how DataSource needs to be added.
-			edgeID := edgeIndex(len(g.edges))
-			ins := map[string]nodeIndex{}
-			for local, global := range pt.GetInputs() {
-				id := pcolToIndex[global]
-				ins[local] = id
-				g.consumers[id] = append(g.consumers[id], edgeID)
-			}
-			outs := map[string]nodeIndex{}
-			for local, global := range pt.GetOutputs() {
-				id := pcolToIndex[global]
-				outs[local] = id
-			}
-			// Add a dummy edge.
-			g.edges = append(g.edges, &edgePlaceholder{
-				transform: name,
-				kind:      "flatten",
-				id:        edgeID, ins: ins, outs: outs,
-			})
+			addPlaceholder(pt, name, "flatten")
 		case "beam:transform:group_by_key:v1":
+			panic("GBKs unimplemented")
 		case "beam:transform:pardo:v1":
 			var wrap dofnWrap
 			proc := decodeDoFn(spec.GetPayload(), &wrap, typeReg, name)
@@ -377,45 +402,50 @@ func unmarshalToGraph(typeReg map[string]reflect.Type, pbd subGraphProto) *graph
 			}
 
 			edgeID := edgeIndex(len(g.edges))
-			ins := map[string]nodeIndex{}
-			for local, global := range pt.GetInputs() {
-				id := pcolToIndex[global]
-				ins[local] = id
 
-				g.consumers[id] = append(g.consumers[id], edgeID)
+			ins := routeInputs(pt, edgeID)
+			for _, global := range pt.GetInputs() {
+				id := pcolToIndex[global]
 				if g.nodes[id] == nil {
 					g.nodes[id] = proc.produceTypedNode(id, pbd.GetPcollections()[global].GetIsBounded() == pipepb.IsBounded_BOUNDED)
-				} else {
-					//	fmt.Printf("node %v already created\n", global)
 				}
 			}
-
-			outs := map[string]nodeIndex{}
-			for local, global := range pt.GetOutputs() {
-				id := pcolToIndex[global]
-				outs[local] = id
-			}
+			outs := routeOutputs(pt, edgeID)
 			opt := beamopts.Struct{
 				Name: name,
 			}
 
-			g.edges = append(g.edges, proc.produceTypedEdge(name, edgeID, wrap.DoFn, ins, outs, opt))
-
-			// But what we want now is to get a *DFC[E], and use that to produce a
-			// typedNode if it's needed.
-			// This should lead to a complete set of interior PCollections, and allow Sources to be produced.
-			// The trick is any Sink/or Discarded pcollections.
-			// Ideally won't re-introspect the DoFn struct, but we could probably do so in a pinch.
-
-			// TODO: We can recover the right types! But now we need the graph again.
-			// We need a method on DoFn that can be used to build up a edgeDoFn[*]
-			// That needs to be given a canonical ID and a mapping in the graph.
-			// Same thing with all the nodes (which are technically done first).
-			// Then our existing build logic should simply work.
+			g.edges = append(g.edges, proc.produceDoFnEdge(name, edgeID, wrap.DoFn, ins, outs, opt))
 		default:
-			panic(fmt.Sprintf("translate failed: unknown urn: %v", spec.GetUrn()))
+			panic(fmt.Sprintf("translate failed: unknown urn: %q", spec.GetUrn()))
 		}
+	}
 
+placeholderLoop:
+	for _, edgeID := range placeholders {
+		// Placeholders almost exclusively are "single type" nodes
+		e := g.edges[edgeID].(*edgePlaceholder)
+		// Check the inputs and outputs for DoFns
+		for _, nodeID := range e.inputs() {
+			eID := pcolParents[nodeID]
+			bp, ok := g.edges[eID].(bundleProcer)
+			if !ok {
+				continue
+			}
+			g.edges[edgeID] = bp.dummyProcessor().newTypeMultiEdge(e)
+			continue placeholderLoop
+		}
+		for _, nodeID := range e.outputs() {
+			for _, eID := range g.consumers[nodeID] {
+				bp, ok := g.edges[eID].(bundleProcer)
+				if !ok {
+					continue
+				}
+				g.edges[edgeID] = bp.dummyProcessor().newTypeMultiEdge(e)
+				continue placeholderLoop
+			}
+		}
+		panic(fmt.Sprintf("couldn't create placeholder node: %+v", e))
 	}
 	return &g
 }
@@ -441,4 +471,14 @@ func decodeDoFn(payload []byte, wrap *dofnWrap, typeReg map[string]reflect.Type,
 	}
 	dfcRT := pbm.Type.In(2).Elem()
 	return reflect.New(dfcRT).Interface().(processor)
+}
+
+func decodePort(data []byte) (harness.Port, string, error) {
+	var port fnpb.RemoteGrpcPort
+	if err := proto.Unmarshal(data, &port); err != nil {
+		return harness.Port{}, "", err
+	}
+	return harness.Port{
+		URL: port.GetApiServiceDescriptor().GetUrl(),
+	}, port.CoderId, nil
 }

@@ -173,7 +173,17 @@ func (e *Encoder) IntervalWindow(end time.Time, dur time.Duration) {
 func (e *Encoder) GlobalWindow() {
 }
 
-// WindowedValueHeader encodes the WindowedValue but not the value
+type GWC struct{}
+
+func (GWC) encode(enc *Encoder) {
+	enc.GlobalWindow()
+}
+
+func (GWC) decode(dec *Decoder) {
+	dec.GlobalWindow()
+}
+
+// EncodeWindowedValueHeader encodes the WindowedValue but not the value
 //
 //	Encodes an element, the windows it is in, the timestamp of the element,
 //
@@ -226,7 +236,7 @@ func (e *Encoder) GlobalWindow() {
 //
 // Components: The element coder and the window coder, in that order.
 // WINDOWED_VALUE = 8 [(beam_urn) = "beam:coder:windowed_value:v1"];
-func WindowedValueHeader[W window](e *Encoder, eventTime time.Time, windows []W, pane paneInfo) {
+func EncodeWindowedValueHeader[W window](e *Encoder, eventTime time.Time, windows []W, pane PaneInfo) {
 	e.Timestamp(eventTime)
 	e.Uint32(uint32(len(windows)))
 	for _, w := range windows {
@@ -235,9 +245,10 @@ func WindowedValueHeader[W window](e *Encoder, eventTime time.Time, windows []W,
 	e.Pane(pane)
 }
 
-type paneInfo struct{}
+type PaneInfo struct{}
 
-func (e *Encoder) Pane(pane paneInfo) {
+func (e *Encoder) Pane(pane PaneInfo) {
+	e.Grow(1)[0] = 0x04
 }
 
 // Nullable handles the nil bit of a value.
@@ -256,6 +267,7 @@ func (e *Encoder) Nullable(isNil bool) {
 
 type window interface {
 	encode(e *Encoder)
+	decode(d *Decoder)
 }
 
 // Timestamp encodes event times in the following fashion.

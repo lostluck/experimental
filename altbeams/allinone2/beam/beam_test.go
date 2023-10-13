@@ -84,13 +84,13 @@ func TestSimpleNamed(t *testing.T) {
 	pr, err := Run(context.TODO(), func(s *Scope) error {
 		imp := Impulse(s)
 		src := ParDo(s, imp, &SourceFn{Count: 10})
-		ParDo(s, src.Output, &DiscardFn[int]{}, Name("sink"))
+		ParDo(s, src.Output, &DiscardFn[int]{}, Name("pants"))
 		return nil
 	})
 	if err != nil {
 		t.Error(err)
 	}
-	if got, want := int(pr.Counters["sink.Processed"]), 10; got != want {
+	if got, want := int(pr.Counters["pants.Processed"]), 10; got != want {
 		t.Fatalf("processed didn't match bench number: got %v want %v", got, want)
 	}
 }
@@ -176,7 +176,7 @@ func (src *WideNarrow) Expand(s *Scope) (out struct{ Out Emitter[int] }) {
 }
 
 func TestPartitionFlatten(t *testing.T) {
-	count, mod := 100, 10
+	count, mod := 10, 2
 	pr, err := Run(context.TODO(), func(s *Scope) error {
 		imp := Impulse(s)
 		src := ParDo(s, imp, &SourceFn{Count: count})
@@ -228,7 +228,7 @@ func BenchmarkPartitionPipe(b *testing.B) {
 		}
 	}
 	for _, numDoFns := range []int{1, 2, 3, 5, 10, 100} {
-		b.Run(fmt.Sprintf("num_partitions_%d", numDoFns), makeBench(numDoFns))
+		b.Run(fmt.Sprintf("partitions=%d", numDoFns), makeBench(numDoFns))
 	}
 }
 

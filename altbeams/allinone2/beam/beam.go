@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"reflect"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/lostluck/experimental/altbeams/allinone2/beam/internal/beamopts"
@@ -148,42 +149,7 @@ func Run(ctx context.Context, expand func(*Scope) error, opts ...Options) (Pipel
 	pipe := g.marshal(typeReg)
 
 	// TODO(BEAM-10610): Allow user configuration of this port, rather than kernel selected.
-	srv, err := extworker.StartLoopback(ctx, 0, func(comps harness.SubGraphProto) (*fnpb.ProcessBundleResponse, map[string]*pipepb.MonitoringInfo, error) {
-
-		newG := unmarshalToGraph(typeReg, comps)
-		roots, mets := newG.build()
-		for _, root := range roots {
-			if err := start(root.(*DFC[[]byte])); err != nil {
-				return nil, nil, err
-			}
-		}
-		for _, root := range roots {
-			if err := root.finish(); err != nil {
-				return nil, nil, err
-			}
-		}
-
-		mons := mets.MonitoringInfos()
-
-		pylds := map[string][]byte{}
-		labels := map[string]*pipepb.MonitoringInfo{}
-		for i, mon := range mons {
-			key := strconv.FormatInt(int64(i), 36)
-			pylds[key] = mon.GetPayload()
-			labels[key] = &pipepb.MonitoringInfo{
-				Urn:    mon.GetUrn(),
-				Type:   mon.GetType(),
-				Labels: mon.GetLabels(),
-			}
-		}
-
-		return &fnpb.ProcessBundleResponse{
-			// ResidualRoots:        rRoots,
-			MonitoringData:  pylds,
-			MonitoringInfos: mons,
-			// RequiresFinalization: requiresFinalization,
-		}, labels, nil
-	})
+	srv, err := extworker.StartLoopback(ctx, 0, executeSubgraph(typeReg))
 
 	if err != nil {
 		return Pipeline{}, err
@@ -214,6 +180,46 @@ func Run(ctx context.Context, expand func(*Scope) error, opts ...Options) (Pipel
 		Counters: r.UserCounters(),
 	}
 	return p, nil
+}
+
+func executeSubgraph(typeReg map[string]reflect.Type) harness.ExecFunc {
+	var i atomic.Uint32
+	labels := map[string]*pipepb.MonitoringInfo{}
+	return func(comps harness.SubGraphProto, dataCon harness.DataContext) (*fnpb.ProcessBundleResponse, map[string]*pipepb.MonitoringInfo, error) {
+		newG := unmarshalToGraph(typeReg, comps)
+		roots, mets := newG.build(dataCon)
+		for _, root := range roots {
+			if err := start(root.(*DFC[[]byte])); err != nil {
+				return nil, nil, err
+			}
+		}
+		for _, root := range roots {
+			if err := root.finish(); err != nil {
+				return nil, nil, err
+			}
+		}
+
+		mons := mets.MonitoringInfos()
+
+		pylds := map[string][]byte{}
+		for _, mon := range mons {
+			key := strconv.FormatInt(int64(i.Add(1)), 36)
+
+			pylds[key] = mon.GetPayload()
+			labels[key] = &pipepb.MonitoringInfo{
+				Urn:    mon.GetUrn(),
+				Type:   mon.GetType(),
+				Labels: mon.GetLabels(),
+			}
+		}
+
+		return &fnpb.ProcessBundleResponse{
+			// ResidualRoots:        rRoots,
+			MonitoringData: pylds,
+			// MonitoringInfos: mons,
+			// RequiresFinalization: requiresFinalization,
+		}, labels, nil
+	}
 }
 
 type Pipeline struct {

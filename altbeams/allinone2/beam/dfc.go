@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/lostluck/experimental/altbeams/allinone2/beam/coders"
 	"github.com/lostluck/experimental/altbeams/allinone2/beam/internal/beamopts"
+	"golang.org/x/exp/maps"
 )
 
 // DFC is the DoFn Context for simple DoFns.
@@ -28,8 +30,8 @@ func (c *DFC[E]) transformID() string {
 
 type elmContext struct {
 	eventTime time.Time
-	windows   []time.Time
-	pane      string
+	windows   []coders.GWC
+	pane      coders.PaneInfo
 }
 
 func newDFC[E Element](id nodeIndex, ds []processor) *DFC[E] {
@@ -50,7 +52,8 @@ func newDFC[E Element](id nodeIndex, ds []processor) *DFC[E] {
 //
 // Process can't return a function since we can't reprocess bundle data.
 //
-// TODO
+// TODO document better.
+// Do we even need this though? Can we instead just have ProcessBundle return the perElm func?
 func (c *DFC[E]) Process(perElm func(ec ElmC, elm E) bool) {
 	if c.perElm != nil {
 		panic("Process called twice")
@@ -88,14 +91,17 @@ func (c *DFC[E]) ToElmC(eventTime time.Time) ElmC {
 
 // processor allows a uniform type for different generic types.
 type processor interface {
-	pcollection() nodeIndex // The pcollection to be processed.
 	update(transform string, dofn any, procs []processor, mets *metricsStore)
-	discard()
-	multiplex(int) []processor
-	flatten(transform string) flattener
 
+	// discard signals that input this processor receives can be discarded.
+	discard()
+	// multiplex indicates this input is used by several consumers.
+	multiplex(int) []processor
+
+	// newTypeMultiEdge produces a configured edge of the matching type and generic parameter.
+	newTypeMultiEdge(ph *edgePlaceholder) multiEdge
 	produceTypedNode(id nodeIndex, bounded bool) node
-	produceTypedEdge(transform string, id edgeIndex, dofn any, ins, outs map[string]nodeIndex, opts beamopts.Struct) multiEdge
+	produceDoFnEdge(transform string, id edgeIndex, dofn any, ins, outs map[string]nodeIndex, opts beamopts.Struct) multiEdge
 
 	start(ctx context.Context) error
 	finish() error
@@ -105,18 +111,14 @@ type processor interface {
 
 var _ processor = &DFC[int]{}
 
-func (c *DFC[E]) pcollection() nodeIndex {
-	return c.id
-}
-
 func (c *DFC[E]) produceTypedNode(id nodeIndex, bounded bool) node {
 	c.id = id
 	return &typedNode[E]{index: id, isBounded: bounded}
 }
 
-func (c *DFC[E]) produceTypedEdge(transform string, id edgeIndex, dofn any, ins, outs map[string]nodeIndex, opts beamopts.Struct) multiEdge {
+func (c *DFC[E]) produceDoFnEdge(transform string, id edgeIndex, dofn any, ins, outs map[string]nodeIndex, opts beamopts.Struct) multiEdge {
 	c.dofn = dofn.(Transform[E])
-	return &edgeDoFn[E]{transform: transform, index: id, parallelIn: c.id, dofn: c.dofn, ins: ins, outs: outs, opts: opts}
+	return &edgeDoFn[E]{transform: transform, index: id, parallelIn: c.id, dofn: c.dofn, ins: ins, outs: outs, opts: opts, proc: c}
 }
 
 func (c *DFC[E]) update(transform string, dofn any, procs []processor, mets *metricsStore) {
@@ -133,8 +135,35 @@ func (c *DFC[E]) discard() {
 	c.dofn = &discard[E]{}
 }
 
-func (c *DFC[E]) flatten(transform string) flattener {
-	return &edgeFlatten[E]{transform: transform}
+func getSingleValue[K comparable, V any](in map[K]V) V {
+	for _, v := range in {
+		return v
+	}
+	panic("expected single value map")
+}
+
+func (c *DFC[E]) newTypeMultiEdge(ph *edgePlaceholder) multiEdge {
+	switch ph.kind {
+	case "flatten":
+		out := getSingleValue(ph.outs)
+		return &edgeFlatten[E]{transform: ph.transform, ins: maps.Values(ph.ins), output: out}
+	case "source":
+		port, coder, err := decodePort(ph.payload)
+		if err != nil {
+			panic(err)
+		}
+		out := getSingleValue(ph.outs)
+		return &edgeDataSource[E]{transform: ph.transform, output: out, port: port, coderID: coder}
+	case "sink":
+		port, coder, err := decodePort(ph.payload)
+		if err != nil {
+			panic(err)
+		}
+		in := getSingleValue(ph.ins)
+		return &edgeDataSink[E]{transform: ph.transform, input: in, port: port, coderID: coder}
+	default:
+		panic(fmt.Sprintf("unknown placeholder kind: %v", ph.kind))
+	}
 }
 
 func (c *DFC[E]) multiplex(numOut int) []processor {
@@ -161,7 +190,9 @@ func (c *DFC[E]) start(ctx context.Context) error {
 	if c.perElm != nil {
 		return nil
 	}
-	c.dofn.ProcessBundle(ctx, c)
+	if err := c.dofn.ProcessBundle(ctx, c); err != nil {
+		return nil
+	}
 	for _, proc := range c.downstream {
 		if err := proc.start(ctx); err != nil {
 			return err

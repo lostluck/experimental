@@ -6,7 +6,9 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/lostluck/experimental/altbeams/allinone2/beam/coders"
 	"github.com/lostluck/experimental/altbeams/allinone2/beam/internal/beamopts"
+	"github.com/lostluck/experimental/altbeams/allinone2/beam/internal/harness"
 	pipepb "github.com/lostluck/experimental/altbeams/allinone2/beam/internal/model/pipeline_v1"
 )
 
@@ -124,6 +126,7 @@ type edgeDoFn[E Element] struct {
 	dofn       Transform[E]
 	ins, outs  map[string]nodeIndex
 	parallelIn nodeIndex
+	proc       processor
 
 	opts beamopts.Struct
 }
@@ -138,21 +141,24 @@ func (e *edgeDoFn[E]) outputs() map[string]nodeIndex {
 
 type bundleProcer interface {
 	multiEdge
-	bundleProc() any
-	parallelInput() nodeIndex
+
+	// Make this a reflect.Type and avoid instance aliasing.
+	// Then we can keep the graph around, for cheaper startup vs reparsing proto
+	actualTransform() any
+	dummyProcessor() processor
 	options() beamopts.Struct
 }
 
-func (e *edgeDoFn[E]) bundleProc() any {
+func (e *edgeDoFn[E]) actualTransform() any {
 	return e.dofn
-}
-
-func (e *edgeDoFn[E]) parallelInput() nodeIndex {
-	return e.parallelIn
 }
 
 func (e *edgeDoFn[E]) options() beamopts.Struct {
 	return e.opts
+}
+
+func (e *edgeDoFn[E]) dummyProcessor() processor {
+	return e.proc
 }
 
 var _ bundleProcer = (*edgeDoFn[int])(nil)
@@ -283,7 +289,7 @@ func (g *graph) initSideInput(si sideIface, global edgeIndex, name string, ins m
 }
 
 // build returns the root processors for SDK worker side execution.
-func (g *graph) build() ([]processor, *metricsStore) {
+func (g *graph) build(dataCon harness.DataContext) ([]processor, *metricsStore) {
 	type consumer struct {
 		input processor
 		edge  multiEdge
@@ -291,7 +297,7 @@ func (g *graph) build() ([]processor, *metricsStore) {
 	var stack []consumer
 	for _, edge := range g.edges {
 		switch edge.(type) {
-		case *edgeImpulse:
+		case *edgeImpulse, sourcer:
 			stack = append(stack, consumer{input: nil, edge: edge})
 		default:
 			// skip non-roots
@@ -338,8 +344,15 @@ func (g *graph) build() ([]processor, *metricsStore) {
 			imp := newDFC[[]byte](e.output, nil)
 			roots = append(roots, imp)
 			addConsumers(imp, e.output)
+		case sourcer:
+			root, toConsumer := e.source(dataCon)
+			roots = append(roots, root)
+			addConsumers(toConsumer, getSingleValue(e.outputs()))
+		case sinker:
+			sink := e.sinkDoFn(dataCon)
+			c.input.update("sink", sink, nil, &mets)
 		case bundleProcer: // Can't type assert generic types.
-			dofn := e.bundleProc()
+			dofn := e.actualTransform()
 			uniqueName := e.options().Name
 
 			rv := reflect.ValueOf(dofn)
@@ -347,26 +360,26 @@ func (g *graph) build() ([]processor, *metricsStore) {
 				rv = rv.Elem()
 			}
 			// Check if this is a side input.
-			if e.parallelInput() != c.input.pcollection() {
-				// Find the side input with which this input is associated
-				// var siFieldName string
-				// for name, nodeID := range e.inputs() {
-				// 	fmt.Println("name", name, "input", nodeID, "parallelInput:", e.parallelInput() == nodeID)
-				// 	if nodeID == c.input.pcollection() {
-				// 		siFieldName = name
-				// 		break
-				// 	}
-				// }
-				// fv := rv.FieldByName(siFieldName)
-				// si := fv.Addr().Interface().(sideIface)
+			// if e.parallelInput() != c.input.pcollection() {
+			// 	// Find the side input with which this input is associated
+			// var siFieldName string
+			// for name, nodeID := range e.inputs() {
+			// 	fmt.Println("name", name, "input", nodeID, "parallelInput:", e.parallelInput() == nodeID)
+			// 	if nodeID == c.input.pcollection() {
+			// 		siFieldName = name
+			// 		break
+			// 	}
+			// }
+			// fv := rv.FieldByName(siFieldName)
+			// si := fv.Addr().Interface().(sideIface)
 
-				// si.sideInput()
+			// si.sideInput()
 
-				// We now have the side input and the field that it's accessed from.
-				// We need to pass this notion to the edgeDoFn, and update the received input
-				// with a buffer that is connected to a "wait" for the primary input, so the
-				// buffers can notify the wait when they have their inputs.
-			}
+			// We now have the side input and the field that it's accessed from.
+			// We need to pass this notion to the edgeDoFn, and update the received input
+			// with a buffer that is connected to a "wait" for the primary input, so the
+			// buffers can notify the wait when they have their inputs.
+			// }
 			var procs []processor // Needs to be set on the incoming DFC.
 			for name, nodeID := range e.outputs() {
 				splitName := strings.Split(name, "%")
@@ -413,26 +426,8 @@ func (g *graph) build() ([]processor, *metricsStore) {
 					break
 				}
 			}
-		case *edgePlaceholder:
-			switch e.kind {
-			case "flatten":
-				// use the input to generate the flatten edge.
-				if e.trueEdge == nil {
-					e.trueEdge = c.input.flatten(e.transform)
-				}
-				transform, dofn, procs, first := e.trueEdge.(flattener).flatten()
-				c.input.update(transform, dofn, procs, &mets)
-				if first {
-					// There's only one, so the loop is the best way out.
-					for _, nodeID := range e.outputs() {
-						addConsumers(procs[0], nodeID)
-						break
-					}
-				}
-			default:
-				panic(fmt.Sprintf("unknown placeholder kind: %v", e.kind))
-			}
-		//	addConsumers(proc, nodeID)
+			//	case *edgePlaceholder:
+			// Ignoring for a sec.
 		default:
 			panic(fmt.Sprintf("unknown edge type %#v", e))
 		}
@@ -444,12 +439,11 @@ func (g *graph) build() ([]processor, *metricsStore) {
 // It needs to be produced while building the graph.
 type edgePlaceholder struct {
 	id        edgeIndex
+	kind      string // Indicates what sort of node this is a placeholder for.
 	transform string
 
-	kind      string // Indicates what sort of node this is a placeholder for.
 	ins, outs map[string]nodeIndex
-
-	trueEdge multiEdge
+	payload   []byte
 }
 
 func (e *edgePlaceholder) inputs() map[string]nodeIndex {
@@ -458,4 +452,84 @@ func (e *edgePlaceholder) inputs() map[string]nodeIndex {
 
 func (e *edgePlaceholder) outputs() map[string]nodeIndex {
 	return e.outs
+}
+
+// edgeDataSource represents a data connection from the runner.
+type edgeDataSource[E Element] struct {
+	id        edgeIndex
+	transform string
+
+	port    harness.Port
+	coderID string
+
+	output nodeIndex
+}
+
+// inputs for datasink, in practice there should only be one
+// but if all else fails, we can insert a flatten.
+func (e *edgeDataSource[E]) inputs() map[string]nodeIndex {
+	return nil
+}
+
+// outputs for DataSink is nil, since it sends back to the runner.
+func (e *edgeDataSource[E]) outputs() map[string]nodeIndex {
+	return map[string]nodeIndex{"o0": e.output}
+}
+
+func (e *edgeDataSource[E]) source(dc harness.DataContext) (processor, processor) {
+	// This is what the Datasource emits to.
+	toConsumer := newDFC[E](e.output, nil)
+
+	// But we're lazy and just kick it off with an impulse.
+	root := newDFC[[]byte](e.output, []processor{toConsumer})
+	root.dofn = &datasource[E]{
+		DC:     dc,
+		SID:    harness.StreamID{PtransformID: e.transform, Port: e.port},
+		Output: Emitter[E]{valid: true, globalIndex: e.output, localDownstreamIndex: 0},
+		Coder:  coders.MakeCoder[E](),
+	}
+	return root, toConsumer
+}
+
+var _ sourcer = (*edgeDataSource[int])(nil)
+
+type sourcer interface {
+	multiEdge
+	source(dc harness.DataContext) (processor, processor)
+}
+
+// edgeDataSink represents a data connection back to the runner.
+type edgeDataSink[E Element] struct {
+	id        edgeIndex
+	transform string
+
+	port    harness.Port
+	coderID string
+
+	input nodeIndex
+}
+
+// inputs for datasink, in practice there should only be one
+// but if all else fails, we can insert a flatten.
+func (e *edgeDataSink[E]) inputs() map[string]nodeIndex {
+	return map[string]nodeIndex{"o0": e.input}
+}
+
+// outputs for DataSink is nil, since it sends back to the runner.
+func (e *edgeDataSink[E]) outputs() map[string]nodeIndex {
+	return nil
+}
+
+var _ sinker = (*edgeDataSink[int])(nil)
+
+type sinker interface {
+	multiEdge
+	sinkDoFn(dc harness.DataContext) any
+}
+
+func (e *edgeDataSink[E]) sinkDoFn(dc harness.DataContext) any {
+	return &datasink[E]{DC: dc,
+		SID:   harness.StreamID{PtransformID: e.transform, Port: e.port},
+		Coder: coders.MakeCoder[E](),
+	}
 }
