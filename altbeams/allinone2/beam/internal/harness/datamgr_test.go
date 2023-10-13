@@ -102,6 +102,16 @@ func (f *fakeDataClient) Send(*fnpb.Elements) error {
 	return nil
 }
 
+func (f *fakeDataClient) RecvMsg(msg any) error {
+	e, err := f.Recv()
+	if err != nil {
+		return err
+	}
+	emsg := msg.(*fnpb.Elements)
+	*emsg = *e
+	return nil
+}
+
 type fakeChanClient struct {
 	ch  chan *fnpb.Elements
 	err error
@@ -113,6 +123,16 @@ func (f *fakeChanClient) Recv() (*fnpb.Elements, error) {
 		return nil, f.err
 	}
 	return e, nil
+}
+
+func (f *fakeChanClient) RecvMsg(msg any) error {
+	e, ok := <-f.ch
+	if !ok {
+		return f.err
+	}
+	emsg := msg.(*fnpb.Elements)
+	*emsg = *e
+	return nil
 }
 
 func (f *fakeChanClient) Send(e *fnpb.Elements) error {
@@ -563,6 +583,10 @@ type noopDataClient struct {
 
 func (*noopDataClient) Recv() (*fnpb.Elements, error) {
 	return nil, nil
+}
+
+func (*noopDataClient) RecvMsg(any) error {
+	return nil
 }
 
 func (*noopDataClient) Send(*fnpb.Elements) error {
