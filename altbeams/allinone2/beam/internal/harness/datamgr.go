@@ -16,6 +16,7 @@
 package harness
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -513,9 +514,11 @@ func (c *DataChannel) makeWriter(ctx context.Context, id clientID) *dataWriter {
 	// We don't check for ended instructions for writers, as writers
 	// can only be created if an instruction is in scope, and aren't
 	// runner or user directed.
+	buf := bytesPool.Get().(*bytes.Buffer)
+	buf.Reset()
 
 	w := &dataWriter{ch: c, id: id,
-		buf: make([]byte, 0, chunkSize),
+		buf: buf,
 		elmMsg: fnpb.Elements{
 			Data: []*fnpb.Elements_Data{
 				{
@@ -532,11 +535,17 @@ func (c *DataChannel) makeWriter(ctx context.Context, id clientID) *dataWriter {
 }
 
 type dataWriter struct {
-	buf []byte
+	buf *bytes.Buffer
 
 	id     clientID
 	ch     *DataChannel
 	elmMsg fnpb.Elements
+}
+
+var bytesPool = sync.Pool{
+	New: func() any {
+		return bytes.NewBuffer(make([]byte, 0, chunkSize))
+	},
 }
 
 // send requires the ch.mu lock to be held.
@@ -561,14 +570,15 @@ func (w *dataWriter) send(msg *fnpb.Elements) error {
 
 func (w *dataWriter) Close() error {
 	// Don't acquire the locks as Flush will do so.
-	l := len(w.buf)
+	l := w.buf.Len()
 	err := w.Flush()
 	if err != nil {
 		return errors.Wrapf(err, "dataWriter[%v;%v].Close: error flushing buffer of length %d", w.id, w.ch.id, l)
 	}
-	// TODO(BEAM-13082): Consider a sync.Pool to reuse < 64MB buffers.
-	// The dataWriter won't be reused, but may be referenced elsewhere.
-	// Drop the buffer to let it be GC'd.
+
+	if w.buf.Len() < 16*chunkSize {
+		bytesPool.Put(w.buf)
+	}
 	w.buf = nil
 
 	// Now acquire the locks since we're sending.
@@ -602,7 +612,7 @@ func (w *dataWriter) Flush() error {
 	defer w.ch.mu.Unlock()
 
 	w.elmMsg.Data[0].IsLast = false
-	w.elmMsg.Data[0].Data = w.buf
+	w.elmMsg.Data[0].Data = w.buf.Bytes()
 	msg := &w.elmMsg
 	// msg := &fnpb.Elements{
 	// 	Data: []*fnpb.Elements_Data{
@@ -613,16 +623,16 @@ func (w *dataWriter) Flush() error {
 	// 		},
 	// 	},
 	// }
-	if l := len(w.buf); l > largeBufferNotificationThreshold {
+	if l := w.buf.Len(); l > largeBufferNotificationThreshold {
 		slog.Debug("dataWriter.Flush flushed large buffer of length %d", "writer", w.id, "channel", w.ch.id, "length", l)
 	}
-	w.buf = w.buf[:0]
+	w.buf.Reset()
 	return w.send(msg)
 }
 
 func (w *dataWriter) Write(p []byte) (n int, err error) {
-	if len(w.buf)+len(p) > chunkSize {
-		l := len(w.buf)
+	if w.buf.Len()+len(p) > chunkSize {
+		l := w.buf.Len()
 		// We can't fit this message into the buffer. We need to flush the buffer
 		if err := w.Flush(); err != nil {
 			return 0, errors.Wrapf(err, "datamgr.go [%v]: error flushing buffer of length %d", w.id, l)
@@ -630,8 +640,7 @@ func (w *dataWriter) Write(p []byte) (n int, err error) {
 	}
 
 	// At this point there's room in the buffer one way or another.
-	w.buf = append(w.buf, p...)
-	return len(p), nil
+	return w.buf.Write(p)
 }
 
 func (c *DataChannel) makeTimerWriter(ctx context.Context, id clientID, family string) *timerWriter {
