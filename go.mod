@@ -6,8 +6,8 @@ require (
 	github.com/apache/beam/sdks/v2 v2.40.0
 	github.com/google/go-cmp v0.5.8
 	golang.org/x/exp v0.0.0-20230131160201-f062dba9d201
-	google.golang.org/grpc v1.47.0
-	google.golang.org/protobuf v1.28.0
+	google.golang.org/grpc v1.58.2
+	google.golang.org/protobuf v1.31.0
 )
 
 require (
