@@ -2,20 +2,22 @@ package beam
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"time"
-
-	"github.com/lostluck/experimental/altbeams/allinone2/beam/coders"
-	"github.com/lostluck/experimental/altbeams/allinone2/beam/internal/harness"
 )
 
-// workerfns.go is where direct runner or SDK side transforms live.
+// workerfns.go is where SDK side transforms and their abstract graph representations live.
 // They provide common utility that pipeline execution needs to correctly implement the beam model.
 // Note that they are largely implemented in the same manner as user DoFns.
 
+// multiplex and discard tranforms have no explicit edge, and are implicitly added to
+// the execution graph when a PCollection is consumed by more than one transform, and zero
+// transforms respectively.
+
 // multiplex is a Transform inserted when a PCollection is used as an input into
 // multiple downstream Transforms. The same element is emitted to each
-// consumming emitter in order.
+// consuming emitter in order.
 type multiplex[E Element] struct {
 	Outs []Emitter[E]
 }
@@ -42,11 +44,61 @@ func (fn *discard[E]) ProcessBundle(ctx context.Context, dfc *DFC[E]) error {
 	return nil
 }
 
+// edgeFlatten represents a Flatten transform.
+type edgeFlatten[E Element] struct {
+	index     edgeIndex
+	transform string
+
+	ins    []nodeIndex
+	output nodeIndex
+
+	// exec build time instances.
+	instance *flatten[E]
+	procs    []processor
+}
+
+// inputs for flattens are plural
+func (e *edgeFlatten[E]) inputs() map[string]nodeIndex {
+	ins := map[string]nodeIndex{}
+	for i, input := range e.ins {
+		ins[fmt.Sprintf("i%d", i)] = input
+	}
+	return ins
+}
+
+// outputs for Flattens are one.
+func (e *edgeFlatten[E]) outputs() map[string]nodeIndex {
+	return map[string]nodeIndex{"o0": e.output}
+}
+
+func (e *edgeFlatten[E]) flatten() (string, any, []processor, bool) {
+	var first bool
+	if e.instance == nil {
+		first = true
+		e.instance = &flatten[E]{
+			Output: Emitter[E]{globalIndex: e.output},
+		}
+		e.procs = []processor{e.instance.Output.newDFC(e.output)}
+	}
+	return e.transform, e.instance, e.procs, first
+}
+
+type flattener interface {
+	multiEdge
+	// Returns the flatten instance, the downstream processors, and if this was the first call to dedup setting downstream consumers
+	flatten() (string, any, []processor, bool)
+}
+
+var _ flattener = (*edgeFlatten[int])(nil)
+
+// flatten implements an SDK side flatten, being a single point to funnel together
+// multiple outputs together.
 type flatten[E Element] struct {
 	Output Emitter[E]
 }
 
 func (fn *flatten[E]) ProcessBundle(ctx context.Context, dfc *DFC[E]) error {
+	fmt.Println("sdk flatten")
 	dfc.Process(func(ec ElmC, elm E) bool {
 		fn.Output.Emit(ec, elm)
 		return true
@@ -54,80 +106,31 @@ func (fn *flatten[E]) ProcessBundle(ctx context.Context, dfc *DFC[E]) error {
 	return nil
 }
 
-type datasource[E Element] struct {
-	DC  harness.DataContext
-	SID harness.StreamID
+// EdgeGBK represents a Group By Key transform.
+type edgeGBK[K Keys, V Element] struct {
+	index edgeIndex
 
-	// Window Coder to produce windows
-	Coder coders.Coder[E]
-
-	Output Emitter[E]
+	input, output nodeIndex
 }
 
-func (fn *datasource[E]) ProcessBundle(ctx context.Context, dfc *DFC[[]byte]) error {
-	// Connect to Data service
-	elmsChan, err := fn.DC.Data.OpenElementChan(ctx, fn.SID, nil)
-	if err != nil {
-		return err
-	}
-	// TODO outputing to timers callbacks
-	dfc.Process(func(ec ElmC, _ []byte) bool {
-		for dataElm := range elmsChan {
-			// Start reading byte blobs.
-			dec := coders.NewDecoder(dataElm.Data)
-			for !dec.Empty() {
-
-				et, ws, pn := coders.DecodeWindowedValueHeader[coders.GWC](dec)
-				e := fn.Coder.Decode(dec)
-
-				fn.Output.Emit(ElmC{
-					elmContext: elmContext{
-						eventTime: et,
-						windows:   ws,
-						pane:      pn,
-					},
-					pcollections: ec.pcollections,
-				}, e)
-			}
-		}
-		return true
-	})
-	return nil
+// inputs for GBKs are one.
+func (e *edgeGBK[K, V]) inputs() map[string]nodeIndex {
+	return map[string]nodeIndex{"i0": e.input}
 }
 
-type datasink[E Element] struct {
-	DC  harness.DataContext
-	SID harness.StreamID
-
-	// Window Coder to produce windows
-	Coder coders.Coder[E]
-
-	OnBundleFinish
+// inputs for GBKs are one.
+func (e *edgeGBK[K, V]) outputs() map[string]nodeIndex {
+	return map[string]nodeIndex{"o0": e.output}
 }
 
-func (fn *datasink[E]) ProcessBundle(ctx context.Context, dfc *DFC[E]) error {
-	// Connect to Data service
-	wc, err := fn.DC.Data.OpenWrite(ctx, fn.SID)
-	if err != nil {
-		return err
-	}
+func (e *edgeGBK[K, V]) groupby() {}
 
-	enc := coders.NewEncoder()
-	// TODO outputing to timers callbacks
-	dfc.Process(func(ec ElmC, elm E) bool {
-		enc.Reset(100)
-		coders.EncodeWindowedValueHeader(enc, ec.EventTime(), []coders.GWC{{}}, coders.PaneInfo{})
-
-		fn.Coder.Encode(enc, elm)
-
-		wc.Write(enc.Data())
-		return true
-	})
-	fn.OnBundleFinish.Do(dfc, func() error {
-		return wc.Close()
-	})
-	return nil
+type keygrouper interface {
+	multiEdge
+	groupby()
 }
+
+var _ keygrouper = (*edgeGBK[int, int])(nil)
 
 // gbk groups by the key type and value type.
 // TODO, remove this.

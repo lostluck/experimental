@@ -6,8 +6,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/lostluck/experimental/altbeams/allinone2/beam/coders"
-	"github.com/lostluck/experimental/altbeams/allinone2/beam/internal/beamopts"
 	"github.com/lostluck/experimental/altbeams/allinone2/beam/internal/harness"
 	pipepb "github.com/lostluck/experimental/altbeams/allinone2/beam/internal/model/pipeline_v1"
 )
@@ -26,9 +24,20 @@ func (i edgeIndex) String() string {
 }
 
 // graph replicates the structure for a beam pipeline graph.
+//
+// graph is used for both pipeline construction for marshalling to the
+// Beam Pipeline proto, and for building the bundle processor
+// for ProcessBundleDescriptors
+//
+// During pipeline construction, a graph is built up as the user connects
+// together DoFns with ParDos and other transforms. It's then serialized
+// into a beam Pipeline protocol buffer message.
+//
+// Workers receive ProcessBundleDescriptors that contain a subgraph, which
+// are unmarshaled into a new graph structure. This graph
+// structure is then used to build DFCs and their resident transforms for
+// processing data in a bundle.
 type graph struct {
-	seq int //  Validates that this is the same graph.
-
 	nodes []node      // PCollections
 	edges []multiEdge // Transforms
 
@@ -92,123 +101,6 @@ func (e *edgeImpulse) inputs() map[string]nodeIndex {
 func (e *edgeImpulse) outputs() map[string]nodeIndex {
 	return map[string]nodeIndex{"o0": e.output}
 }
-
-// EdgeGBK represents a Group By Key transform.
-type edgeGBK[K Keys, V Element] struct {
-	index edgeIndex
-
-	input, output nodeIndex
-}
-
-// inputs for GBKs are one.
-func (e *edgeGBK[K, V]) inputs() map[string]nodeIndex {
-	return map[string]nodeIndex{"i0": e.input}
-}
-
-// inputs for GBKs are one.
-func (e *edgeGBK[K, V]) outputs() map[string]nodeIndex {
-	return map[string]nodeIndex{"o0": e.output}
-}
-
-func (e *edgeGBK[K, V]) groupby() {}
-
-type keygrouper interface {
-	multiEdge
-	groupby()
-}
-
-var _ keygrouper = (*edgeGBK[int, int])(nil)
-
-type edgeDoFn[E Element] struct {
-	index     edgeIndex
-	transform string
-
-	dofn       Transform[E]
-	ins, outs  map[string]nodeIndex
-	parallelIn nodeIndex
-	proc       processor
-
-	opts beamopts.Struct
-}
-
-func (e *edgeDoFn[E]) inputs() map[string]nodeIndex {
-	return e.ins
-}
-
-func (e *edgeDoFn[E]) outputs() map[string]nodeIndex {
-	return e.outs
-}
-
-type bundleProcer interface {
-	multiEdge
-
-	// Make this a reflect.Type and avoid instance aliasing.
-	// Then we can keep the graph around, for cheaper startup vs reparsing proto
-	actualTransform() any
-	dummyProcessor() processor
-	options() beamopts.Struct
-}
-
-func (e *edgeDoFn[E]) actualTransform() any {
-	return e.dofn
-}
-
-func (e *edgeDoFn[E]) options() beamopts.Struct {
-	return e.opts
-}
-
-func (e *edgeDoFn[E]) dummyProcessor() processor {
-	return e.proc
-}
-
-var _ bundleProcer = (*edgeDoFn[int])(nil)
-
-// edgeFlatten represents a Flatten transform.
-type edgeFlatten[E Element] struct {
-	index     edgeIndex
-	transform string
-
-	ins    []nodeIndex
-	output nodeIndex
-
-	// exec build time instances.
-	instance *flatten[E]
-	procs    []processor
-}
-
-// inputs for flattens are plural
-func (e *edgeFlatten[E]) inputs() map[string]nodeIndex {
-	ins := map[string]nodeIndex{}
-	for i, input := range e.ins {
-		ins[fmt.Sprintf("i%d", i)] = input
-	}
-	return ins
-}
-
-// outputs for Flattens are one.
-func (e *edgeFlatten[E]) outputs() map[string]nodeIndex {
-	return map[string]nodeIndex{"o0": e.output}
-}
-
-func (e *edgeFlatten[E]) flatten() (string, any, []processor, bool) {
-	var first bool
-	if e.instance == nil {
-		first = true
-		e.instance = &flatten[E]{
-			Output: Emitter[E]{globalIndex: e.output},
-		}
-		e.procs = []processor{e.instance.Output.newDFC(e.output)}
-	}
-	return e.transform, e.instance, e.procs, first
-}
-
-type flattener interface {
-	multiEdge
-	// Returns the flatten instance, the downstream processors, and if this was the first call to dedup setting downstream consumers
-	flatten() (string, any, []processor, bool)
-}
-
-var _ flattener = (*edgeFlatten[int])(nil)
 
 func (g *graph) curNodeIndex() nodeIndex {
 	return nodeIndex(len(g.nodes))
@@ -433,103 +325,4 @@ func (g *graph) build(dataCon harness.DataContext) ([]processor, *metricsStore) 
 		}
 	}
 	return roots, &mets
-}
-
-// edgePlaceholder represents a transform that can't be created at translation time.
-// It needs to be produced while building the graph.
-type edgePlaceholder struct {
-	id        edgeIndex
-	kind      string // Indicates what sort of node this is a placeholder for.
-	transform string
-
-	ins, outs map[string]nodeIndex
-	payload   []byte
-}
-
-func (e *edgePlaceholder) inputs() map[string]nodeIndex {
-	return e.ins
-}
-
-func (e *edgePlaceholder) outputs() map[string]nodeIndex {
-	return e.outs
-}
-
-// edgeDataSource represents a data connection from the runner.
-type edgeDataSource[E Element] struct {
-	id        edgeIndex
-	transform string
-
-	port    harness.Port
-	coderID string
-
-	output nodeIndex
-}
-
-// inputs for datasink, in practice there should only be one
-// but if all else fails, we can insert a flatten.
-func (e *edgeDataSource[E]) inputs() map[string]nodeIndex {
-	return nil
-}
-
-// outputs for DataSink is nil, since it sends back to the runner.
-func (e *edgeDataSource[E]) outputs() map[string]nodeIndex {
-	return map[string]nodeIndex{"o0": e.output}
-}
-
-func (e *edgeDataSource[E]) source(dc harness.DataContext) (processor, processor) {
-	// This is what the Datasource emits to.
-	toConsumer := newDFC[E](e.output, nil)
-
-	// But we're lazy and just kick it off with an impulse.
-	root := newDFC[[]byte](e.output, []processor{toConsumer})
-	root.dofn = &datasource[E]{
-		DC:     dc,
-		SID:    harness.StreamID{PtransformID: e.transform, Port: e.port},
-		Output: Emitter[E]{valid: true, globalIndex: e.output, localDownstreamIndex: 0},
-		Coder:  coders.MakeCoder[E](),
-	}
-	return root, toConsumer
-}
-
-var _ sourcer = (*edgeDataSource[int])(nil)
-
-type sourcer interface {
-	multiEdge
-	source(dc harness.DataContext) (processor, processor)
-}
-
-// edgeDataSink represents a data connection back to the runner.
-type edgeDataSink[E Element] struct {
-	id        edgeIndex
-	transform string
-
-	port    harness.Port
-	coderID string
-
-	input nodeIndex
-}
-
-// inputs for datasink, in practice there should only be one
-// but if all else fails, we can insert a flatten.
-func (e *edgeDataSink[E]) inputs() map[string]nodeIndex {
-	return map[string]nodeIndex{"o0": e.input}
-}
-
-// outputs for DataSink is nil, since it sends back to the runner.
-func (e *edgeDataSink[E]) outputs() map[string]nodeIndex {
-	return nil
-}
-
-var _ sinker = (*edgeDataSink[int])(nil)
-
-type sinker interface {
-	multiEdge
-	sinkDoFn(dc harness.DataContext) any
-}
-
-func (e *edgeDataSink[E]) sinkDoFn(dc harness.DataContext) any {
-	return &datasink[E]{DC: dc,
-		SID:   harness.StreamID{PtransformID: e.transform, Port: e.port},
-		Coder: coders.MakeCoder[E](),
-	}
 }

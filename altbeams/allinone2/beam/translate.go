@@ -320,6 +320,26 @@ type subGraphProto interface {
 	GetWindowingStrategies() map[string]*pipepb.WindowingStrategy
 }
 
+// edgePlaceholder represents a transform that can't be created at translation time.
+// It needs to be produced while building the graph from a bundle descriptor, so
+// the transform can use the real types from upstream or downstream transforms.
+type edgePlaceholder struct {
+	id        edgeIndex
+	kind      string // Indicates what sort of node this is a placeholder for.
+	transform string
+
+	ins, outs map[string]nodeIndex
+	payload   []byte
+}
+
+func (e *edgePlaceholder) inputs() map[string]nodeIndex {
+	return e.ins
+}
+
+func (e *edgePlaceholder) outputs() map[string]nodeIndex {
+	return e.outs
+}
+
 func unmarshalToGraph(typeReg map[string]reflect.Type, pbd subGraphProto) *graph {
 	var g graph
 	g.consumers = map[nodeIndex][]edgeIndex{}
@@ -356,7 +376,7 @@ func unmarshalToGraph(typeReg map[string]reflect.Type, pbd subGraphProto) *graph
 
 	var placeholders []edgeIndex
 	addPlaceholder := func(pt *pipepb.PTransform, name, kind string) {
-		edgeID := edgeIndex(len(g.edges))
+		edgeID := g.curEdgeIndex()
 		ins := routeInputs(pt, edgeID)
 		outs := routeOutputs(pt, edgeID)
 		// Add a dummy edge.
@@ -379,7 +399,7 @@ func unmarshalToGraph(typeReg map[string]reflect.Type, pbd subGraphProto) *graph
 		switch spec.GetUrn() {
 		case "beam:transform:impulse:v1":
 			for _, global := range pt.GetOutputs() {
-				id := edgeIndex(len(g.edges))
+				id := g.curEdgeIndex()
 				g.edges = append(g.edges, &edgeImpulse{
 					index:  id,
 					output: pcolToIndex[global],
@@ -401,7 +421,7 @@ func unmarshalToGraph(typeReg map[string]reflect.Type, pbd subGraphProto) *graph
 				panic(fmt.Sprintf("unimplemented: transform %v has side inputs: %v", name, pt.Inputs))
 			}
 
-			edgeID := edgeIndex(len(g.edges))
+			edgeID := g.curEdgeIndex()
 
 			ins := routeInputs(pt, edgeID)
 			for _, global := range pt.GetInputs() {
