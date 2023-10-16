@@ -3,6 +3,7 @@ package beam
 import (
 	"fmt"
 	"reflect"
+	"strings"
 
 	"github.com/go-json-experiment/json"
 	"github.com/go-json-experiment/json/jsontext"
@@ -412,10 +413,10 @@ func unmarshalToGraph(typeReg map[string]reflect.Type, pbd subGraphProto) *graph
 		case "beam:transform:flatten:v1":
 			addPlaceholder(pt, name, "flatten")
 		case "beam:transform:group_by_key:v1":
-			panic("GBKs unimplemented")
+			panic("Worker side GBKs unimplemented. Runner error.")
 		case "beam:transform:pardo:v1":
 			var wrap dofnWrap
-			proc := decodeDoFn(spec.GetPayload(), &wrap, typeReg, name)
+			dofnType, proc := decodeDoFn(spec.GetPayload(), &wrap, typeReg, name)
 
 			if len(pt.Inputs) > 1 {
 				panic(fmt.Sprintf("unimplemented: transform %v has side inputs: %v", name, pt.Inputs))
@@ -431,6 +432,16 @@ func unmarshalToGraph(typeReg map[string]reflect.Type, pbd subGraphProto) *graph
 				}
 			}
 			outs := routeOutputs(pt, edgeID)
+			for local, global := range pt.GetOutputs() {
+				id := pcolToIndex[global]
+				if g.nodes[id] == nil {
+					emt, ok := getEmitIfaceByName(dofnType, local)
+					if !ok {
+						panic(fmt.Sprintf("consistency error: transform %v of type %v has no output field named %v", name, dofnType, local))
+					}
+					g.nodes[id] = emt.newNode(id, edgeID, pbd.GetPcollections()[global].GetIsBounded() == pipepb.IsBounded_BOUNDED)
+				}
+			}
 			opt := beamopts.Struct{
 				Name: name,
 			}
@@ -445,32 +456,48 @@ placeholderLoop:
 	for _, edgeID := range placeholders {
 		// Placeholders almost exclusively are "single type" nodes
 		e := g.edges[edgeID].(*edgePlaceholder)
-		// Check the inputs and outputs for DoFns
+		// Check the inputs and outputs for actual node types.
 		for _, nodeID := range e.inputs() {
-			eID := pcolParents[nodeID]
-			bp, ok := g.edges[eID].(bundleProcer)
-			if !ok {
-				continue
-			}
-			g.edges[edgeID] = bp.dummyProcessor().newTypeMultiEdge(e)
+			g.edges[edgeID] = g.nodes[nodeID].newTypeMultiEdge(e)
 			continue placeholderLoop
 		}
 		for _, nodeID := range e.outputs() {
-			for _, eID := range g.consumers[nodeID] {
-				bp, ok := g.edges[eID].(bundleProcer)
-				if !ok {
-					continue
-				}
-				g.edges[edgeID] = bp.dummyProcessor().newTypeMultiEdge(e)
-				continue placeholderLoop
-			}
+			g.edges[edgeID] = g.nodes[nodeID].newTypeMultiEdge(e)
+			continue placeholderLoop
 		}
 		panic(fmt.Sprintf("couldn't create placeholder node: %+v", e))
 	}
 	return &g
 }
 
-func decodeDoFn(payload []byte, wrap *dofnWrap, typeReg map[string]reflect.Type, name string) processor {
+// getEmitIfaceByName extracts an emitter from the DoFn so we can get the exact type
+// for downstream node construction.
+//
+// TODO, consider detecting slice/array emitters earlier so we can 
+// avoid constantly reparsing the field name.
+func getEmitIfaceByName(doFnT reflect.Type, field string) (emitIface, bool) {
+	splitName := strings.Split(field, "%")
+	var rt reflect.Type
+	switch len(splitName) {
+	case 1:
+		sf, ok := doFnT.FieldByName(field)
+		if !ok {
+			return nil, false
+		}
+		rt = sf.Type
+	case 2:
+		sf, ok := doFnT.FieldByName(splitName[0])
+		if !ok {
+			return nil, false
+		}
+		rt = sf.Type.Elem()
+	default:
+		panic("unexpected name value")
+	}
+	return reflect.New(rt).Interface().(emitIface), true
+}
+
+func decodeDoFn(payload []byte, wrap *dofnWrap, typeReg map[string]reflect.Type, name string) (reflect.Type, processor) {
 	var dofnPayload pipepb.ParDoPayload
 	if err := proto.Unmarshal(payload, &dofnPayload); err != nil {
 		panic(err)
@@ -490,7 +517,7 @@ func decodeDoFn(payload []byte, wrap *dofnWrap, typeReg map[string]reflect.Type,
 		panic(fmt.Sprintf("type in transform %v doesn't have a ProcessBundle method: %v", name, dofnPtrRT))
 	}
 	dfcRT := pbm.Type.In(2).Elem()
-	return reflect.New(dfcRT).Interface().(processor)
+	return dofnPtrRT.Elem(), reflect.New(dfcRT).Interface().(processor)
 }
 
 func decodePort(data []byte) (harness.Port, string, error) {

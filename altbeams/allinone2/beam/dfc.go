@@ -7,7 +7,6 @@ import (
 
 	"github.com/lostluck/experimental/altbeams/allinone2/beam/coders"
 	"github.com/lostluck/experimental/altbeams/allinone2/beam/internal/beamopts"
-	"golang.org/x/exp/maps"
 )
 
 // DFC is the DoFn Context for simple DoFns.
@@ -99,7 +98,6 @@ type processor interface {
 	multiplex(int) []processor
 
 	// newTypeMultiEdge produces a configured edge of the matching type and generic parameter.
-	newTypeMultiEdge(ph *edgePlaceholder) multiEdge
 	produceTypedNode(id nodeIndex, bounded bool) node
 	produceDoFnEdge(transform string, id edgeIndex, dofn any, ins, outs map[string]nodeIndex, opts beamopts.Struct) multiEdge
 
@@ -140,30 +138,6 @@ func getSingleValue[K comparable, V any](in map[K]V) V {
 		return v
 	}
 	panic("expected single value map")
-}
-
-func (c *DFC[E]) newTypeMultiEdge(ph *edgePlaceholder) multiEdge {
-	switch ph.kind {
-	case "flatten":
-		out := getSingleValue(ph.outs)
-		return &edgeFlatten[E]{transform: ph.transform, ins: maps.Values(ph.ins), output: out}
-	case "source":
-		port, coder, err := decodePort(ph.payload)
-		if err != nil {
-			panic(err)
-		}
-		out := getSingleValue(ph.outs)
-		return &edgeDataSource[E]{transform: ph.transform, output: out, port: port, coderID: coder}
-	case "sink":
-		port, coder, err := decodePort(ph.payload)
-		if err != nil {
-			panic(err)
-		}
-		in := getSingleValue(ph.ins)
-		return &edgeDataSink[E]{transform: ph.transform, input: in, port: port, coderID: coder}
-	default:
-		panic(fmt.Sprintf("unknown placeholder kind: %v", ph.kind))
-	}
 }
 
 func (c *DFC[E]) multiplex(numOut int) []processor {

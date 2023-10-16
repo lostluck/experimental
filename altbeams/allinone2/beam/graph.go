@@ -8,6 +8,7 @@ import (
 
 	"github.com/lostluck/experimental/altbeams/allinone2/beam/internal/harness"
 	pipepb "github.com/lostluck/experimental/altbeams/allinone2/beam/internal/model/pipeline_v1"
+	"golang.org/x/exp/maps"
 )
 
 // graph.go holds the structures for the deferred processing graph.
@@ -52,6 +53,7 @@ type node interface {
 	windowingStrat()
 	addCoder(intern map[string]string, coders map[string]*pipepb.Coder) string
 	setParent(parent edgeIndex)
+	newTypeMultiEdge(*edgePlaceholder) multiEdge
 }
 
 var _ node = &typedNode[int]{}
@@ -76,8 +78,37 @@ func (n *typedNode[E]) windowingStrat() {
 	// TODO, add windowing strategies.
 }
 
+// TODO remove.
 func (n *typedNode[E]) setParent(parent edgeIndex) {
 	n.parentEdge = parent
+}
+
+// newTypeMultiEdge produces a child edge that can or produce this node as needed.
+// This is required to be able to produce Source and Sink nodes of the right type
+// at bundle processing at pipeline execution time, since we don't have a real type
+// for them yet.
+func (c *typedNode[E]) newTypeMultiEdge(ph *edgePlaceholder) multiEdge {
+	switch ph.kind {
+	case "flatten":
+		out := getSingleValue(ph.outs)
+		return &edgeFlatten[E]{transform: ph.transform, ins: maps.Values(ph.ins), output: out}
+	case "source":
+		port, coder, err := decodePort(ph.payload)
+		if err != nil {
+			panic(err)
+		}
+		out := getSingleValue(ph.outs)
+		return &edgeDataSource[E]{transform: ph.transform, output: out, port: port, coderID: coder}
+	case "sink":
+		port, coder, err := decodePort(ph.payload)
+		if err != nil {
+			panic(err)
+		}
+		in := getSingleValue(ph.ins)
+		return &edgeDataSink[E]{transform: ph.transform, input: in, port: port, coderID: coder}
+	default:
+		panic(fmt.Sprintf("unknown placeholder kind: %v", ph.kind))
+	}
 }
 
 // multiEdges represent transforms.

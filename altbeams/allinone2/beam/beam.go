@@ -92,12 +92,6 @@ func (it *Iter[V]) All() func(perElm func(elm V) bool) {
 	}
 }
 
-// GBK produces an output PCollection.
-func GBK[K Keys, V Element](s *Scope, input Emitter[KV[K, V]]) Emitter[KV[K, Iter[V]]] {
-	// TODO, use a real defered gbk edge, instead of the DoFn fake.
-	return ParDo(s, input, &gbk[K, V]{}).Output
-}
-
 func start(dfc *DFC[[]byte]) error {
 	if err := dfc.start(context.TODO()); err != nil {
 		return err
@@ -287,4 +281,25 @@ func Flatten[E Element](s *Scope, inputs ...Emitter[E]) Emitter[E] {
 	// We do all the expected connections here.
 	// Side inputs, are put on the side input at the DoFn creation time being passed in.
 	return Emitter[E]{globalIndex: nodeID}
+}
+
+// GBK produces an output PCollection.
+func GBK[K Keys, V Element](s *Scope, input Emitter[KV[K, V]], opts ...Options) Emitter[KV[K, Iter[V]]] {
+	if s.g.consumers == nil {
+		s.g.consumers = map[nodeIndex][]edgeIndex{}
+	}
+
+	var opt beamopts.Struct
+	opt.Join(opts...)
+
+	edgeID := s.g.curEdgeIndex()
+	nodeID := s.g.curNodeIndex()
+	s.g.consumers[input.globalIndex] = append(s.g.consumers[input.globalIndex], edgeID)
+
+	s.g.edges = append(s.g.edges, &edgeGBK[K, V]{index: edgeID, input: input.globalIndex, output: nodeID, opts: opt})
+	s.g.nodes = append(s.g.nodes, &typedNode[KV[K, Iter[V]]]{index: nodeID, parentEdge: edgeID})
+
+	// We do all the expected connections here.
+	// Side inputs, are put on the side input at the DoFn creation time being passed in.
+	return Emitter[KV[K, Iter[V]]]{globalIndex: nodeID}
 }

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"math"
 	"time"
+
+	"github.com/lostluck/experimental/altbeams/allinone2/beam/internal/beamopts"
 )
 
 // workerfns.go is where SDK side transforms and their abstract graph representations live.
@@ -111,6 +113,7 @@ type edgeGBK[K Keys, V Element] struct {
 	index edgeIndex
 
 	input, output nodeIndex
+	opts          beamopts.Struct
 }
 
 // inputs for GBKs are one.
