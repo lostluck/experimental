@@ -1,5 +1,11 @@
 package coders
 
+import (
+	"reflect"
+
+	"golang.org/x/exp/constraints"
+)
+
 // Coder represents a coder for a specific type.
 type Coder[E any] interface {
 	Encode(enc *Encoder, v E)
@@ -12,36 +18,68 @@ type Codable interface {
 	Decode(dec *Decoder)
 }
 
+// MakeCoder is a convenience function for primitive coders access.
 func MakeCoder[E any]() Coder[E] {
 	var e E
-	return makeCoder(e).(Coder[E])
+	return makeCoder(reflect.TypeOf(e)).(Coder[E])
 }
 
 // makeCoder works around
-func makeCoder(a any) any {
-	switch a.(type) {
-	case int:
-		return intCoder{}
-	case []byte:
-		return bytesCoder{}
+func makeCoder(rt reflect.Type) any {
+	switch rt.Kind() {
+	case reflect.Int:
+		return varintCoder[int]{}
+	case reflect.Int8:
+		return varintCoder[int8]{}
+	case reflect.Int16:
+		return varintCoder[int16]{}
+	case reflect.Int32:
+		return varintCoder[int32]{}
+	case reflect.Int64:
+		return varintCoder[int64]{}
+	case reflect.Uint:
+		return varintCoder[uint]{}
+	case reflect.Uint8:
+		return byteCoder{}
+	case reflect.Uint16:
+		return varintCoder[uint16]{}
+	case reflect.Uint32:
+		return varintCoder[uint32]{}
+	case reflect.Uint64:
+		return varintCoder[uint64]{}
+	case reflect.Slice:
+		switch rt.Elem().Kind() {
+		case reflect.Uint8:
+			return bytesCoder{}
+		}
 	}
+	// Returning nil since type assertion elsewhere will provide better information
+	// to the developer.
 	return nil
 }
 
-type intCoder struct{}
+type varintCoder[T constraints.Integer] struct{}
 
-func (intCoder) Encode(enc *Encoder, v int) {
-	// TODO correctly encode/decode ints for varints.
+func (varintCoder[T]) Encode(enc *Encoder, v T) {
 	enc.Varint(uint64(v))
 }
 
-func (intCoder) Decode(dec *Decoder) int {
-	return int(dec.Varint())
+func (varintCoder[T]) Decode(dec *Decoder) T {
+	return T(dec.Varint())
+}
+
+type byteCoder struct{}
+
+func (byteCoder) Encode(enc *Encoder, v byte) {
+	enc.Byte(v)
+}
+
+func (byteCoder) Decode(dec *Decoder) byte {
+	return dec.Byte()
 }
 
 type bytesCoder struct{}
 
-// TODO correctly encode/decode ints for varints.
 func (bytesCoder) Encode(enc *Encoder, v []byte) {
 	enc.Bytes(v)
 }

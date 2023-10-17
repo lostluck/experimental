@@ -42,7 +42,7 @@ func (e *edgeDataSource[E]) source(dc harness.DataContext) (processor, processor
 		DC:     dc,
 		SID:    harness.StreamID{PtransformID: e.transform, Port: e.port},
 		Output: Emitter[E]{valid: true, globalIndex: e.output, localDownstreamIndex: 0},
-		Coder:  coders.MakeCoder[E](),
+		Coder:  MakeCoder[E](),
 	}
 	return root, toConsumer
 }
@@ -126,7 +126,7 @@ type sinker interface {
 func (e *edgeDataSink[E]) sinkDoFn(dc harness.DataContext) any {
 	return &datasink[E]{DC: dc,
 		SID:   harness.StreamID{PtransformID: e.transform, Port: e.port},
-		Coder: coders.MakeCoder[E](),
+		Coder: MakeCoder[E](),
 	}
 }
 
