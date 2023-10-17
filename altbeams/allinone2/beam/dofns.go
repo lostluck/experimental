@@ -114,7 +114,7 @@ func validateSideInput[E any](emt Emitter[E]) {
 		panic("emitter is invalid")
 	}
 	var e E
-	if isUnencodable(e) {
+	if isMetaType(e) {
 		panic(fmt.Sprintf("type %T cannot be used as a side input value", e))
 	}
 }

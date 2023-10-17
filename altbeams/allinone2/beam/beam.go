@@ -64,16 +64,19 @@ type Iter[V Element] struct {
 	source func() (V, bool) // source returns true if the element is valid.
 }
 
-func (Iter[V]) unencodable() {}
+func (Iter[V]) metatype() {}
 
-var _ unencodable = Iter[int]{}
+var _ metatype = Iter[int]{}
 
-type unencodable interface {
-	unencodable()
+type metatype interface {
+	metatype()
 }
 
-func isUnencodable(v any) bool {
-	_, ok := v.(unencodable)
+// isMetaType checks if a type has characteristics that make it unsuitable
+// for some usage. eg. Iter types should not be used as side input values,
+// since an iterator of iterators isn't a good idea.
+func isMetaType(v any) bool {
+	_, ok := v.(metatype)
 	return ok
 }
 
