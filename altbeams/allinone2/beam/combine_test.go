@@ -34,7 +34,7 @@ func TestCombineKeyedSum(t *testing.T) {
 		sums := CombinePerKey(s, keyedSrc.Output, SimpleMerge(SumFn[int]{}))
 		ParDo(s, sums, &DiscardFn[KV[int, int]]{}, Name("sink"))
 		return nil
-	})
+	}, pipeName(t))
 	if err != nil {
 		t.Error(err)
 	}

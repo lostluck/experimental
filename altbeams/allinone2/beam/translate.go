@@ -133,18 +133,8 @@ func (g *graph) marshal(typeReg map[string]reflect.Type) *pipepb.Pipeline {
 		var uniqueName string
 		envID := defaultEnvID
 		switch e := edge.(type) {
-		case *edgeImpulse:
-			spec = &pipepb.FunctionSpec{Urn: "beam:transform:impulse:v1"}
-			envID = "" // Runner transforms are left blank.
-			uniqueName = "Impulse"
-		case flattener:
-			spec = &pipepb.FunctionSpec{Urn: "beam:transform:flatten:v1"}
-			envID = "" // Runner transforms are left blank.
-			uniqueName = "Flatten"
-		case keygrouper:
-			spec = &pipepb.FunctionSpec{Urn: "beam:transform:group_by_key:v1"}
-			envID = "" // Runner transforms are left blank.
-			uniqueName = "GroupByKey"
+		case protoDescMultiEdge:
+			spec, envID, uniqueName = e.toProtoParts()
 		case bundleProcer:
 			dofn := e.actualTransform()
 			rv := reflect.ValueOf(dofn)
@@ -192,12 +182,7 @@ func (g *graph) marshal(typeReg map[string]reflect.Type) *pipepb.Pipeline {
 			typeName := rv.Type().Name()
 			typeReg[typeName] = rv.Type()
 
-			// opts := e.options()
-			// if opts.Name == "" {
 			uniqueName = typeName
-			// } else {
-			// 	uniqueName = opts.Name
-			// }
 
 			wrap := dofnWrap{
 				TypeName: typeName,

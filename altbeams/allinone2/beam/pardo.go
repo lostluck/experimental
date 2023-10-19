@@ -1,6 +1,8 @@
 package beam
 
-import "github.com/lostluck/experimental/altbeams/allinone2/beam/internal/beamopts"
+import (
+	"github.com/lostluck/experimental/altbeams/allinone2/beam/internal/beamopts"
+)
 
 type edgeDoFn[E Element] struct {
 	index     edgeIndex

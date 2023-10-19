@@ -223,16 +223,6 @@ type Pipeline struct {
 	Counters map[string]int64
 }
 
-func Impulse(s *Scope) Emitter[[]byte] {
-	edgeID := s.g.curEdgeIndex()
-	nodeID := s.g.curNodeIndex()
-	s.g.edges = append(s.g.edges, &edgeImpulse{index: edgeID, output: nodeID})
-	s.g.nodes = append(s.g.nodes, &typedNode[[]byte]{index: nodeID, parentEdge: edgeID})
-
-	// This is a fictional input.
-	return Emitter[[]byte]{globalIndex: nodeID}
-}
-
 // ParDo takes the users's DoFn and returns the same type for downstream piepline construction.
 //
 // The returned DoFn's emitter fields can then be used as inputs into other DoFns.
@@ -264,45 +254,4 @@ func Expand[I Composite[O], O any](parent *Scope, name string, comp I) O {
 	// We do all the expected connections here.
 	// Side inputs, are put on the side input at the DoFn creation time being passed in.
 	return comp.Expand(s)
-}
-
-func Flatten[E Element](s *Scope, inputs ...Emitter[E]) Emitter[E] {
-	edgeID := s.g.curEdgeIndex()
-	nodeID := s.g.curNodeIndex()
-	if s.g.consumers == nil {
-		s.g.consumers = map[nodeIndex][]edgeIndex{}
-	}
-	var ins []nodeIndex
-	for _, emt := range inputs {
-		in := emt.globalIndex
-		ins = append(ins, in)
-		s.g.consumers[in] = append(s.g.consumers[in], edgeID)
-	}
-	s.g.edges = append(s.g.edges, &edgeFlatten[E]{index: edgeID, ins: ins, output: nodeID})
-	s.g.nodes = append(s.g.nodes, &typedNode[E]{index: nodeID, parentEdge: edgeID})
-
-	// We do all the expected connections here.
-	// Side inputs, are put on the side input at the DoFn creation time being passed in.
-	return Emitter[E]{globalIndex: nodeID}
-}
-
-// GBK produces an output PCollection.
-func GBK[K Keys, V Element](s *Scope, input Emitter[KV[K, V]], opts ...Options) Emitter[KV[K, Iter[V]]] {
-	if s.g.consumers == nil {
-		s.g.consumers = map[nodeIndex][]edgeIndex{}
-	}
-
-	var opt beamopts.Struct
-	opt.Join(opts...)
-
-	edgeID := s.g.curEdgeIndex()
-	nodeID := s.g.curNodeIndex()
-	s.g.consumers[input.globalIndex] = append(s.g.consumers[input.globalIndex], edgeID)
-
-	s.g.edges = append(s.g.edges, &edgeGBK[K, V]{index: edgeID, input: input.globalIndex, output: nodeID, opts: opt})
-	s.g.nodes = append(s.g.nodes, &typedNode[KV[K, Iter[V]]]{index: nodeID, parentEdge: edgeID})
-
-	// We do all the expected connections here.
-	// Side inputs, are put on the side input at the DoFn creation time being passed in.
-	return Emitter[KV[K, Iter[V]]]{globalIndex: nodeID}
 }

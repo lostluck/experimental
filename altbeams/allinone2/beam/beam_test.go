@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lostluck/experimental/altbeams/allinone2/beam/internal/beamopts"
 	"golang.org/x/exp/constraints"
 )
 
@@ -58,13 +59,17 @@ func (fn *IdenFn[E]) ProcessBundle(ctx context.Context, dfc *DFC[E]) error {
 	return nil
 }
 
+func pipeName(tb testing.TB) beamopts.Options {
+	return Name(tb.Name())
+}
+
 func TestSimple(t *testing.T) {
 	_, err := Run(context.TODO(), func(s *Scope) error {
 		imp := Impulse(s)
 		src := ParDo(s, imp, &SourceFn{Count: 10})
 		ParDo(s, src.Output, &DiscardFn[int]{})
 		return nil
-	})
+	}, pipeName(t))
 	if err != nil {
 		t.Error(err)
 	}
@@ -76,7 +81,7 @@ func TestAutomaticDiscard(t *testing.T) {
 		ParDo(s, imp, &SourceFn{Count: 10})
 		// drop the output.
 		return nil
-	})
+	}, pipeName(t))
 	if err != nil {
 		t.Error(err)
 	}
@@ -88,7 +93,7 @@ func TestSimpleNamed(t *testing.T) {
 		src := ParDo(s, imp, &SourceFn{Count: 10})
 		ParDo(s, src.Output, &DiscardFn[int]{}, Name("pants"))
 		return nil
-	})
+	}, pipeName(t))
 	if err != nil {
 		t.Error(err)
 	}
@@ -125,7 +130,7 @@ func BenchmarkPipe(b *testing.B) {
 				}
 				ParDo(s, iden, &DiscardFn[int]{}, Name("sink"))
 				return nil
-			})
+			}, pipeName(b))
 			if err != nil {
 				b.Errorf("Run error: %v", err)
 			}
@@ -185,7 +190,7 @@ func TestPartitionFlatten(t *testing.T) {
 		exp := Expand(s, "WideNarrow", &WideNarrow{Wide: mod, In: src.Output})
 		ParDo(s, exp.Out, &DiscardFn[int]{}, Name("sink"))
 		return nil
-	})
+	}, pipeName(t))
 	if err != nil {
 		t.Error(err)
 	}
@@ -312,7 +317,7 @@ func TestGBKSum(t *testing.T) {
 		sums := ParDo(s, grouped, &SumByKey[int, int]{})
 		ParDo(s, sums.Output, &DiscardFn[KV[int, int]]{}, Name("sink"))
 		return nil
-	})
+	}, pipeName(t))
 	if err != nil {
 		t.Error(err)
 	}
@@ -333,7 +338,7 @@ func BenchmarkGBKSum_int(b *testing.B) {
 				sums := ParDo(s, grouped, &SumByKey[int, int]{})
 				ParDo(s, sums.Output, discard, Name("sink"))
 				return nil
-			})
+			}, pipeName(b))
 			if err != nil {
 				b.Error(err)
 			}
@@ -357,7 +362,7 @@ func BenchmarkGBKSum_Lifted_int(b *testing.B) {
 				keyed := ParDo(s, src.Output, &GroupKeyModSum[int]{Mod: mod})
 				ParDo(s, keyed.Output, &DiscardFn[KV[int, int]]{}, Name("sink"))
 				return nil
-			})
+			}, pipeName(b))
 			if err != nil {
 				b.Error(err)
 			}
@@ -380,7 +385,7 @@ func TestTwoSubGraphs(t *testing.T) {
 		ParDo(s, src1.Output, &DiscardFn[int]{}, Name("sink1"))
 		ParDo(s, src2.Output, &DiscardFn[int]{}, Name("sink2"))
 		return nil
-	})
+	}, pipeName(t))
 	if err != nil {
 		t.Error(err)
 	}
@@ -406,7 +411,7 @@ func TestMultiplex(t *testing.T) {
 		ParDo(s, src1.Output, &DiscardFn[int]{}, Name("sink1"))
 		ParDo(s, src2.Output, &DiscardFn[int]{}, Name("sink2"))
 		return nil
-	})
+	}, pipeName(t))
 	if err != nil {
 		t.Error(err)
 	}
@@ -449,7 +454,7 @@ func TestSideInputIter(t *testing.T) {
 		onlySide := ParDo(s, imp, &OnlySideIter[int]{Side: AsSideIter(src.Output)})
 		ParDo(s, onlySide.Out, &DiscardFn[int]{}, Name("sink"))
 		return nil
-	})
+	}, pipeName(t))
 	if err != nil {
 		t.Error(err)
 	}

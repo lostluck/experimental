@@ -117,21 +117,12 @@ type multiEdge interface {
 	outputs() map[string]nodeIndex
 }
 
-// EdgeImpulse represents an Impulse transform.
-type edgeImpulse struct {
-	index  edgeIndex
-	output nodeIndex
+type protoDescMultiEdge interface{
+	multiEdge
+	toProtoParts() (spec *pipepb.FunctionSpec, envID, name string)
 }
 
-// inputs for impulses are nil.
-func (e *edgeImpulse) inputs() map[string]nodeIndex {
-	return nil
-}
 
-// inputs for impulses are one.
-func (e *edgeImpulse) outputs() map[string]nodeIndex {
-	return map[string]nodeIndex{"o0": e.output}
-}
 
 func (g *graph) curNodeIndex() nodeIndex {
 	return nodeIndex(len(g.nodes))
