@@ -14,8 +14,6 @@ func Impulse(s *Scope) Emitter[[]byte] {
 	nodeID := s.g.curNodeIndex()
 	s.g.edges = append(s.g.edges, &edgeImpulse{index: edgeID, output: nodeID})
 	s.g.nodes = append(s.g.nodes, &typedNode[[]byte]{index: nodeID, parentEdge: edgeID})
-
-	// This is a fictional input.
 	return Emitter[[]byte]{globalIndex: nodeID}
 }
 
