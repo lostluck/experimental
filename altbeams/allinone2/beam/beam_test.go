@@ -3,7 +3,9 @@ package beam
 import (
 	"context"
 	"fmt"
+	"math"
 	"testing"
+	"time"
 
 	"golang.org/x/exp/constraints"
 )
@@ -274,6 +276,11 @@ type GroupKeyModSum[V constraints.Integer] struct {
 
 	OnBundleFinish
 }
+
+var (
+	MaxET time.Time = time.UnixMilli(math.MaxInt64 / 1000)
+	EOGW            = MaxET.Add(-time.Hour * 24)
+)
 
 func (fn *GroupKeyModSum[V]) ProcessBundle(ctx context.Context, dfc *DFC[V]) error {
 	grouped := map[V]V{}

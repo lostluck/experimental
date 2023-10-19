@@ -3,8 +3,6 @@ package beam
 import (
 	"context"
 	"fmt"
-	"math"
-	"time"
 
 	"github.com/lostluck/experimental/altbeams/allinone2/beam/internal/beamopts"
 )
@@ -134,46 +132,3 @@ type keygrouper interface {
 }
 
 var _ keygrouper = (*edgeGBK[int, int])(nil)
-
-// gbk groups by the key type and value type.
-// TODO, remove this.
-type gbk[K Keys, V Element] struct {
-	Output Emitter[KV[K, Iter[V]]]
-
-	OnBundleFinish
-}
-
-var (
-	MaxET time.Time = time.UnixMilli(math.MaxInt64 / 1000)
-	EOGW            = MaxET.Add(-time.Hour * 24)
-)
-
-func (fn *gbk[K, V]) ProcessBundle(ctx context.Context, dfc *DFC[KV[K, V]]) error {
-	grouped := map[K][]V{}
-	dfc.Process(func(ec ElmC, elm KV[K, V]) bool {
-		vs := grouped[elm.Key]
-		vs = append(vs, elm.Value)
-		grouped[elm.Key] = vs
-		return true
-	})
-	fn.OnBundleFinish.Do(dfc, func() error {
-		ec := dfc.ToElmC(EOGW) // TODO pull time, from the window that's been closed.
-		for k, vs := range grouped {
-			var i int
-			out := KV[K, Iter[V]]{Key: k, Value: Iter[V]{
-				source: func() (V, bool) {
-					var v V
-					if i < len(vs) {
-						v = vs[i]
-						i++
-						return v, true
-					}
-					return v, false
-				},
-			}}
-			fn.Output.Emit(ec, out)
-		}
-		return nil
-	})
-	return nil
-}
