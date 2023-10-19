@@ -25,7 +25,7 @@ func (fn *AddFixedKeyFn[E]) ProcessBundle(_ context.Context, dfc *DFC[E]) error 
 	return nil
 }
 
-func TestCombineSum(t *testing.T) {
+func TestCombineKeyedSum(t *testing.T) {
 	// We need to have all the keys, so 1.
 	pr, err := Run(context.TODO(), func(s *Scope) error {
 		imp := Impulse(s)

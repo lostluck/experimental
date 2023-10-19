@@ -74,26 +74,18 @@ func FullCombine[A, I, O Element, C FullCombiner[A, I, O]](c C) Combiner[A, I, O
 // We can't simply make these methods on Combiner because PerKey needs an additional
 // type for the key. It would be awkward to just have Globally as a method.
 
-func CombineGlobally[A, I, O Element, AM AccumulatorMerger[A]](s *Scope, input Emitter[I], comb Combiner[A, I, O, AM]) Emitter[O] {
-	//edgeID := s.g.curEdgeIndex()
-	nodeID := s.g.curNodeIndex()
-	//	s.g.edges = append(s.g.edges, &edgeCombine{index: edgeID, input: input.globalIndex, output: nodeID, comb: &hiddenCombiner[A, I, O, AM]{Merger: comb.am}})
-	return Emitter[O]{globalIndex: nodeID}
-}
-
 func CombinePerKey[K Keys, A, I, O Element, AM AccumulatorMerger[A]](s *Scope, input Emitter[KV[K, I]], comb Combiner[A, I, O, AM]) Emitter[KV[K, O]] {
 	edgeID := s.g.curEdgeIndex()
 	nodeID := s.g.curNodeIndex()
-	s.g.edges = append(s.g.edges, &edgeCombine{index: edgeID, input: input.globalIndex, output: nodeID, comb: &hiddenKeyCombiner[K, A, I, O, AM]{Merger: comb.am}})
+	s.g.edges = append(s.g.edges, &edgeCombine{index: edgeID, input: input.globalIndex, output: nodeID, comb: &hiddenKeyedCombiner[K, A, I, O, AM]{Merger: comb.am}})
 	s.g.nodes = append(s.g.nodes, &typedNode[KV[K, O]]{index: nodeID, parentEdge: edgeID})
 	return Emitter[KV[K, O]]{globalIndex: nodeID}
 }
 
 // edgeCombine represents a combine transform.
 type edgeCombine struct {
-	index     edgeIndex
-	transform string
-	comb      combiner
+	index edgeIndex
+	comb  combiner
 
 	input, output nodeIndex
 }
@@ -252,13 +244,13 @@ func (fn *liftedMergedCombine[K, A]) ProcessBundle(ctx context.Context, dfc *DFC
 	return nil
 }
 
-type mergingCombine[K Keys, A Element] struct {
+type mergingKeyedCombine[K Keys, A Element] struct {
 	Merger AccumulatorMerger[A]
 
 	Output Emitter[KV[K, A]]
 }
 
-func (fn *mergingCombine[K, A]) ProcessBundle(ctx context.Context, dfc *DFC[KV[K, Iter[A]]]) error {
+func (fn *mergingKeyedCombine[K, A]) ProcessBundle(ctx context.Context, dfc *DFC[KV[K, Iter[A]]]) error {
 	createA := func() A {
 		var a A
 		return a
@@ -278,7 +270,7 @@ func (fn *mergingCombine[K, A]) ProcessBundle(ctx context.Context, dfc *DFC[KV[K
 	return nil
 }
 
-type outputExtractingCombine[K Keys, A, O Element] struct {
+type outputExtractingKeyedCombine[K Keys, A, O Element] struct {
 	KeyCoder coders.Coder[K]
 
 	Merger AccumulatorMerger[A]
@@ -288,7 +280,7 @@ type outputExtractingCombine[K Keys, A, O Element] struct {
 	OnBundleFinish
 }
 
-func (fn *outputExtractingCombine[K, A, O]) ProcessBundle(ctx context.Context, dfc *DFC[KV[K, A]]) error {
+func (fn *outputExtractingKeyedCombine[K, A, O]) ProcessBundle(ctx context.Context, dfc *DFC[KV[K, A]]) error {
 	oe, ok := fn.Merger.(OutputExtractor[A, O])
 	if !ok {
 		return fmt.Errorf("combiner %T doesn't support the AddInput method type", fn.Merger)
@@ -312,30 +304,15 @@ func (fn *identityFn[E]) ProcessBundle(ctx context.Context, dfc *DFC[E]) error {
 	return nil
 }
 
-// hiddenCombiner is and internal implementation to better allow serialization
-// of the DoFn, and simplify extraction of initialized DFC types for the
-// Combine Components.
-type hiddenCombiner[A, I, O Element, AM AccumulatorMerger[A]] struct {
+type hiddenKeyedCombiner[K Keys, A, I, O Element, AM AccumulatorMerger[A]] struct {
 	Merger AM
 }
 
-func (*hiddenCombiner[A, I, O, AM]) addAccumCoder(intern map[string]string, coders map[string]*pipepb.Coder) string {
+func (*hiddenKeyedCombiner[K, A, I, O, AM]) addAccumCoder(intern map[string]string, coders map[string]*pipepb.Coder) string {
 	return addCoder[A](intern, coders)
 }
 
-func (c *hiddenCombiner[A, I, O, AM]) combiner() any {
-	return c.Merger
-}
-
-type hiddenKeyCombiner[K Keys, A, I, O Element, AM AccumulatorMerger[A]] struct {
-	Merger AM
-}
-
-func (*hiddenKeyCombiner[K, A, I, O, AM]) addAccumCoder(intern map[string]string, coders map[string]*pipepb.Coder) string {
-	return addCoder[A](intern, coders)
-}
-
-func (c *hiddenKeyCombiner[K, A, I, O, AM]) precombine() any {
+func (c *hiddenKeyedCombiner[K, A, I, O, AM]) precombine() any {
 	a := any(c.Merger)
 	if _, ok := a.(InputAdder[A, I]); ok {
 		return &liftedAddingCombine[K, I, A]{
@@ -347,16 +324,16 @@ func (c *hiddenKeyCombiner[K, A, I, O, AM]) precombine() any {
 	}
 }
 
-func (c *hiddenKeyCombiner[K, A, I, O, AM]) mergeacuumulators() any {
-	return &mergingCombine[K, A]{
+func (c *hiddenKeyedCombiner[K, A, I, O, AM]) mergeacuumulators() any {
+	return &mergingKeyedCombine[K, A]{
 		Merger: c.Merger,
 	}
 }
 
-func (c *hiddenKeyCombiner[K, A, I, O, AM]) extactoutput() any {
+func (c *hiddenKeyedCombiner[K, A, I, O, AM]) extactoutput() any {
 	a := any(c.Merger)
 	if _, ok := a.(OutputExtractor[A, O]); ok {
-		return &outputExtractingCombine[K, A, O]{
+		return &outputExtractingKeyedCombine[K, A, O]{
 			Merger: c.Merger,
 		}
 	}
@@ -370,13 +347,4 @@ type combiner interface {
 	extactoutput() any
 }
 
-// var _ combiner = &hiddenCombiner[int, int, int, AccumulatorMerger[int]]{}
-var _ combiner = &hiddenKeyCombiner[int, int, int, int, AccumulatorMerger[int]]{}
-
-// TODOs:
-// * Build/use those in CombineGlobally and CombinerPerKey respectively
-// * Make each hidden implement the same interface to export/build the appropriate
-//   implementation Transform for each combine component. They have the right type info.
-// * Then we can extract the valid typed DFC/processor correctly and hook everything together.
-// * Finally the "same" things can be used to produce the "backup subtransforms" for
-//   the combiner composite, since they're just the desired implementation anyway.
+var _ combiner = &hiddenKeyedCombiner[int, int, int, int, AccumulatorMerger[int]]{}
