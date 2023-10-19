@@ -1,6 +1,7 @@
 package beam
 
 import (
+	"fmt"
 	"reflect"
 
 	"github.com/go-json-experiment/json"
@@ -8,6 +9,98 @@ import (
 	pipepb "github.com/lostluck/experimental/altbeams/allinone2/beam/internal/model/pipeline_v1"
 	"google.golang.org/protobuf/proto"
 )
+
+// ParDo takes the users's DoFn and returns the same type for downstream piepline construction.
+//
+// The returned DoFn's emitter fields can then be used as inputs into other DoFns.
+// What if we used Emitters as PCollections directly?
+// Obviously, we'd rename the type PCollection or similar
+// If only to also
+func ParDo[E Element, DF Transform[E]](s *Scope, input Emitter[E], dofn DF, opts ...Options) DF {
+	var opt beamopts.Struct
+	opt.Join(opts...)
+
+	edgeID := s.g.curEdgeIndex()
+	ins, outs := s.g.deferDoFn(dofn, input.globalIndex, edgeID)
+
+	// We do all the expected connections here.
+	// Side inputs, are put on the side input at the DoFn creation time being passed in.
+
+	s.g.edges = append(s.g.edges, &edgeDoFn[E]{index: edgeID, dofn: dofn, ins: ins, outs: outs, parallelIn: input.globalIndex, opts: opt})
+
+	return dofn
+}
+
+func (g *graph) deferDoFn(dofn any, input nodeIndex, global edgeIndex) (ins, outs map[string]nodeIndex) {
+	if g.consumers == nil {
+		g.consumers = map[nodeIndex][]edgeIndex{}
+	}
+	g.consumers[input] = append(g.consumers[input], global)
+
+	rv := reflect.ValueOf(dofn)
+	if rv.Kind() == reflect.Pointer {
+		rv = rv.Elem()
+	}
+	ins = map[string]nodeIndex{
+		"parallel": input,
+		// TODO, side inputs.
+	}
+	outs = map[string]nodeIndex{}
+	efaceRT := reflect.TypeOf((*emitIface)(nil)).Elem()
+	rt := rv.Type()
+	for i := 0; i < rv.NumField(); i++ {
+		fv := rv.Field(i)
+		sf := rt.Field(i)
+		if !fv.CanAddr() || !sf.IsExported() {
+			continue
+		}
+		switch sf.Type.Kind() {
+		case reflect.Array, reflect.Slice:
+			// Should we also allow for maps? Holy shit, we could also allow for maps....
+			ptrEt := reflect.PointerTo(sf.Type.Elem())
+			if !ptrEt.Implements(efaceRT) {
+				continue
+			}
+			// Slice or Array
+			for j := 0; j < fv.Len(); j++ {
+				fvj := fv.Index(j).Addr()
+				g.initEmitter(fvj.Interface().(emitIface), global, input, fmt.Sprintf("%s%%%d", sf.Name, j), outs)
+			}
+		case reflect.Struct:
+			fv = fv.Addr()
+			if emt, ok := fv.Interface().(emitIface); ok {
+				g.initEmitter(emt, global, input, sf.Name, outs)
+			}
+			if si, ok := fv.Interface().(sideIface); ok {
+				// fmt.Println("initialising side intput: ", si, global, sf.Name, ins)
+				g.initSideInput(si, global, sf.Name, ins)
+			}
+			// TODO side inputs
+		case reflect.Chan:
+			panic("field %v is a channel")
+		default:
+			// Don't do anything with pointers, or other types.
+
+		}
+	}
+	return ins, outs
+}
+
+func (g *graph) initEmitter(emt emitIface, global edgeIndex, input nodeIndex, name string, outs map[string]nodeIndex) {
+	localIndex := len(outs)
+	globalIndex := g.curNodeIndex()
+	emt.setPColKey(globalIndex, localIndex)
+	node := emt.newNode(globalIndex, global, g.nodes[input].bounded())
+	g.nodes = append(g.nodes, node)
+	outs[name] = globalIndex
+}
+
+func (g *graph) initSideInput(si sideIface, global edgeIndex, name string, ins map[string]nodeIndex) {
+	globalIndex := si.sideInput()
+	// Put into a special side input consumers list?
+	g.consumers[globalIndex] = append(g.consumers[globalIndex], global)
+	ins[name] = globalIndex
+}
 
 type edgeDoFn[E Element] struct {
 	index     edgeIndex
@@ -61,7 +154,6 @@ func (e *edgeDoFn[E]) toProtoParts(params translateParams) (spec *pipepb.Functio
 			Payload: wrappedPayload,
 		},
 	})
-	
 
 	spec = &pipepb.FunctionSpec{
 		Urn:     "beam:transform:pardo:v1",

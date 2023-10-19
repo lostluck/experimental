@@ -223,27 +223,6 @@ type Pipeline struct {
 	Counters map[string]int64
 }
 
-// ParDo takes the users's DoFn and returns the same type for downstream piepline construction.
-//
-// The returned DoFn's emitter fields can then be used as inputs into other DoFns.
-// What if we used Emitters as PCollections directly?
-// Obviously, we'd rename the type PCollection or similar
-// If only to also
-func ParDo[E Element, DF Transform[E]](s *Scope, input Emitter[E], dofn DF, opts ...Options) DF {
-	var opt beamopts.Struct
-	opt.Join(opts...)
-
-	edgeID := s.g.curEdgeIndex()
-	ins, outs := s.g.deferDoFn(dofn, input.globalIndex, edgeID)
-
-	// We do all the expected connections here.
-	// Side inputs, are put on the side input at the DoFn creation time being passed in.
-
-	s.g.edges = append(s.g.edges, &edgeDoFn[E]{index: edgeID, dofn: dofn, ins: ins, outs: outs, parallelIn: input.globalIndex, opts: opt})
-
-	return dofn
-}
-
 // Composite transforms allow structural re-use of sub pipelines.
 type Composite[O any] interface {
 	Expand(s *Scope) O

@@ -8,7 +8,6 @@ import (
 
 	"github.com/lostluck/experimental/altbeams/allinone2/beam/internal/harness"
 	pipepb "github.com/lostluck/experimental/altbeams/allinone2/beam/internal/model/pipeline_v1"
-	"golang.org/x/exp/maps"
 )
 
 // graph.go holds the structures for the deferred processing graph.
@@ -48,11 +47,9 @@ type graph struct {
 }
 
 type node interface {
-	elmType() reflect.Type
 	bounded() bool
 	windowingStrat()
 	addCoder(intern map[string]string, coders map[string]*pipepb.Coder) string
-	setParent(parent edgeIndex)
 	newTypeMultiEdge(*edgePlaceholder) multiEdge
 }
 
@@ -62,12 +59,7 @@ type typedNode[E Element] struct {
 	index      nodeIndex
 	parentEdge edgeIndex // for debugging
 
-	elementType E
-	isBounded   bool
-}
-
-func (n *typedNode[E]) elmType() reflect.Type {
-	return reflect.TypeOf(n.elementType)
+	isBounded bool
 }
 
 func (n *typedNode[E]) bounded() bool {
@@ -81,34 +73,6 @@ func (n *typedNode[E]) windowingStrat() {
 // TODO remove.
 func (n *typedNode[E]) setParent(parent edgeIndex) {
 	n.parentEdge = parent
-}
-
-// newTypeMultiEdge produces a child edge that can or produce this node as needed.
-// This is required to be able to produce Source and Sink nodes of the right type
-// at bundle processing at pipeline execution time, since we don't have a real type
-// for them yet.
-func (c *typedNode[E]) newTypeMultiEdge(ph *edgePlaceholder) multiEdge {
-	switch ph.kind {
-	case "flatten":
-		out := getSingleValue(ph.outs)
-		return &edgeFlatten[E]{transform: ph.transform, ins: maps.Values(ph.ins), output: out}
-	case "source":
-		port, coder, err := decodePort(ph.payload)
-		if err != nil {
-			panic(err)
-		}
-		out := getSingleValue(ph.outs)
-		return &edgeDataSource[E]{transform: ph.transform, output: out, port: port, coderID: coder}
-	case "sink":
-		port, coder, err := decodePort(ph.payload)
-		if err != nil {
-			panic(err)
-		}
-		in := getSingleValue(ph.ins)
-		return &edgeDataSink[E]{transform: ph.transform, input: in, port: port, coderID: coder}
-	default:
-		panic(fmt.Sprintf("unknown placeholder kind: %v", ph.kind))
-	}
 }
 
 // multiEdges represent transforms.
@@ -127,77 +91,6 @@ func (g *graph) curNodeIndex() nodeIndex {
 }
 func (g *graph) curEdgeIndex() edgeIndex {
 	return edgeIndex(len(g.edges))
-}
-
-func (g *graph) deferDoFn(dofn any, input nodeIndex, global edgeIndex) (ins, outs map[string]nodeIndex) {
-	if g.consumers == nil {
-		g.consumers = map[nodeIndex][]edgeIndex{}
-	}
-	g.consumers[input] = append(g.consumers[input], global)
-
-	rv := reflect.ValueOf(dofn)
-	if rv.Kind() == reflect.Pointer {
-		rv = rv.Elem()
-	}
-	ins = map[string]nodeIndex{
-		"parallel": input,
-		// TODO, side inputs.
-	}
-	outs = map[string]nodeIndex{}
-	efaceRT := reflect.TypeOf((*emitIface)(nil)).Elem()
-	rt := rv.Type()
-	for i := 0; i < rv.NumField(); i++ {
-		fv := rv.Field(i)
-		sf := rt.Field(i)
-		if !fv.CanAddr() || !sf.IsExported() {
-			continue
-		}
-		switch sf.Type.Kind() {
-		case reflect.Array, reflect.Slice:
-			// Should we also allow for maps? Holy shit, we could also allow for maps....
-			ptrEt := reflect.PointerTo(sf.Type.Elem())
-			if !ptrEt.Implements(efaceRT) {
-				continue
-			}
-			// Slice or Array
-			for j := 0; j < fv.Len(); j++ {
-				fvj := fv.Index(j).Addr()
-				g.initEmitter(fvj.Interface().(emitIface), global, input, fmt.Sprintf("%s%%%d", sf.Name, j), outs)
-			}
-		case reflect.Struct:
-			fv = fv.Addr()
-			if emt, ok := fv.Interface().(emitIface); ok {
-				g.initEmitter(emt, global, input, sf.Name, outs)
-			}
-			if si, ok := fv.Interface().(sideIface); ok {
-				// fmt.Println("initialising side intput: ", si, global, sf.Name, ins)
-				g.initSideInput(si, global, sf.Name, ins)
-			}
-			// TODO side inputs
-		case reflect.Chan:
-			panic("field %v is a channel")
-		default:
-			// Don't do anything with pointers, or other types.
-
-		}
-	}
-	return ins, outs
-}
-
-func (g *graph) initEmitter(emt emitIface, global edgeIndex, input nodeIndex, name string, outs map[string]nodeIndex) {
-	localIndex := len(outs)
-	globalIndex := g.curNodeIndex()
-	emt.setPColKey(globalIndex, localIndex)
-	node := emt.newNode(globalIndex, global, g.nodes[input].bounded())
-	g.nodes = append(g.nodes, node)
-	outs[name] = globalIndex
-}
-
-func (g *graph) initSideInput(si sideIface, global edgeIndex, name string, ins map[string]nodeIndex) {
-	globalIndex := si.sideInput()
-	// Put into a special side input consumers list?
-	g.consumers[globalIndex] = append(g.consumers[globalIndex], global)
-	ins[name] = globalIndex
 }
 
 // build returns the root processors for SDK worker side execution.

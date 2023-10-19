@@ -12,6 +12,7 @@ import (
 	fnpb "github.com/lostluck/experimental/altbeams/allinone2/beam/internal/model/fnexecution_v1"
 	pipepb "github.com/lostluck/experimental/altbeams/allinone2/beam/internal/model/pipeline_v1"
 	"github.com/lostluck/experimental/altbeams/allinone2/beam/internal/pipelinex"
+	"golang.org/x/exp/maps"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -460,6 +461,44 @@ placeholderLoop:
 	return &g
 }
 
+// newTypeMultiEdge produces a child edge that can or produce this node as needed.
+// This is required to be able to produce Source and Sink nodes of the right type
+// at bundle processing at pipeline execution time, since we don't have a real type
+// for them yet.
+func (c *typedNode[E]) newTypeMultiEdge(ph *edgePlaceholder) multiEdge {
+	switch ph.kind {
+	case "flatten":
+		out := getSingleValue(ph.outs)
+		return &edgeFlatten[E]{transform: ph.transform, ins: maps.Values(ph.ins), output: out}
+	case "source":
+		port, coder, err := decodePort(ph.payload)
+		if err != nil {
+			panic(err)
+		}
+		out := getSingleValue(ph.outs)
+		return &edgeDataSource[E]{transform: ph.transform, output: out, port: port, coderID: coder}
+	case "sink":
+		port, coder, err := decodePort(ph.payload)
+		if err != nil {
+			panic(err)
+		}
+		in := getSingleValue(ph.ins)
+		return &edgeDataSink[E]{transform: ph.transform, input: in, port: port, coderID: coder}
+	default:
+		panic(fmt.Sprintf("unknown placeholder kind: %v", ph.kind))
+	}
+}
+
+func decodePort(data []byte) (harness.Port, string, error) {
+	var port fnpb.RemoteGrpcPort
+	if err := proto.Unmarshal(data, &port); err != nil {
+		return harness.Port{}, "", err
+	}
+	return harness.Port{
+		URL: port.GetApiServiceDescriptor().GetUrl(),
+	}, port.CoderId, nil
+}
+
 var efaceRT = reflect.TypeOf((*emitIface)(nil)).Elem()
 
 // getEmitIfaceByName extracts an emitter from the DoFn so we can get the exact type
@@ -521,14 +560,4 @@ func decodeDoFn(payload []byte, wrap *dofnWrap, typeReg map[string]reflect.Type,
 	if err := json.Unmarshal(dofnSpec.GetPayload(), &wrap, json.DefaultOptionsV2(), jsonDoFnUnmarshallers(typeReg, name)); err != nil {
 		panic(err)
 	}
-}
-
-func decodePort(data []byte) (harness.Port, string, error) {
-	var port fnpb.RemoteGrpcPort
-	if err := proto.Unmarshal(data, &port); err != nil {
-		return harness.Port{}, "", err
-	}
-	return harness.Port{
-		URL: port.GetApiServiceDescriptor().GetUrl(),
-	}, port.CoderId, nil
 }
