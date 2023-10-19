@@ -117,6 +117,7 @@ func (g *graph) marshal(typeReg map[string]reflect.Type) *pipepb.Pipeline {
 			},
 		},
 	}
+	internedCoders := map[string]string{}
 
 	for i, edge := range g.edges {
 		inputs := make(map[string]string)
@@ -181,6 +182,44 @@ func (g *graph) marshal(typeReg map[string]reflect.Type) *pipepb.Pipeline {
 				Urn:     "beam:transform:pardo:v1",
 				Payload: payload,
 			}
+		case *edgeCombine:
+			cfn := e.comb
+			rv := reflect.ValueOf(cfn)
+			if rv.Kind() == reflect.Pointer {
+				rv = rv.Elem()
+			}
+			// Register types with the lookup table.
+			typeName := rv.Type().Name()
+			typeReg[typeName] = rv.Type()
+
+			// opts := e.options()
+			// if opts.Name == "" {
+			uniqueName = typeName
+			// } else {
+			// 	uniqueName = opts.Name
+			// }
+
+			wrap := dofnWrap{
+				TypeName: typeName,
+				DoFn:     cfn,
+			}
+			wrappedPayload, err := json.Marshal(&wrap, json.DefaultOptionsV2(), jsonDoFnMarshallers())
+			if err != nil {
+				panic(err)
+			}
+
+			payload, _ := proto.Marshal(&pipepb.CombinePayload{
+				CombineFn: &pipepb.FunctionSpec{
+					Urn:     "beam:go:transform:dofn:v2",
+					Payload: wrappedPayload,
+				},
+				AccumulatorCoderId: e.addCoder(internedCoders, comps.GetCoders()),
+			})
+
+			spec = &pipepb.FunctionSpec{
+				Urn:     "beam:transform:combine_per_key:v1",
+				Payload: payload,
+			}
 		default:
 			panic(fmt.Sprintf("unknown edge type %#v", e))
 		}
@@ -202,11 +241,10 @@ func (g *graph) marshal(typeReg map[string]reflect.Type) *pipepb.Pipeline {
 		return pipepb.IsBounded_UNBOUNDED
 	}
 
-	intern := map[string]string{}
 	for i, node := range g.nodes {
 		comps.Pcollections[nodeIndex(i).String()] = &pipepb.PCollection{
 			UniqueName:          nodeIndex(i).String(), //  TODO make this "Parent.Output"
-			CoderId:             node.addCoder(intern, comps.GetCoders()),
+			CoderId:             node.addCoder(internedCoders, comps.GetCoders()),
 			IsBounded:           bounded(node),
 			WindowingStrategyId: "global",
 			DisplayData:         nil,
@@ -414,9 +452,34 @@ func unmarshalToGraph(typeReg map[string]reflect.Type, pbd subGraphProto) *graph
 			addPlaceholder(pt, name, "flatten")
 		case "beam:transform:group_by_key:v1":
 			panic("Worker side GBKs unimplemented. Runner error.")
-		case "beam:transform:pardo:v1":
+		case "beam:transform:pardo:v1",
+			"beam:transform:combine_per_key_precombine:v1",
+			"beam:transform:combine_per_key_merge_accumulators:v1",
+			"beam:transform:combine_per_key_extract_outputs:v1":
+
+			var dofnType reflect.Type
+			var proc processor
 			var wrap dofnWrap
-			dofnType, proc := decodeDoFn(spec.GetPayload(), &wrap, typeReg, name)
+			decodeDoFn(spec.GetPayload(), &wrap, typeReg, name)
+			switch spec.GetUrn() {
+			case "beam:transform:combine_per_key_precombine:v1":
+				cmb := wrap.DoFn.(combiner)
+				wrap.DoFn = cmb.precombine()
+			case "beam:transform:combine_per_key_merge_accumulators:v1":
+				cmb := wrap.DoFn.(combiner)
+				wrap.DoFn = cmb.mergeacuumulators()
+			case "beam:transform:combine_per_key_extract_outputs:v1":
+				cmb := wrap.DoFn.(combiner)
+				wrap.DoFn = cmb.extactoutput()
+			}
+			dofnPtrRT := reflect.TypeOf(wrap.DoFn)
+			pbm, ok := dofnPtrRT.MethodByName("ProcessBundle")
+			if !ok {
+				panic(fmt.Sprintf("type in transform %v doesn't have a ProcessBundle method: %v", name, dofnPtrRT))
+			}
+			dfcRT := pbm.Type.In(2).Elem()
+			dofnType = dofnPtrRT.Elem()
+			proc = reflect.New(dfcRT).Interface().(processor)
 
 			if len(pt.Inputs) > 1 {
 				panic(fmt.Sprintf("unimplemented: transform %v has side inputs: %v", name, pt.Inputs))
@@ -435,7 +498,7 @@ func unmarshalToGraph(typeReg map[string]reflect.Type, pbd subGraphProto) *graph
 			for local, global := range pt.GetOutputs() {
 				id := pcolToIndex[global]
 				if g.nodes[id] == nil {
-					emt, ok := getEmitIfaceByName(dofnType, local)
+					emt, ok := getEmitIfaceByName(dofnType, local, outs)
 					if !ok {
 						panic(fmt.Sprintf("consistency error: transform %v of type %v has no output field named %v", name, dofnType, local))
 					}
@@ -470,34 +533,54 @@ placeholderLoop:
 	return &g
 }
 
+var efaceRT = reflect.TypeOf((*emitIface)(nil)).Elem()
+
 // getEmitIfaceByName extracts an emitter from the DoFn so we can get the exact type
 // for downstream node construction.
 //
-// TODO, consider detecting slice/array emitters earlier so we can 
+// TODO, consider detecting slice/array emitters earlier so we can
 // avoid constantly reparsing the field name.
-func getEmitIfaceByName(doFnT reflect.Type, field string) (emitIface, bool) {
+func getEmitIfaceByName(doFnT reflect.Type, field string, outs map[string]nodeIndex) (emitIface, bool) {
 	splitName := strings.Split(field, "%")
-	var rt reflect.Type
+
 	switch len(splitName) {
 	case 1:
 		sf, ok := doFnT.FieldByName(field)
 		if !ok {
-			return nil, false
+			break
 		}
-		rt = sf.Type
+		return reflect.New(sf.Type).Interface().(emitIface), true
 	case 2:
 		sf, ok := doFnT.FieldByName(splitName[0])
 		if !ok {
-			return nil, false
+			break
 		}
-		rt = sf.Type.Elem()
-	default:
-		panic("unexpected name value")
+		return reflect.New(sf.Type.Elem()).Interface().(emitIface), true
 	}
+	// OK, we have a manufactured name from the runner.
+	// That means this is probably a built-in transform, so it may not
+	// match any SDK side output name.
+	// Everything is fine iff there's only one emitter, so lets iterate and check all the fields.
+	// We only need the actual type anyway.
+	var rt reflect.Type
+	var rename string
+	for i := 0; i < doFnT.NumField(); i++ {
+		sf := doFnT.Field(i)
+		if reflect.PointerTo(sf.Type).Implements(efaceRT) {
+			if rt != nil {
+				return nil, false
+			}
+			rt = sf.Type
+			rename = sf.Name
+		}
+	}
+	// Ensure downstream uses of the fieldname are updated.
+	outs[rename] = outs[field]
+	delete(outs, field)
 	return reflect.New(rt).Interface().(emitIface), true
 }
 
-func decodeDoFn(payload []byte, wrap *dofnWrap, typeReg map[string]reflect.Type, name string) (reflect.Type, processor) {
+func decodeDoFn(payload []byte, wrap *dofnWrap, typeReg map[string]reflect.Type, name string) {
 	var dofnPayload pipepb.ParDoPayload
 	if err := proto.Unmarshal(payload, &dofnPayload); err != nil {
 		panic(err)
@@ -511,13 +594,6 @@ func decodeDoFn(payload []byte, wrap *dofnWrap, typeReg map[string]reflect.Type,
 	if err := json.Unmarshal(dofnSpec.GetPayload(), &wrap, json.DefaultOptionsV2(), jsonDoFnUnmarshallers(typeReg, name)); err != nil {
 		panic(err)
 	}
-	dofnPtrRT := reflect.TypeOf(wrap.DoFn)
-	pbm, ok := dofnPtrRT.MethodByName("ProcessBundle")
-	if !ok {
-		panic(fmt.Sprintf("type in transform %v doesn't have a ProcessBundle method: %v", name, dofnPtrRT))
-	}
-	dfcRT := pbm.Type.In(2).Elem()
-	return dofnPtrRT.Elem(), reflect.New(dfcRT).Interface().(processor)
 }
 
 func decodePort(data []byte) (harness.Port, string, error) {

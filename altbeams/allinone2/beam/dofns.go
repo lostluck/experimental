@@ -79,7 +79,7 @@ func (*OnBundleFinish) Do(dfc bundleFinisher, finishBundle func() error) {
 
 // ObserveWindow indicates this DoFn needs to be aware of windows explicitly.
 // Typical use is to embed ObserveWindows as a field.
-type ObserveWindow struct{ beamMixin }
+type ObserveWindow struct{}
 
 func (*ObserveWindow) Of(ec ElmC) any {
 	// When windows are observable, only a single window is present.
