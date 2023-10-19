@@ -44,18 +44,11 @@ func (e *edgeGBK[K, V]) outputs() map[string]nodeIndex {
 	return map[string]nodeIndex{"o0": e.output}
 }
 
-func (e *edgeGBK[K, V]) groupby() {}
-
-func (e *edgeGBK[K, V]) toProtoParts() (spec *pipepb.FunctionSpec, envID, name string) {
+func (e *edgeGBK[K, V]) toProtoParts(translateParams) (spec *pipepb.FunctionSpec, envID, name string) {
 	spec = &pipepb.FunctionSpec{Urn: "beam:transform:group_by_key:v1"}
 	envID = "" // Runner transforms are left blank.
 	name = "GroupByKey"
 	return spec, envID, name
 }
 
-type keygrouper interface {
-	protoDescMultiEdge
-	groupby()
-}
-
-var _ keygrouper = (*edgeGBK[int, int])(nil)
+var _ protoDescMultiEdge = (*edgeGBK[int, int])(nil)

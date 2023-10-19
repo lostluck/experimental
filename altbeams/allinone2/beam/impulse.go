@@ -1,6 +1,8 @@
 package beam
 
-import pipepb "github.com/lostluck/experimental/altbeams/allinone2/beam/internal/model/pipeline_v1"
+import (
+	pipepb "github.com/lostluck/experimental/altbeams/allinone2/beam/internal/model/pipeline_v1"
+)
 
 // Impulse adds an impulse transform to the graph, which emits single element
 // to downstream transforms, allowing processing to begin.
@@ -33,7 +35,7 @@ func (e *edgeImpulse) outputs() map[string]nodeIndex {
 	return map[string]nodeIndex{"o0": e.output}
 }
 
-func (e *edgeImpulse) toProtoParts() (spec *pipepb.FunctionSpec, envID, name string) {
+func (e *edgeImpulse) toProtoParts(translateParams) (spec *pipepb.FunctionSpec, envID, name string) {
 	spec = &pipepb.FunctionSpec{Urn: "beam:transform:impulse:v1"}
 	envID = "" // Runner transforms are left blank.
 	name = "Impulse"

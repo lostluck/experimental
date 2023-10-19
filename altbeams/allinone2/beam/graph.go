@@ -117,12 +117,10 @@ type multiEdge interface {
 	outputs() map[string]nodeIndex
 }
 
-type protoDescMultiEdge interface{
+type protoDescMultiEdge interface {
 	multiEdge
-	toProtoParts() (spec *pipepb.FunctionSpec, envID, name string)
+	toProtoParts(translateParams) (spec *pipepb.FunctionSpec, envID, name string)
 }
-
-
 
 func (g *graph) curNodeIndex() nodeIndex {
 	return nodeIndex(len(g.nodes))

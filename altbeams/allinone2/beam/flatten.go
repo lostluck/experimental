@@ -56,7 +56,7 @@ func (e *edgeFlatten[E]) outputs() map[string]nodeIndex {
 	return map[string]nodeIndex{"Output": e.output}
 }
 
-func (e *edgeFlatten[E]) toProtoParts() (spec *pipepb.FunctionSpec, envID, name string) {
+func (e *edgeFlatten[E]) toProtoParts(translateParams) (spec *pipepb.FunctionSpec, envID, name string) {
 	spec = &pipepb.FunctionSpec{Urn: "beam:transform:flatten:v1"}
 	envID = "" // Runner transforms are left blank.
 	name = "Flatten"

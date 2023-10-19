@@ -3,9 +3,12 @@ package beam
 import (
 	"context"
 	"fmt"
+	"reflect"
 
+	"github.com/go-json-experiment/json"
 	"github.com/lostluck/experimental/altbeams/allinone2/beam/coders"
 	pipepb "github.com/lostluck/experimental/altbeams/allinone2/beam/internal/model/pipeline_v1"
+	"google.golang.org/protobuf/proto"
 )
 
 // Design Goals:
@@ -98,6 +101,42 @@ func (e *edgeCombine) inputs() map[string]nodeIndex {
 // outputs for combines are one.
 func (e *edgeCombine) outputs() map[string]nodeIndex {
 	return map[string]nodeIndex{"Output": e.output}
+}
+
+func (e *edgeCombine) toProtoParts(params translateParams) (spec *pipepb.FunctionSpec, envID, name string) {
+	cfn := e.comb
+	rv := reflect.ValueOf(cfn)
+	if rv.Kind() == reflect.Pointer {
+		rv = rv.Elem()
+	}
+	// Register types with the lookup table.
+	typeName := rv.Type().Name()
+	params.TypeReg[typeName] = rv.Type()
+
+	name = typeName
+
+	wrap := dofnWrap{
+		TypeName: typeName,
+		DoFn:     cfn,
+	}
+	wrappedPayload, err := json.Marshal(&wrap, json.DefaultOptionsV2(), jsonDoFnMarshallers())
+	if err != nil {
+		panic(err)
+	}
+
+	payload, _ := proto.Marshal(&pipepb.CombinePayload{
+		CombineFn: &pipepb.FunctionSpec{
+			Urn:     "beam:go:transform:dofn:v2",
+			Payload: wrappedPayload,
+		},
+		AccumulatorCoderId: e.addCoder(params.InternedCoders, params.Comps.GetCoders()),
+	})
+
+	spec = &pipepb.FunctionSpec{
+		Urn:     "beam:transform:combine_per_key:v1",
+		Payload: payload,
+	}
+	return spec, params.DefaultEnvID, name
 }
 
 func (n *edgeCombine) addCoder(intern map[string]string, coders map[string]*pipepb.Coder) string {

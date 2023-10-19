@@ -75,6 +75,13 @@ func jsonDoFnUnmarshallers(typeReg map[string]reflect.Type, name string) json.Op
 	)
 }
 
+type translateParams struct {
+	DefaultEnvID   string
+	TypeReg        map[string]reflect.Type
+	InternedCoders map[string]string
+	Comps          *pipepb.Components
+}
+
 // marshal turns a pipeline graph into a normalized Beam pipeline proto.
 func (g *graph) marshal(typeReg map[string]reflect.Type) *pipepb.Pipeline {
 	var roots []string
@@ -134,77 +141,12 @@ func (g *graph) marshal(typeReg map[string]reflect.Type) *pipepb.Pipeline {
 		envID := defaultEnvID
 		switch e := edge.(type) {
 		case protoDescMultiEdge:
-			spec, envID, uniqueName = e.toProtoParts()
-		case bundleProcer:
-			dofn := e.actualTransform()
-			rv := reflect.ValueOf(dofn)
-			if rv.Kind() == reflect.Pointer {
-				rv = rv.Elem()
-			}
-			// Register types with the lookup table.
-			typeName := rv.Type().Name()
-			typeReg[typeName] = rv.Type()
-
-			opts := e.options()
-			if opts.Name == "" {
-				uniqueName = typeName
-			} else {
-				uniqueName = opts.Name
-			}
-
-			wrap := dofnWrap{
-				TypeName: typeName,
-				DoFn:     dofn,
-			}
-			wrappedPayload, err := json.Marshal(&wrap, json.DefaultOptionsV2(), jsonDoFnMarshallers())
-			if err != nil {
-				panic(err)
-			}
-
-			payload, _ := proto.Marshal(&pipepb.ParDoPayload{
-				DoFn: &pipepb.FunctionSpec{
-					Urn:     "beam:go:transform:dofn:v2",
-					Payload: wrappedPayload,
-				},
+			spec, envID, uniqueName = e.toProtoParts(translateParams{
+				TypeReg:        typeReg,
+				DefaultEnvID:   defaultEnvID,
+				InternedCoders: internedCoders,
+				Comps:          comps,
 			})
-
-			spec = &pipepb.FunctionSpec{
-				Urn:     "beam:transform:pardo:v1",
-				Payload: payload,
-			}
-		case *edgeCombine:
-			cfn := e.comb
-			rv := reflect.ValueOf(cfn)
-			if rv.Kind() == reflect.Pointer {
-				rv = rv.Elem()
-			}
-			// Register types with the lookup table.
-			typeName := rv.Type().Name()
-			typeReg[typeName] = rv.Type()
-
-			uniqueName = typeName
-
-			wrap := dofnWrap{
-				TypeName: typeName,
-				DoFn:     cfn,
-			}
-			wrappedPayload, err := json.Marshal(&wrap, json.DefaultOptionsV2(), jsonDoFnMarshallers())
-			if err != nil {
-				panic(err)
-			}
-
-			payload, _ := proto.Marshal(&pipepb.CombinePayload{
-				CombineFn: &pipepb.FunctionSpec{
-					Urn:     "beam:go:transform:dofn:v2",
-					Payload: wrappedPayload,
-				},
-				AccumulatorCoderId: e.addCoder(internedCoders, comps.GetCoders()),
-			})
-
-			spec = &pipepb.FunctionSpec{
-				Urn:     "beam:transform:combine_per_key:v1",
-				Payload: payload,
-			}
 		default:
 			panic(fmt.Sprintf("unknown edge type %#v", e))
 		}
