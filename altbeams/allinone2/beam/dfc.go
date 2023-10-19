@@ -17,7 +17,7 @@ type DFC[E Element] struct {
 	dofn       Transform[E]
 	downstream []processor
 
-	perElm       func(ec ElmC, elm E) bool
+	perElm       Process[E]
 	finishBundle func() error
 
 	metrics *metricsStore
@@ -53,7 +53,7 @@ func newDFC[E Element](id nodeIndex, ds []processor) *DFC[E] {
 //
 // TODO document better.
 // Do we even need this though? Can we instead just have ProcessBundle return the perElm func?
-func (c *DFC[E]) Process(perElm func(ec ElmC, elm E) bool) {
+func (c *DFC[E]) Process(perElm Process[E]) {
 	if c.perElm != nil {
 		panic("Process called twice")
 	}
@@ -154,8 +154,8 @@ func (c *DFC[E]) multiplex(numOut int) []processor {
 }
 
 func (c *DFC[E]) processE(ec elmContext, elm E) {
-	if !c.perElm(ElmC{ec, c.downstream}, elm) {
-		panic(fmt.Errorf("short iteration"))
+	if err := c.perElm(ElmC{ec, c.downstream}, elm); err != nil {
+		panic(fmt.Errorf("doFn id %v failed: %w", c.id, err))
 	}
 }
 

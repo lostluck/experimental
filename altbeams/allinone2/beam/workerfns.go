@@ -20,11 +20,11 @@ type multiplex[E Element] struct {
 }
 
 func (fn *multiplex[E]) ProcessBundle(ctx context.Context, dfc *DFC[E]) error {
-	dfc.Process(func(ec ElmC, elm E) bool {
+	dfc.Process(func(ec ElmC, elm E) error {
 		for _, out := range fn.Outs {
 			out.Emit(ec, elm)
 		}
-		return true
+		return nil
 	})
 	return nil
 }
@@ -35,8 +35,8 @@ func (fn *multiplex[E]) ProcessBundle(ctx context.Context, dfc *DFC[E]) error {
 type discard[E Element] struct{}
 
 func (fn *discard[E]) ProcessBundle(ctx context.Context, dfc *DFC[E]) error {
-	dfc.Process(func(ec ElmC, elm E) bool {
-		return true
+	dfc.Process(func(ec ElmC, elm E) error {
+		return nil
 	})
 	return nil
 }

@@ -18,9 +18,9 @@ type AddFixedKeyFn[E Element] struct {
 }
 
 func (fn *AddFixedKeyFn[E]) ProcessBundle(_ context.Context, dfc *DFC[E]) error {
-	dfc.Process(func(ec ElmC, elm E) bool {
+	dfc.Process(func(ec ElmC, elm E) error {
 		fn.Output.Emit(ec, KV[int, E]{Key: 0, Value: elm})
-		return true
+		return nil
 	})
 	return nil
 }

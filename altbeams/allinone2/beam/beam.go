@@ -55,6 +55,14 @@ func (e *ElmC) EventTime() time.Time {
 	return e.eventTime
 }
 
+// Process is the function type for handling a single element in a bundle.
+//
+// Typically a closure returned from a Transform's ProcessBundle method.
+//
+// Errors returned from Process functions abort bundle processing, and may
+// cause pipeline termination. A runner may retry a bundle that has failed.
+type Process[E Element] func(ElmC, E) error
+
 // Transform is the only interface that needs to be implemented by most DoFns.
 type Transform[E Element] interface {
 	ProcessBundle(ctx context.Context, dfc *DFC[E]) error

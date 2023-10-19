@@ -69,6 +69,11 @@ type bundleFinisher interface {
 	regBundleFinisher(finishBundle func() error)
 }
 
+// Do registers a callback to execute after all bundle elements have been processed.
+// Any resources that a DoFn needs explicitly cleaned up explicitly rather than implicitly
+// via garbage collection, should be called here.
+//
+// Only a single callback may be registered, and it will be the last one passed to Do.
 func (*OnBundleFinish) Do(dfc bundleFinisher, finishBundle func() error) {
 	dfc.regBundleFinisher(finishBundle)
 }

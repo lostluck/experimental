@@ -90,9 +90,9 @@ type flatten[E Element] struct {
 }
 
 func (fn *flatten[E]) ProcessBundle(ctx context.Context, dfc *DFC[E]) error {
-	dfc.Process(func(ec ElmC, elm E) bool {
+	dfc.Process(func(ec ElmC, elm E) error {
 		fn.Output.Emit(ec, elm)
-		return true
+		return nil
 	})
 	return nil
 }

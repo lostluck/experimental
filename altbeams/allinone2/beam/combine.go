@@ -185,7 +185,7 @@ func (fn *liftedAddingCombine[K, I, A]) ProcessBundle(ctx context.Context, dfc *
 		panic(fmt.Errorf("combiner %T doesn't support the AddInput method type", fn.Merger))
 	}
 	var prevElmC ElmC
-	dfc.Process(func(ec ElmC, elm KV[K, I]) bool {
+	dfc.Process(func(ec ElmC, elm KV[K, I]) error {
 		prevElmC = ec
 		a, ok := cache[elm.Key]
 		if !ok {
@@ -197,7 +197,7 @@ func (fn *liftedAddingCombine[K, I, A]) ProcessBundle(ctx context.Context, dfc *
 		for k, ca := range cache {
 			// If the cache is small enough, no evictions.
 			if len(cache) < cacheMax {
-				return true
+				return nil
 			}
 			if k == elm.Key {
 				continue // never evict the current key. Leads to post grouping errors.
@@ -207,7 +207,7 @@ func (fn *liftedAddingCombine[K, I, A]) ProcessBundle(ctx context.Context, dfc *
 			// TODO, use a proper timestamp & window to make the ElmC.
 			fn.Output.Emit(ec, KV[K, A]{Key: k, Value: ca})
 		}
-		return true
+		return nil
 	})
 	fn.OnBundleFinish.Do(dfc, func() error {
 		for k, ca := range cache {
@@ -250,7 +250,7 @@ func (fn *liftedMergedCombine[K, A]) ProcessBundle(ctx context.Context, dfc *DFC
 	const cacheMax = 10000
 
 	var prevElmC ElmC
-	dfc.Process(func(ec ElmC, elm KV[K, A]) bool {
+	dfc.Process(func(ec ElmC, elm KV[K, A]) error {
 		prevElmC = ec
 		a, ok := cache[elm.Key]
 		if !ok {
@@ -262,7 +262,7 @@ func (fn *liftedMergedCombine[K, A]) ProcessBundle(ctx context.Context, dfc *DFC
 		for k, ca := range cache {
 			// If the cache is small enough, no evictions.
 			if len(cache) < cacheMax {
-				return true
+				return nil
 			}
 			if k == elm.Key {
 				continue // never evict the current key. Leads to post grouping errors.
@@ -272,7 +272,7 @@ func (fn *liftedMergedCombine[K, A]) ProcessBundle(ctx context.Context, dfc *DFC
 			// TODO, use a proper timestamp & window to make the ElmC.
 			fn.Output.Emit(ec, KV[K, A]{Key: k, Value: ca})
 		}
-		return true
+		return nil
 	})
 	fn.OnBundleFinish.Do(dfc, func() error {
 		for k, ca := range cache {
@@ -297,14 +297,14 @@ func (fn *mergingKeyedCombine[K, A]) ProcessBundle(ctx context.Context, dfc *DFC
 	if ca, ok := fn.Merger.(AccumulatorCreator[A]); ok {
 		createA = ca.CreateAccumulator
 	}
-	dfc.Process(func(ec ElmC, elm KV[K, Iter[A]]) bool {
+	dfc.Process(func(ec ElmC, elm KV[K, Iter[A]]) error {
 		a := createA()
 		elm.Value.All()(func(elm A) bool {
 			a = fn.Merger.MergeAccumulators(a, elm)
 			return true
 		})
 		fn.Output.Emit(ec, KV[K, A]{Key: elm.Key, Value: a})
-		return true
+		return nil
 	})
 	return nil
 }
@@ -324,9 +324,9 @@ func (fn *outputExtractingKeyedCombine[K, A, O]) ProcessBundle(ctx context.Conte
 	if !ok {
 		return fmt.Errorf("combiner %T doesn't support the AddInput method type", fn.Merger)
 	}
-	dfc.Process(func(ec ElmC, elm KV[K, A]) bool {
+	dfc.Process(func(ec ElmC, elm KV[K, A]) error {
 		fn.Output.Emit(ec, KV[K, O]{Key: elm.Key, Value: oe.ExtractOutput(elm.Value)})
-		return true
+		return nil
 	})
 	return nil
 }
@@ -336,9 +336,9 @@ type identityFn[E Element] struct {
 }
 
 func (fn *identityFn[E]) ProcessBundle(ctx context.Context, dfc *DFC[E]) error {
-	dfc.Process(func(ec ElmC, elm E) bool {
+	dfc.Process(func(ec ElmC, elm E) error {
 		fn.Output.Emit(ec, elm)
-		return true
+		return nil
 	})
 	return nil
 }

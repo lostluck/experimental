@@ -71,7 +71,7 @@ func (fn *datasource[E]) ProcessBundle(ctx context.Context, dfc *DFC[[]byte]) er
 		return err
 	}
 	// TODO outputing to timers callbacks
-	dfc.Process(func(ec ElmC, _ []byte) bool {
+	dfc.Process(func(ec ElmC, _ []byte) error {
 		for dataElm := range elmsChan {
 			// Start reading byte blobs.
 			dec := coders.NewDecoder(dataElm.Data)
@@ -90,7 +90,7 @@ func (fn *datasource[E]) ProcessBundle(ctx context.Context, dfc *DFC[[]byte]) er
 				}, e)
 			}
 		}
-		return true
+		return nil
 	})
 	return nil
 }
@@ -149,14 +149,14 @@ func (fn *datasink[E]) ProcessBundle(ctx context.Context, dfc *DFC[E]) error {
 
 	enc := coders.NewEncoder()
 	// TODO outputing to timers callbacks
-	dfc.Process(func(ec ElmC, elm E) bool {
+	dfc.Process(func(ec ElmC, elm E) error {
 		enc.Reset(100)
 		coders.EncodeWindowedValueHeader(enc, ec.EventTime(), []coders.GWC{{}}, coders.PaneInfo{})
 
 		fn.Coder.Encode(enc, elm)
 
 		wc.Write(enc.Data())
-		return true
+		return nil
 	})
 	fn.OnBundleFinish.Do(dfc, func() error {
 		return wc.Close()

@@ -19,12 +19,12 @@ type SourceFn struct {
 func (fn *SourceFn) ProcessBundle(ctx context.Context, dfc *DFC[[]byte]) error {
 	// Do some startbundle work.
 	processed := 0
-	dfc.Process(func(ec ElmC, _ []byte) bool {
+	dfc.Process(func(ec ElmC, _ []byte) error {
 		for i := 0; i < fn.Count; i++ {
 			processed++
 			fn.Output.Emit(ec, i)
 		}
-		return true
+		return nil
 	})
 	return nil
 }
@@ -36,9 +36,9 @@ type DiscardFn[E Element] struct {
 }
 
 func (fn *DiscardFn[E]) ProcessBundle(ctx context.Context, dfc *DFC[E]) error {
-	dfc.Process(func(ec ElmC, elm E) bool {
+	dfc.Process(func(ec ElmC, elm E) error {
 		fn.Processed.Inc(dfc, 1)
-		return true
+		return nil
 	})
 	fn.OnBundleFinish.Do(dfc, func() error {
 		fn.Finished.Inc(dfc, 1)
@@ -52,9 +52,9 @@ type IdenFn[E Element] struct {
 }
 
 func (fn *IdenFn[E]) ProcessBundle(ctx context.Context, dfc *DFC[E]) error {
-	dfc.Process(func(ec ElmC, elm E) bool {
+	dfc.Process(func(ec ElmC, elm E) error {
 		fn.Output.Emit(ec, elm)
-		return true
+		return nil
 	})
 	return nil
 }
@@ -69,7 +69,7 @@ func TestSimple(t *testing.T) {
 		src := ParDo(s, imp, &SourceFn{Count: 10})
 		ParDo(s, src.Output, &DiscardFn[int]{})
 		return nil
-	}, pipeName(t))
+	})
 	if err != nil {
 		t.Error(err)
 	}
@@ -81,7 +81,7 @@ func TestAutomaticDiscard(t *testing.T) {
 		ParDo(s, imp, &SourceFn{Count: 10})
 		// drop the output.
 		return nil
-	}, pipeName(t))
+	})
 	if err != nil {
 		t.Error(err)
 	}
@@ -93,7 +93,7 @@ func TestSimpleNamed(t *testing.T) {
 		src := ParDo(s, imp, &SourceFn{Count: 10})
 		ParDo(s, src.Output, &DiscardFn[int]{}, Name("pants"))
 		return nil
-	}, pipeName(t))
+	})
 	if err != nil {
 		t.Error(err)
 	}
@@ -130,7 +130,7 @@ func BenchmarkPipe(b *testing.B) {
 				}
 				ParDo(s, iden, &DiscardFn[int]{}, Name("sink"))
 				return nil
-			}, pipeName(b))
+			})
 			if err != nil {
 				b.Errorf("Run error: %v", err)
 			}
@@ -160,10 +160,10 @@ type ModPartition[V constraints.Integer] struct {
 
 func (fn *ModPartition[V]) ProcessBundle(ctx context.Context, dfc *DFC[V]) error {
 	mod := V(len(fn.Outputs))
-	dfc.Process(func(ec ElmC, elm V) bool {
+	dfc.Process(func(ec ElmC, elm V) error {
 		rem := elm % mod
 		fn.Outputs[rem].Emit(ec, elm)
-		return true
+		return nil
 	})
 	return nil
 }
@@ -190,7 +190,7 @@ func TestPartitionFlatten(t *testing.T) {
 		exp := Expand(s, "WideNarrow", &WideNarrow{Wide: mod, In: src.Output})
 		ParDo(s, exp.Out, &DiscardFn[int]{}, Name("sink"))
 		return nil
-	}, pipeName(t))
+	})
 	if err != nil {
 		t.Error(err)
 	}
@@ -235,7 +235,7 @@ func BenchmarkPartitionPipe(b *testing.B) {
 		}
 	}
 	for _, numDoFns := range []int{1, 2, 3, 5, 10, 100} {
-		b.Run(fmt.Sprintf("partitions=%d", numDoFns), makeBench(numDoFns))
+		b.Run(fmt.Sprintf("num_partitions_%d", numDoFns), makeBench(numDoFns))
 	}
 }
 
@@ -246,13 +246,13 @@ type KeyMod[V constraints.Integer] struct {
 }
 
 func (fn *KeyMod[V]) ProcessBundle(ctx context.Context, dfc *DFC[V]) error {
-	dfc.Process(func(ec ElmC, elm V) bool {
+	dfc.Process(func(ec ElmC, elm V) error {
 		mod := elm % fn.Mod
 		fn.Output.Emit(ec, KV[V, V]{
 			Key:   V(mod),
 			Value: elm,
 		})
-		return true
+		return nil
 	})
 	return nil
 }
@@ -262,14 +262,14 @@ type SumByKey[K Keys, V constraints.Integer | constraints.Float] struct {
 }
 
 func (fn *SumByKey[K, V]) ProcessBundle(ctx context.Context, dfc *DFC[KV[K, Iter[V]]]) error {
-	dfc.Process(func(ec ElmC, elm KV[K, Iter[V]]) bool {
+	dfc.Process(func(ec ElmC, elm KV[K, Iter[V]]) error {
 		var sum V
 		elm.Value.All()(func(elm V) bool {
 			sum += elm
 			return true
 		})
 		fn.Output.Emit(ec, KV[K, V]{Key: elm.Key, Value: sum})
-		return true
+		return nil
 	})
 	return nil
 }
@@ -289,12 +289,12 @@ var (
 
 func (fn *GroupKeyModSum[V]) ProcessBundle(ctx context.Context, dfc *DFC[V]) error {
 	grouped := map[V]V{}
-	dfc.Process(func(ec ElmC, elm V) bool {
+	dfc.Process(func(ec ElmC, elm V) error {
 		mod := elm % fn.Mod
 		v := grouped[mod]
 		v += elm
 		grouped[mod] = v
-		return true
+		return nil
 	})
 
 	fn.OnBundleFinish.Do(dfc, func() error {
@@ -317,7 +317,7 @@ func TestGBKSum(t *testing.T) {
 		sums := ParDo(s, grouped, &SumByKey[int, int]{})
 		ParDo(s, sums.Output, &DiscardFn[KV[int, int]]{}, Name("sink"))
 		return nil
-	}, pipeName(t))
+	})
 	if err != nil {
 		t.Error(err)
 	}
@@ -338,7 +338,7 @@ func BenchmarkGBKSum_int(b *testing.B) {
 				sums := ParDo(s, grouped, &SumByKey[int, int]{})
 				ParDo(s, sums.Output, discard, Name("sink"))
 				return nil
-			}, pipeName(b))
+			})
 			if err != nil {
 				b.Error(err)
 			}
@@ -362,7 +362,7 @@ func BenchmarkGBKSum_Lifted_int(b *testing.B) {
 				keyed := ParDo(s, src.Output, &GroupKeyModSum[int]{Mod: mod})
 				ParDo(s, keyed.Output, &DiscardFn[KV[int, int]]{}, Name("sink"))
 				return nil
-			}, pipeName(b))
+			})
 			if err != nil {
 				b.Error(err)
 			}
@@ -385,7 +385,7 @@ func TestTwoSubGraphs(t *testing.T) {
 		ParDo(s, src1.Output, &DiscardFn[int]{}, Name("sink1"))
 		ParDo(s, src2.Output, &DiscardFn[int]{}, Name("sink2"))
 		return nil
-	}, pipeName(t))
+	})
 	if err != nil {
 		t.Error(err)
 	}
@@ -411,7 +411,7 @@ func TestMultiplex(t *testing.T) {
 		ParDo(s, src1.Output, &DiscardFn[int]{}, Name("sink1"))
 		ParDo(s, src2.Output, &DiscardFn[int]{}, Name("sink2"))
 		return nil
-	}, pipeName(t))
+	})
 	if err != nil {
 		t.Error(err)
 	}
@@ -436,12 +436,12 @@ type OnlySideIter[E Element] struct {
 }
 
 func (fn *OnlySideIter[E]) ProcessBundle(ctx context.Context, dfc *DFC[[]byte]) error {
-	dfc.Process(func(ec ElmC, elm []byte) bool {
+	dfc.Process(func(ec ElmC, elm []byte) error {
 		fn.Side.All(ec)(func(elm E) bool {
 			fn.Out.Emit(ec, elm)
 			return true
 		})
-		return true
+		return nil
 	})
 	return nil
 }
@@ -454,7 +454,7 @@ func TestSideInputIter(t *testing.T) {
 		onlySide := ParDo(s, imp, &OnlySideIter[int]{Side: AsSideIter(src.Output)})
 		ParDo(s, onlySide.Out, &DiscardFn[int]{}, Name("sink"))
 		return nil
-	}, pipeName(t))
+	})
 	if err != nil {
 		t.Error(err)
 	}
