@@ -275,6 +275,7 @@ type stateKeyWriter struct {
 
 type NextBuffer interface {
 	NextBuf() ([]byte, error)
+	Close() error
 }
 
 func (r *stateKeyReader) NextBuf() ([]byte, error) {

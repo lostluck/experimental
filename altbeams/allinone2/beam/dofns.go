@@ -159,6 +159,7 @@ func (si *SideInputIter[E]) All(ec ElmC) func(perElm func(elm E) bool) {
 func iterClosure[E Element](r harness.NextBuffer) func(perElm func(elm E) bool) {
 	c := MakeCoder[E]()
 	return func(perElm func(elm E) bool) {
+		defer r.Close()
 		for {
 			buf, err := r.NextBuf()
 			if err != nil {
@@ -169,7 +170,9 @@ func iterClosure[E Element](r harness.NextBuffer) func(perElm func(elm E) bool) 
 			}
 			dec := coders.NewDecoder(buf)
 			for !dec.Empty() {
-				perElm(c.Decode(dec))
+				if !perElm(c.Decode(dec)) {
+					return
+				}
 			}
 		}
 	}
