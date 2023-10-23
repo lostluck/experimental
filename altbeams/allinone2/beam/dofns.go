@@ -371,13 +371,6 @@ type TimerProcessing struct{ timer }
 // GroupIntoBatches (With Sharded Key)
 // CoGBK
 //
-// CombineFns.
-//
-//  - CreateAccumulator() A
-//  - AddInput[I, A](I, A) A
-//  - MergeAccumulators[A](A, A) A
-//  - ExtractOutput[A, O](A) O
-//
 //  CoCombine?
 //
 // Preserve Keys, Observe Keys
