@@ -116,7 +116,7 @@ func (c *DFC[E]) produceTypedNode(id nodeIndex, bounded bool) node {
 
 func (c *DFC[E]) produceDoFnEdge(transform string, id edgeIndex, dofn any, ins, outs map[string]nodeIndex, opts beamopts.Struct) multiEdge {
 	c.dofn = dofn.(Transform[E])
-	return &edgeDoFn[E]{transform: transform, index: id, parallelIn: c.id, dofn: c.dofn, ins: ins, outs: outs, opts: opts, proc: c}
+	return &edgeDoFn[E]{transform: transform, index: id, parallelIn: c.id, dofn: c.dofn, ins: ins, outs: outs, opts: opts}
 }
 
 func (c *DFC[E]) update(transform string, dofn any, procs []processor, mets *metricsStore) {

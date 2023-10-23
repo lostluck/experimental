@@ -21,17 +21,14 @@ func ParDo[E Element, DF Transform[E]](s *Scope, input Emitter[E], dofn DF, opts
 	opt.Join(opts...)
 
 	edgeID := s.g.curEdgeIndex()
-	ins, outs := s.g.deferDoFn(dofn, input.globalIndex, edgeID)
+	ins, outs, sides := s.g.deferDoFn(dofn, input.globalIndex, edgeID)
 
-	// We do all the expected connections here.
-	// Side inputs, are put on the side input at the DoFn creation time being passed in.
-
-	s.g.edges = append(s.g.edges, &edgeDoFn[E]{index: edgeID, dofn: dofn, ins: ins, outs: outs, parallelIn: input.globalIndex, opts: opt})
+	s.g.edges = append(s.g.edges, &edgeDoFn[E]{index: edgeID, dofn: dofn, ins: ins, outs: outs, sides: sides, parallelIn: input.globalIndex, opts: opt})
 
 	return dofn
 }
 
-func (g *graph) deferDoFn(dofn any, input nodeIndex, global edgeIndex) (ins, outs map[string]nodeIndex) {
+func (g *graph) deferDoFn(dofn any, input nodeIndex, global edgeIndex) (ins, outs map[string]nodeIndex, sides map[string]string) {
 	if g.consumers == nil {
 		g.consumers = map[nodeIndex][]edgeIndex{}
 	}
@@ -43,8 +40,8 @@ func (g *graph) deferDoFn(dofn any, input nodeIndex, global edgeIndex) (ins, out
 	}
 	ins = map[string]nodeIndex{
 		"parallel": input,
-		// TODO, side inputs.
 	}
+	sides = map[string]string{}
 	outs = map[string]nodeIndex{}
 	efaceRT := reflect.TypeOf((*emitIface)(nil)).Elem()
 	rt := rv.Type()
@@ -72,6 +69,7 @@ func (g *graph) deferDoFn(dofn any, input nodeIndex, global edgeIndex) (ins, out
 				g.initEmitter(emt, global, input, sf.Name, outs)
 			}
 			if si, ok := fv.Interface().(sideIface); ok {
+				sides[sf.Name] = si.accessPatternUrn()
 				// fmt.Println("initialising side intput: ", si, global, sf.Name, ins)
 				g.initSideInput(si, global, sf.Name, ins)
 			}
@@ -83,7 +81,7 @@ func (g *graph) deferDoFn(dofn any, input nodeIndex, global edgeIndex) (ins, out
 
 		}
 	}
-	return ins, outs
+	return ins, outs, sides
 }
 
 func (g *graph) initEmitter(emt emitIface, global edgeIndex, input nodeIndex, name string, outs map[string]nodeIndex) {
@@ -107,9 +105,9 @@ type edgeDoFn[E Element] struct {
 	transform string
 
 	dofn       Transform[E]
-	ins, outs  map[string]nodeIndex
+	ins, outs  map[string]nodeIndex // local field names to global collection ids.
+	sides      map[string]string    // local id to access pattern URN
 	parallelIn nodeIndex
-	proc       processor
 
 	opts beamopts.Struct
 }
@@ -148,11 +146,30 @@ func (e *edgeDoFn[E]) toProtoParts(params translateParams) (spec *pipepb.Functio
 		panic(err)
 	}
 
+	var sis map[string]*pipepb.SideInput
+	if len(e.sides) > 0 {
+		sis = map[string]*pipepb.SideInput{}
+		for local, pattern := range e.sides {
+			sis[local] = &pipepb.SideInput{
+				AccessPattern: &pipepb.FunctionSpec{
+					Urn: pattern,
+				},
+				ViewFn: &pipepb.FunctionSpec{
+					Urn: "dummyViewFn",
+				},
+				WindowMappingFn: &pipepb.FunctionSpec{
+					Urn: "dummyWindowMappingFn",
+				},
+			}
+		}
+	}
+
 	payload, _ := proto.Marshal(&pipepb.ParDoPayload{
 		DoFn: &pipepb.FunctionSpec{
 			Urn:     "beam:go:transform:dofn:v2",
 			Payload: wrappedPayload,
 		},
+		SideInputs: sis,
 	})
 
 	spec = &pipepb.FunctionSpec{
@@ -169,6 +186,7 @@ type bundleProcer interface {
 	// Then we can keep the graph around, for cheaper startup vs reparsing proto
 	actualTransform() any
 	options() beamopts.Struct
+	transformID() string
 }
 
 func (e *edgeDoFn[E]) actualTransform() any {
@@ -177,6 +195,10 @@ func (e *edgeDoFn[E]) actualTransform() any {
 
 func (e *edgeDoFn[E]) options() beamopts.Struct {
 	return e.opts
+}
+
+func (e *edgeDoFn[E]) transformID() string {
+	return e.transform
 }
 
 var _ bundleProcer = (*edgeDoFn[int])(nil)

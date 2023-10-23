@@ -26,7 +26,7 @@ type SubGraphProto interface {
 	GetWindowingStrategies() map[string]*pipepb.WindowingStrategy
 }
 
-type ExecFunc func(SubGraphProto, DataContext) (*fnpb.ProcessBundleResponse, map[string]*pipepb.MonitoringInfo, error)
+type ExecFunc func(context.Context, SubGraphProto, DataContext) (*fnpb.ProcessBundleResponse, map[string]*pipepb.MonitoringInfo, error)
 
 // Options for harness.Main that affect execution of the harness, such as runner capabilities.
 type Options struct {
@@ -71,6 +71,7 @@ func Main(ctx context.Context, controlEndpoint string, opts Options, exec ExecFu
 	}()
 
 	dataMan := &DataChannelManager{}
+	stateMan := &StateChannelManager{}
 	// gRPC requires all readers of a stream be the same goroutine, so this goroutine
 	// is responsible for managing the network data. All it does is pull data from
 	// the stream, and hand off the message to a goroutine to actually be handled,
@@ -91,7 +92,7 @@ func Main(ctx context.Context, controlEndpoint string, opts Options, exec ExecFu
 
 		// Launch a goroutine to handle the control message.
 		fn := func(ctx context.Context, req *fnpb.InstructionRequest) {
-			resp := handleInstruction(ctx, req, lookupDesc, exec, dataMan)
+			resp := handleInstruction(ctx, req, lookupDesc, exec, dataMan, stateMan)
 
 			if resp != nil && atomic.LoadInt32(&shutdown) == 0 {
 				respc <- resp
@@ -137,7 +138,7 @@ func DefaultDial(ctx context.Context, endpoint string, timeout time.Duration) (*
 
 var cachedLabels map[string]*pipepb.MonitoringInfo
 
-func handleInstruction(ctx context.Context, req *fnpb.InstructionRequest, fetchBD func(id bundleDescriptorID) (*fnpb.ProcessBundleDescriptor, error), exec ExecFunc, dataMan *DataChannelManager) *fnpb.InstructionResponse {
+func handleInstruction(ctx context.Context, req *fnpb.InstructionRequest, fetchBD func(id bundleDescriptorID) (*fnpb.ProcessBundleDescriptor, error), exec ExecFunc, dataMan *DataChannelManager, stateMan *StateChannelManager) *fnpb.InstructionResponse {
 	instID := instructionID(req.GetInstructionId())
 	//ctx = metrics.SetBundleID(ctx, string(instID))
 
@@ -160,7 +161,6 @@ func handleInstruction(ctx context.Context, req *fnpb.InstructionRequest, fetchB
 
 	case req.GetProcessBundle() != nil:
 		msg := req.GetProcessBundle()
-		
 
 		bdID := bundleDescriptorID(msg.GetProcessBundleDescriptorId())
 
@@ -169,8 +169,9 @@ func handleInstruction(ctx context.Context, req *fnpb.InstructionRequest, fetchB
 			return fail(ctx, instID, "process bundle failed %v", err)
 		}
 		data := NewScopedDataManager(dataMan, instID)
+		state := NewScopedStateManager(stateMan, instID, bd.GetStateApiServiceDescriptor().GetUrl())
 
-		pbr, labels, err := exec(bd, DataContext{Data: data /* State: state*/})
+		pbr, labels, err := exec(ctx, bd, DataContext{Data: data, State: state})
 		if err != nil {
 			return fail(ctx, instID, "process bundle failed %v", err)
 		}

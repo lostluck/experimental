@@ -1,6 +1,7 @@
 package beam
 
 import (
+	"context"
 	"fmt"
 	"reflect"
 	"strconv"
@@ -94,7 +95,7 @@ func (g *graph) curEdgeIndex() edgeIndex {
 }
 
 // build returns the root processors for SDK worker side execution.
-func (g *graph) build(dataCon harness.DataContext) ([]processor, *metricsStore) {
+func (g *graph) build(ctx context.Context, dataCon harness.DataContext) ([]processor, *metricsStore) {
 	type consumer struct {
 		input processor
 		edge  multiEdge
@@ -164,27 +165,20 @@ func (g *graph) build(dataCon harness.DataContext) ([]processor, *metricsStore) 
 			if rv.Kind() == reflect.Pointer {
 				rv = rv.Elem()
 			}
-			// Check if this is a side input.
-			// if e.parallelInput() != c.input.pcollection() {
-			// 	// Find the side input with which this input is associated
-			// var siFieldName string
-			// for name, nodeID := range e.inputs() {
-			// 	fmt.Println("name", name, "input", nodeID, "parallelInput:", e.parallelInput() == nodeID)
-			// 	if nodeID == c.input.pcollection() {
-			// 		siFieldName = name
-			// 		break
-			// 	}
-			// }
-			// fv := rv.FieldByName(siFieldName)
-			// si := fv.Addr().Interface().(sideIface)
 
-			// si.sideInput()
+			// Initialize side inputs.
 
-			// We now have the side input and the field that it's accessed from.
-			// We need to pass this notion to the edgeDoFn, and update the received input
-			// with a buffer that is connected to a "wait" for the primary input, so the
-			// buffers can notify the wait when they have their inputs.
-			// }
+			// Look at the inputs, and check if this is a side input field.
+			for name, _ := range e.inputs() {
+				fv := rv.FieldByName(name)
+				if !fv.IsValid() {
+					continue
+				}
+				si := fv.Addr().Interface().(sideIface)
+
+				si.initialize(ctx, dataCon, name, e.transformID())
+			}
+
 			var procs []processor // Needs to be set on the incoming DFC.
 			for name, nodeID := range e.outputs() {
 				splitName := strings.Split(name, "%")

@@ -388,15 +388,20 @@ func unmarshalToGraph(typeReg map[string]reflect.Type, pbd subGraphProto) *graph
 			var dofnType reflect.Type
 			var proc processor
 			var wrap dofnWrap
-			decodeDoFn(spec.GetPayload(), &wrap, typeReg, name)
 			switch spec.GetUrn() {
+			case "beam:transform:pardo:v1":
+				dofnPayload := decodeDoFn(spec.GetPayload(), &wrap, typeReg, name)
+				dofnPayload.GetSideInputs()
 			case "beam:transform:combine_per_key_precombine:v1":
+				decodeCombineFn(spec.GetPayload(), &wrap, typeReg, name)
 				cmb := wrap.DoFn.(combiner)
 				wrap.DoFn = cmb.precombine()
 			case "beam:transform:combine_per_key_merge_accumulators:v1":
+				decodeCombineFn(spec.GetPayload(), &wrap, typeReg, name)
 				cmb := wrap.DoFn.(combiner)
 				wrap.DoFn = cmb.mergeacuumulators()
 			case "beam:transform:combine_per_key_extract_outputs:v1":
+				decodeCombineFn(spec.GetPayload(), &wrap, typeReg, name)
 				cmb := wrap.DoFn.(combiner)
 				wrap.DoFn = cmb.extactoutput()
 			}
@@ -409,9 +414,9 @@ func unmarshalToGraph(typeReg map[string]reflect.Type, pbd subGraphProto) *graph
 			dofnType = dofnPtrRT.Elem()
 			proc = reflect.New(dfcRT).Interface().(processor)
 
-			if len(pt.Inputs) > 1 {
-				panic(fmt.Sprintf("unimplemented: transform %v has side inputs: %v", name, pt.Inputs))
-			}
+			// if len(pt.GetInputs()) > 1 {
+			// 	panic(fmt.Sprintf("unimplemented: transform %v has side inputs: %v", name, pt.Inputs))
+			// }
 
 			edgeID := g.curEdgeIndex()
 
@@ -546,7 +551,7 @@ func getEmitIfaceByName(doFnT reflect.Type, field string, outs map[string]nodeIn
 	return reflect.New(rt).Interface().(emitIface), true
 }
 
-func decodeDoFn(payload []byte, wrap *dofnWrap, typeReg map[string]reflect.Type, name string) {
+func decodeDoFn(payload []byte, wrap *dofnWrap, typeReg map[string]reflect.Type, name string) *pipepb.ParDoPayload {
 	var dofnPayload pipepb.ParDoPayload
 	if err := proto.Unmarshal(payload, &dofnPayload); err != nil {
 		panic(err)
@@ -558,6 +563,23 @@ func decodeDoFn(payload []byte, wrap *dofnWrap, typeReg map[string]reflect.Type,
 	}
 
 	if err := json.Unmarshal(dofnSpec.GetPayload(), &wrap, json.DefaultOptionsV2(), jsonDoFnUnmarshallers(typeReg, name)); err != nil {
+		panic(err)
+	}
+	return &dofnPayload
+}
+
+func decodeCombineFn(payload []byte, wrap *dofnWrap, typeReg map[string]reflect.Type, name string) {
+	var combineFnPayload pipepb.CombinePayload
+	if err := proto.Unmarshal(payload, &combineFnPayload); err != nil {
+		panic(err)
+	}
+	combineFnSpec := combineFnPayload.GetCombineFn()
+
+	if combineFnSpec.GetUrn() != "beam:go:transform:dofn:v2" {
+		panic(fmt.Sprintf("unknown pardo urn in transform %q: urn %q\n", name, combineFnSpec.GetUrn()))
+	}
+
+	if err := json.Unmarshal(combineFnSpec.GetPayload(), &wrap, json.DefaultOptionsV2(), jsonDoFnUnmarshallers(typeReg, name)); err != nil {
 		panic(err)
 	}
 }

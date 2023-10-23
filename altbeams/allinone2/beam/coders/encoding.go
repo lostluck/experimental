@@ -175,7 +175,8 @@ func (e *Encoder) GlobalWindow() {
 
 type GWC struct{}
 
-func (GWC) encode(enc *Encoder) {
+// Encode encodes this window.
+func (GWC) Encode(enc *Encoder) {
 	enc.GlobalWindow()
 }
 
@@ -240,7 +241,7 @@ func EncodeWindowedValueHeader[W window](e *Encoder, eventTime time.Time, window
 	e.Timestamp(eventTime)
 	e.Uint32(uint32(len(windows)))
 	for _, w := range windows {
-		w.encode(e)
+		w.Encode(e)
 	}
 	e.Pane(pane)
 }
@@ -266,7 +267,7 @@ func (e *Encoder) Nullable(isNil bool) {
 }
 
 type window interface {
-	encode(e *Encoder)
+	Encode(e *Encoder)
 	decode(d *Decoder)
 }
 

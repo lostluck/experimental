@@ -24,5 +24,5 @@ type Elements struct {
 // DataContext holds connectors to various data connections, incl. state and side input.
 type DataContext struct {
 	Data  *ScopedDataManager
-	// State StateReader
+	State *ScopedStateManager
 }
