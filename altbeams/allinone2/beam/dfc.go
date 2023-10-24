@@ -42,23 +42,17 @@ func newDFC[E Element](id nodeIndex, ds []processor) *DFC[E] {
 
 // Process is what the user calls to handle the bundle of elements.
 //
-// Per the issued FAQ, probably won't make process loop compatible,
-// since it's going to cause issues with error returns and similar.
-//
-//	for ec := range dfc.Process {
-//	    // Do some processing with ec.Elm()
-//	}
-//
-// Process can't return a function since we can't reprocess bundle data.
-//
-// TODO document better.
-// Do we even need this though? Can we instead just have ProcessBundle return the perElm func?
-func (c *DFC[E]) Process(perElm Process[E]) {
+
+// Process is where you set the per Element processing function that accepts
+// elements. Process returns an error to allow inlining with the error return
+// from a Transform's ProcessBundle method.
+func (c *DFC[E]) Process(perElm Process[E]) error {
 	if c.perElm != nil {
 		panic("Process called twice")
 	}
 	// TODO obesrved windows can have a wrapper set to do the downstream explode.
 	c.perElm = perElm
+	return nil
 }
 
 // FinishBundle can optionally be called to provide a callback
