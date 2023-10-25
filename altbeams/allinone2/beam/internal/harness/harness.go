@@ -13,6 +13,7 @@ import (
 	fnpb "github.com/lostluck/experimental/altbeams/allinone2/beam/internal/model/fnexecution_v1"
 	pipepb "github.com/lostluck/experimental/altbeams/allinone2/beam/internal/model/pipeline_v1"
 	"github.com/pkg/errors"
+	"golang.org/x/exp/maps"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
@@ -136,7 +137,10 @@ func DefaultDial(ctx context.Context, endpoint string, timeout time.Duration) (*
 	return cc, nil
 }
 
-var cachedLabels map[string]*pipepb.MonitoringInfo
+var (
+	labelMu      sync.Mutex
+	cachedLabels = map[string]*pipepb.MonitoringInfo{}
+)
 
 func handleInstruction(ctx context.Context, req *fnpb.InstructionRequest, fetchBD func(id bundleDescriptorID) (*fnpb.ProcessBundleDescriptor, error), exec ExecFunc, dataMan *DataChannelManager, stateMan *StateChannelManager) *fnpb.InstructionResponse {
 	instID := instructionID(req.GetInstructionId())
@@ -175,7 +179,9 @@ func handleInstruction(ctx context.Context, req *fnpb.InstructionRequest, fetchB
 		if err != nil {
 			return fail(ctx, instID, "process bundle failed %v", err)
 		}
-		cachedLabels = labels
+		labelMu.Lock()
+		maps.Copy(cachedLabels, labels)
+		labelMu.Unlock()
 
 		// TODO(lostluck): 2023/03/29 fix debug level logging to be flagged.
 		// log.Debugf(ctx, "PB [%v]: %v", instID, msg)
@@ -428,12 +434,18 @@ func handleInstruction(ctx context.Context, req *fnpb.InstructionRequest, fetchB
 			},
 		}
 	case req.GetMonitoringInfos() != nil:
-		//	msg := req.GetMonitoringInfos()
+		needs := req.GetMonitoringInfos().GetMonitoringInfoId()
+		labels := make(map[string]*pipepb.MonitoringInfo, len(needs))
+		labelMu.Lock()
+		for _, v := range needs {
+			labels[v] = cachedLabels[v]
+		}
+		labelMu.Unlock()
 		return &fnpb.InstructionResponse{
 			InstructionId: string(instID),
 			Response: &fnpb.InstructionResponse_MonitoringInfos{
 				MonitoringInfos: &fnpb.MonitoringInfosMetadataResponse{
-					MonitoringInfo: cachedLabels,
+					MonitoringInfo: labels,
 				},
 			},
 		}

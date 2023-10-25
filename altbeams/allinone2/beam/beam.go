@@ -189,7 +189,6 @@ func Run(ctx context.Context, expand func(*Scope) error, opts ...Options) (Pipel
 
 func executeSubgraph(typeReg map[string]reflect.Type) harness.ExecFunc {
 	var i atomic.Uint32
-	labels := map[string]*pipepb.MonitoringInfo{}
 	return func(ctx context.Context, comps harness.SubGraphProto, dataCon harness.DataContext) (*fnpb.ProcessBundleResponse, map[string]*pipepb.MonitoringInfo, error) {
 		newG := unmarshalToGraph(typeReg, comps)
 		roots, mets := newG.build(ctx, dataCon)
@@ -204,9 +203,10 @@ func executeSubgraph(typeReg map[string]reflect.Type) harness.ExecFunc {
 			}
 		}
 
-		mons := mets.MonitoringInfos()
+		mons := mets.MonitoringInfos(newG)
 
 		pylds := map[string][]byte{}
+		labels := map[string]*pipepb.MonitoringInfo{}
 		for _, mon := range mons {
 			key := strconv.FormatInt(int64(i.Add(1)), 36)
 
