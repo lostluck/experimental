@@ -34,6 +34,13 @@ type edgeGBK[K Keys, V Element] struct {
 	opts          beamopts.Struct
 }
 
+func (e *edgeGBK[K, V]) protoID() string {
+	return "invalid-GBK-id"
+}
+func (e *edgeGBK[K, V]) edgeID() edgeIndex {
+	return e.index
+}
+
 // inputs for GBKs are one.
 func (e *edgeGBK[K, V]) inputs() map[string]nodeIndex {
 	return map[string]nodeIndex{"i0": e.input}

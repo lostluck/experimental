@@ -14,12 +14,21 @@ import (
 
 // edgeDataSource represents a data connection from the runner.
 type edgeDataSource[E Element] struct {
+	index     edgeIndex
 	transform string
 
 	port      harness.Port
 	makeCoder func() coders.Coder[E]
 
 	output nodeIndex
+}
+
+func (e *edgeDataSource[E]) protoID() string {
+	return e.transform
+}
+
+func (e *edgeDataSource[E]) edgeID() edgeIndex {
+	return e.index
 }
 
 // inputs for datasink, in practice there should only be one
@@ -113,12 +122,21 @@ func (fn *datasource[E]) ProcessBundle(ctx context.Context, dfc *DFC[[]byte]) er
 
 // edgeDataSink represents a data connection back to the runner.
 type edgeDataSink[E Element] struct {
+	index     edgeIndex
 	transform string
 
 	port      harness.Port
 	makeCoder func() coders.Coder[E]
 
 	input nodeIndex
+}
+
+func (e *edgeDataSink[E]) protoID() string {
+	return e.transform
+}
+
+func (e *edgeDataSink[E]) edgeID() edgeIndex {
+	return e.index
 }
 
 // inputs for datasink, in practice there should only be one

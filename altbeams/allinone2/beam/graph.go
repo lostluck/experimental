@@ -91,6 +91,8 @@ func (n *typedNode[E]) windowingStrat() {
 
 // multiEdges represent transforms.
 type multiEdge interface {
+	edgeID() edgeIndex
+	protoID() string
 	inputs() map[string]nodeIndex
 	outputs() map[string]nodeIndex
 }
@@ -124,9 +126,7 @@ func (g *graph) build(ctx context.Context, dataCon harness.DataContext) ([]proce
 	}
 
 	var roots []processor
-	mets := metricsStore{
-		metricNames: map[int]metricLabels{},
-	}
+	mets := newMetricsStore(len(g.edges))
 	// We have a dummy metric to allow uninitialized metrics to know
 	// they need to register themselves.
 	mets.initMetric("none", "dummy", nil)
@@ -166,12 +166,12 @@ func (g *graph) build(ctx context.Context, dataCon harness.DataContext) ([]proce
 			roots = append(roots, imp)
 			addConsumers(imp, e.output)
 		case sourcer:
-			root, toConsumer := e.source(dataCon, &mets)
+			root, toConsumer := e.source(dataCon, mets)
 			roots = append(roots, root)
 			addConsumers(toConsumer, getSingleValue(e.outputs()))
 		case sinker:
 			sink := e.sinkDoFn(dataCon)
-			c.input.update("sink", sink, nil, &mets)
+			c.input.update(c.edge.edgeID(), "sink", sink, nil, mets)
 		case bundleProcer: // Can't type assert generic types.
 			dofn := e.actualTransform()
 			uniqueName := e.options().Name
@@ -229,12 +229,12 @@ func (g *graph) build(ctx context.Context, dataCon harness.DataContext) ([]proce
 				}
 			}
 			// If this is the parallel input, the dofn needs to be set on the incoming DFC.
-			c.input.update(uniqueName, dofn, procs, &mets)
+			c.input.update(c.edge.edgeID(), uniqueName, dofn, procs, mets)
 		case flattener: // Can't type assert generic types.
 			// The same flatten edge will be re-invoked multiple times, once for each input node.
 			// But those nodes just need to point to the same dofn instance, and outputs
 			transform, dofn, procs, first := e.flatten()
-			c.input.update(transform, dofn, procs, &mets)
+			c.input.update(e.edgeID(), transform, dofn, procs, mets)
 			if first {
 				// There's only one, so the loop is the best way out.
 				for _, nodeID := range e.outputs() {
@@ -248,5 +248,5 @@ func (g *graph) build(ctx context.Context, dataCon harness.DataContext) ([]proce
 			panic(fmt.Sprintf("unknown edge type %#v", e))
 		}
 	}
-	return roots, &mets
+	return roots, mets
 }

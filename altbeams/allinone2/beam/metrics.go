@@ -1,8 +1,11 @@
 package beam
 
 import (
+	"context"
+	"fmt"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/lostluck/experimental/altbeams/allinone2/beam/coders"
 	pipepb "github.com/lostluck/experimental/altbeams/allinone2/beam/internal/model/pipeline_v1"
@@ -12,7 +15,22 @@ import (
 type metricsStore struct {
 	metrics []any
 
+	transitions  uint32 // Only accessed by process bundle thread.
+	sample       atomic.Uint32
+	samplingDone chan struct{}
+
+	sampleMu sync.Mutex // Guards samples.
+	samples  [][3]time.Duration
+
 	metricNames map[int]metricLabels
+}
+
+func newMetricsStore(numEdges int) *metricsStore {
+	return &metricsStore{
+		metricNames:  map[int]metricLabels{},
+		samples:      make([][3]time.Duration, numEdges),
+		samplingDone: make(chan struct{}),
+	}
 }
 
 type metricLabels struct {
@@ -28,9 +46,13 @@ func (ms *metricsStore) initMetric(transform, name string, v any) int {
 
 func (ms *metricsStore) MonitoringInfos(g *graph) []*pipepb.MonitoringInfo {
 	var mons []*pipepb.MonitoringInfo
-	for i, v := range ms.metrics {
-		enc := coders.NewEncoder()
 
+	encVarInt := func(v int64) []byte {
+		enc := coders.NewEncoder()
+		enc.Varint(uint64(v))
+		return enc.Data()
+	}
+	for i, v := range ms.metrics {
 		labels := ms.metricNames[i]
 		mon := &pipepb.MonitoringInfo{
 			Labels: map[string]string{
@@ -43,22 +65,19 @@ func (ms *metricsStore) MonitoringInfos(g *graph) []*pipepb.MonitoringInfo {
 		case *int64Sum:
 			mon.Urn = "beam:metric:user:sum_int64:v1"
 			mon.Type = "beam:metrics:sum_int64:v1"
-			enc.Varint(uint64(m.sum.Load()))
-			mon.Payload = enc.Data()
+			mon.Payload = encVarInt(m.sum.Load())
 		case *dataChannelIndex:
 			mon.Urn = "beam:metric:data_channel:read_index:v1"
 			mon.Type = "beam:metrics:sum_int64:v1"
-			enc.Varint(uint64(m.index.Load()))
-			mon.Payload = enc.Data()
+			mon.Payload = encVarInt(m.index.Load())
 		case *pcollectionMetrics:
-			enc.Varint(uint64(m.elementCount.Load()))
 			labels := map[string]string{
 				"PCOLLECTION": g.nodes[m.nodeIdx].protoID(),
 			}
 			elmMon := &pipepb.MonitoringInfo{
 				Urn:     "beam:metric:element_count:v1",
 				Type:    "beam:metrics:sum_int64:v1",
-				Payload: enc.Data(),
+				Payload: encVarInt(m.elementCount.Load()),
 				Labels:  labels,
 			}
 			mons = append(mons, elmMon)
@@ -83,6 +102,38 @@ func (ms *metricsStore) MonitoringInfos(g *graph) []*pipepb.MonitoringInfo {
 		}
 		mons = append(mons, mon)
 	}
+	ms.sampleMu.Lock()
+	for edgeID, sample := range ms.samples {
+		labels := map[string]string{
+			"PTRANSFORM": g.edges[edgeID].protoID(),
+		}
+		start := &pipepb.MonitoringInfo{
+			Urn:     "beam:metric:pardo_execution_time:start_bundle_msecs:v1",
+			Type:    "beam:metrics:sum_int64:v1",
+			Payload: encVarInt(sample[0].Milliseconds()),
+			Labels:  labels,
+		}
+		process := &pipepb.MonitoringInfo{
+			Urn:     "beam:metric:pardo_execution_time:process_bundle_msecs:v1",
+			Type:    "beam:metrics:sum_int64:v1",
+			Payload: encVarInt(sample[1].Milliseconds()),
+			Labels:  labels,
+		}
+		finish := &pipepb.MonitoringInfo{
+			Urn:     "beam:metric:pardo_execution_time:finish_bundle_msecs:v1",
+			Type:    "beam:metrics:sum_int64:v1",
+			Payload: encVarInt(sample[2].Milliseconds()),
+			Labels:  labels,
+		}
+		total := &pipepb.MonitoringInfo{
+			Urn:     "beam:metric:pardo_execution_time:total_msecs:v1",
+			Type:    "beam:metrics:sum_int64:v1",
+			Payload: encVarInt((sample[1] + sample[1] + sample[2]).Milliseconds()),
+			Labels:  labels,
+		}
+		mons = append(mons, start, process, finish, total)
+	}
+	ms.sampleMu.Unlock()
 	return mons
 }
 
@@ -182,4 +233,68 @@ func (c *pcollectionMetrics) Sample(size int64) {
 		c.sampleMin = size
 	}
 	c.sampleMu.Unlock()
+}
+
+type currentSampleState struct {
+	phase, transition uint32
+	edge              edgeIndex
+}
+
+// setState must only be called by the bundle processing goroutine.
+func (ms *metricsStore) setState(phase uint8, edgeID edgeIndex) {
+	ms.transitions++
+	ms.transitions = ms.transitions % 0x3FFF
+	ms.storeState(uint32(phase), ms.transitions, uint32(edgeID))
+}
+
+func (ms *metricsStore) storeState(phase, transition, edgeID uint32) {
+	ms.sample.Store(((phase & 0x3) << 30) ^ ((transition & 0x3FFF) << 16) ^ (edgeID & 0xFFFF))
+}
+
+func (ms *metricsStore) curState() currentSampleState {
+	packed := ms.sample.Load()
+
+	unphase := packed >> 30
+	untransition := (packed >> 16) & 0x3FFF
+	unedgeID := packed & 0xFFFF
+	return currentSampleState{
+		phase:      unphase,
+		transition: untransition,
+		edge:       edgeIndex(unedgeID),
+	}
+}
+
+func (ms *metricsStore) startSampling(ctx context.Context, sampleInterval, logInterval time.Duration) {
+	go func() {
+		tick := time.NewTicker(sampleInterval)
+		defer tick.Stop()
+		var prev currentSampleState
+		var stuck time.Duration
+		nextLogTime := logInterval
+		for {
+			select {
+			case <-ms.samplingDone:
+				return
+			case <-ctx.Done():
+				return
+			case <-tick.C:
+				state := ms.curState()
+				ms.sampleMu.Lock()
+				ms.samples[state.edge][state.phase] += sampleInterval
+				ms.sampleMu.Unlock()
+				if state == prev {
+					stuck += sampleInterval
+				}
+				if stuck >= nextLogTime {
+					fmt.Printf("Operation ongoing in transform %v for at least %v without outputting or completing in state %v\n", state.edge, stuck, state.phase)
+					nextLogTime += logInterval
+				}
+				prev = state
+			}
+		}
+	}()
+}
+
+func (mets *metricsStore) stopSampling() {
+	close(mets.samplingDone)
 }

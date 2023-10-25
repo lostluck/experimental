@@ -344,12 +344,20 @@ type subGraphProto interface {
 // It needs to be produced while building the graph from a bundle descriptor, so
 // the transform can use the real types from upstream or downstream transforms.
 type edgePlaceholder struct {
-	id        edgeIndex
+	index     edgeIndex
 	kind      string // Indicates what sort of node this is a placeholder for.
 	transform string
 
 	ins, outs map[string]nodeIndex
 	payload   []byte
+}
+
+func (e *edgePlaceholder) protoID() string {
+	return e.transform
+}
+
+func (e *edgePlaceholder) edgeID() edgeIndex {
+	return e.index
 }
 
 func (e *edgePlaceholder) inputs() map[string]nodeIndex {
@@ -401,7 +409,7 @@ func unmarshalToGraph(typeReg map[string]reflect.Type, pbd subGraphProto) *graph
 		outs := routeOutputs(pt, edgeID)
 		// Add a dummy edge.
 		g.edges = append(g.edges, &edgePlaceholder{
-			id:        edgeID,
+			index:     edgeID,
 			transform: name,
 			kind:      kind,
 			ins:       ins, outs: outs,
@@ -528,7 +536,7 @@ func (c *typedNode[E]) newTypeMultiEdge(ph *edgePlaceholder, cs map[string]*pipe
 	switch ph.kind {
 	case "flatten":
 		out := getSingleValue(ph.outs)
-		return &edgeFlatten[E]{transform: ph.transform, ins: maps.Values(ph.ins), output: out}
+		return &edgeFlatten[E]{index: ph.index, transform: ph.transform, ins: maps.Values(ph.ins), output: out}
 	case "source":
 		port, cid, err := decodePort(ph.payload)
 		if err != nil {
@@ -536,7 +544,7 @@ func (c *typedNode[E]) newTypeMultiEdge(ph *edgePlaceholder, cs map[string]*pipe
 		}
 		out := getSingleValue(ph.outs)
 		// TODO, extract windowed value coder for header
-		return &edgeDataSource[E]{transform: ph.transform, output: out, port: port,
+		return &edgeDataSource[E]{index: ph.index, transform: ph.transform, output: out, port: port,
 			makeCoder: func() coders.Coder[E] { return coderFromProto[E](cs, cid) }}
 	case "sink":
 		port, cid, err := decodePort(ph.payload)
@@ -545,7 +553,7 @@ func (c *typedNode[E]) newTypeMultiEdge(ph *edgePlaceholder, cs map[string]*pipe
 		}
 		in := getSingleValue(ph.ins)
 		// TODO, extract windowed value coder for header
-		return &edgeDataSink[E]{transform: ph.transform, input: in, port: port,
+		return &edgeDataSink[E]{index: ph.index, transform: ph.transform, input: in, port: port,
 			makeCoder: func() coders.Coder[E] { return coderFromProto[E](cs, cid) }}
 	default:
 		panic(fmt.Sprintf("unknown placeholder kind: %v", ph.kind))

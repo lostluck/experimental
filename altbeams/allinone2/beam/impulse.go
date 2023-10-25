@@ -23,6 +23,14 @@ type edgeImpulse struct {
 	output nodeIndex
 }
 
+func (e *edgeImpulse) protoID() string {
+	return "invalid-impulse-id"
+}
+
+func (e *edgeImpulse) edgeID() edgeIndex {
+	return e.index
+}
+
 // inputs for impulses are nil.
 func (e *edgeImpulse) inputs() map[string]nodeIndex {
 	return nil

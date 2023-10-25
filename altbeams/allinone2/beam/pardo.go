@@ -112,6 +112,14 @@ type edgeDoFn[E Element] struct {
 	opts beamopts.Struct
 }
 
+func (e *edgeDoFn[E]) protoID() string {
+	return e.transform
+}
+
+func (e *edgeDoFn[E]) edgeID() edgeIndex {
+	return e.index
+}
+
 func (e *edgeDoFn[E]) inputs() map[string]nodeIndex {
 	return e.ins
 }

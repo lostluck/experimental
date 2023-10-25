@@ -103,8 +103,8 @@ func (it *Iter[V]) All() func(perElm func(elm V) bool) {
 	}
 }
 
-func start(dfc *DFC[[]byte]) error {
-	if err := dfc.start(context.TODO()); err != nil {
+func start(ctx context.Context, dfc *DFC[[]byte]) error {
+	if err := dfc.start(ctx); err != nil {
 		return err
 	}
 	dfc.processE(elmContext{
@@ -192,8 +192,13 @@ func executeSubgraph(typeReg map[string]reflect.Type) harness.ExecFunc {
 	return func(ctx context.Context, comps harness.SubGraphProto, dataCon harness.DataContext) (*fnpb.ProcessBundleResponse, map[string]*pipepb.MonitoringInfo, error) {
 		newG := unmarshalToGraph(typeReg, comps)
 		roots, mets := newG.build(ctx, dataCon)
+
+		mets.startSampling(ctx, 10*time.Millisecond, 5*time.Minute)
+		defer mets.stopSampling()
+
+		// Process the bundle.
 		for _, root := range roots {
-			if err := start(root.(*DFC[[]byte])); err != nil {
+			if err := start(ctx, root.(*DFC[[]byte])); err != nil {
 				return nil, nil, err
 			}
 		}

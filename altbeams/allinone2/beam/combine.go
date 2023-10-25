@@ -93,6 +93,14 @@ type edgeCombine struct {
 	input, output nodeIndex
 }
 
+func (e *edgeCombine) protoID() string {
+	return "invalid-combine-id"
+}
+
+func (e *edgeCombine) edgeID() edgeIndex {
+	return e.index
+}
+
 // inputs for combines are one.
 func (e *edgeCombine) inputs() map[string]nodeIndex {
 	return map[string]nodeIndex{"parallel": e.input}

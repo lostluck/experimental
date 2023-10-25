@@ -13,6 +13,7 @@ import (
 type DFC[E Element] struct {
 	id        nodeIndex
 	transform string
+	edgeID    edgeIndex
 
 	dofn       Transform[E]
 	downstream []processor
@@ -84,7 +85,7 @@ func (c *DFC[E]) ToElmC(eventTime time.Time) ElmC {
 
 // processor allows a uniform type for different generic types.
 type processor interface {
-	update(transform string, dofn any, procs []processor, mets *metricsStore)
+	update(edgeID edgeIndex, transform string, dofn any, procs []processor, mets *metricsStore)
 
 	// discard signals that input this processor receives can be discarded.
 	discard()
@@ -112,11 +113,12 @@ func (c *DFC[E]) produceDoFnEdge(transform string, id edgeIndex, dofn any, ins, 
 	return &edgeDoFn[E]{transform: transform, index: id, parallelIn: c.id, dofn: c.dofn, ins: ins, outs: outs, opts: opts}
 }
 
-func (c *DFC[E]) update(transform string, dofn any, procs []processor, mets *metricsStore) {
+func (c *DFC[E]) update(edgeID edgeIndex, transform string, dofn any, procs []processor, mets *metricsStore) {
 	if c.dofn != nil {
 		panic(fmt.Sprintf("double updated: dfc %v already has %T, but got %T", c.id, c.dofn, dofn))
 	}
 	c.transform = transform
+	c.edgeID = edgeID
 	c.dofn = dofn.(Transform[E])
 	c.downstream = procs
 	c.metrics = mets
@@ -146,6 +148,9 @@ func (c *DFC[E]) multiplex(numOut int) []processor {
 }
 
 func (c *DFC[E]) processE(ec elmContext, elm E) {
+	if c.metrics != nil {
+		c.metrics.setState(1, c.edgeID)
+	}
 	if err := c.perElm(ElmC{ec, c.downstream}, elm); err != nil {
 		panic(fmt.Errorf("doFn id %v failed: %w", c.id, err))
 	}
@@ -155,6 +160,9 @@ func (c *DFC[E]) start(ctx context.Context) error {
 	// Defend against multiple initializations due to SDK side flattens.
 	if c.perElm != nil {
 		return nil
+	}
+	if c.metrics != nil {
+		c.metrics.setState(0, c.edgeID)
 	}
 	if err := c.dofn.ProcessBundle(ctx, c); err != nil {
 		return nil
@@ -168,6 +176,9 @@ func (c *DFC[E]) start(ctx context.Context) error {
 }
 
 func (c *DFC[E]) finish() error {
+	if c.metrics != nil {
+		c.metrics.setState(2, c.edgeID)
+	}
 	if c.finishBundle != nil {
 		if err := c.finishBundle(); err != nil {
 			return err

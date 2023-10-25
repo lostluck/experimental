@@ -42,6 +42,14 @@ type edgeFlatten[E Element] struct {
 	procs    []processor
 }
 
+func (e *edgeFlatten[E]) protoID() string {
+	return e.transform
+}
+
+func (e *edgeFlatten[E]) edgeID() edgeIndex {
+	return e.index
+}
+
 // inputs for flattens are plural
 func (e *edgeFlatten[E]) inputs() map[string]nodeIndex {
 	ins := map[string]nodeIndex{}
