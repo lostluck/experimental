@@ -139,28 +139,28 @@ func (d *Decoder) Bool() bool {
 	}
 }
 
-// Float32 decodes a value of type float32.
-func (d *Decoder) Float32() float32 {
+// Float decodes a value of type float32.
+func (d *Decoder) Float() float32 {
 	return math.Float32frombits(d.Uint32())
 }
 
-// Float64 decodes a value of type float64.
-func (d *Decoder) Float64() float64 {
+// Double decodes a value of type float64.
+func (d *Decoder) Double() float64 {
 	return math.Float64frombits(d.Uint64())
 }
 
 // Complex64 decodes a value of type complex64.
 func (d *Decoder) Complex64() complex64 {
-	return complex(d.Float32(), d.Float32())
+	return complex(d.Float(), d.Float())
 }
 
 // Complex128 decodes a value of type complex128.
 func (d *Decoder) Complex128() complex128 {
-	return complex(d.Float64(), d.Float64())
+	return complex(d.Double(), d.Double())
 }
 
 // String decodes a value of type string.
-func (d *Decoder) String() string {
+func (d *Decoder) StringUtf8() string {
 	return string(d.Bytes())
 }
 
@@ -188,11 +188,15 @@ func (d *Decoder) Pane() PaneInfo {
 
 func DecodeWindowedValueHeader[W window](d *Decoder) (time.Time, []W, PaneInfo) {
 	et := d.Timestamp()
+	fmt.Println(d)
 	n := d.Uint32()
+	fmt.Println(d)
 	windows := make([]W, int(n))
 	for _, w := range windows {
 		w.decode(d)
 	}
+	fmt.Println(d)
 	pane := d.Pane()
+	fmt.Println(d)
 	return et, windows, pane
 }

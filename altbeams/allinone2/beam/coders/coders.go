@@ -1,6 +1,7 @@
 package coders
 
 import (
+	"fmt"
 	"reflect"
 
 	"golang.org/x/exp/constraints"
@@ -21,10 +22,14 @@ type Codable interface {
 // MakeCoder is a convenience function for primitive coders access.
 func MakeCoder[E any]() Coder[E] {
 	var e E
+	rt := reflect.TypeOf(e)
+	if rt.Kind() == reflect.Struct {
+		return makeRowCoder[E](rt).(Coder[E])
+	}
 	return makeCoder(reflect.TypeOf(e)).(Coder[E])
 }
 
-// makeCoder works around
+// makeCoder works aorund generic coding.
 func makeCoder(rt reflect.Type) any {
 	switch rt.Kind() {
 	case reflect.Int:
@@ -47,6 +52,8 @@ func makeCoder(rt reflect.Type) any {
 		return varintCoder[uint32]{}
 	case reflect.Uint64:
 		return varintCoder[uint64]{}
+	case reflect.Float64:
+		return doubleCoder{}
 	case reflect.Slice:
 		switch rt.Elem().Kind() {
 		case reflect.Uint8:
@@ -56,6 +63,58 @@ func makeCoder(rt reflect.Type) any {
 	// Returning nil since type assertion elsewhere will provide better information
 	// to the developer.
 	return nil
+}
+
+func makeRowCoder[E any](rt reflect.Type) any {
+	c := &rowStructCoder[E]{}
+	// TODO: move this to be generated from the Schema + the user type.
+	// Also need to deal with length prefixing. Ugh.
+	for i := 0; i < rt.NumField(); i++ {
+		sf := rt.Field(i)
+		if !sf.IsExported() {
+			continue
+		}
+		switch sf.Type.Kind() {
+		case reflect.Int, reflect.Int32:
+			c.fieldEncoders = append(c.fieldEncoders, func(enc *Encoder, rv reflect.Value) {
+				enc.Varint(uint64(rv.Int()))
+			})
+			c.fieldDecoders = append(c.fieldDecoders, func(dec *Decoder, rv reflect.Value) {
+				rv.SetInt(int64(dec.Varint()))
+			})
+		}
+	}
+	return c
+}
+
+type rowStructCoder[T any] struct {
+	fieldEncoders []func(enc *Encoder, rv reflect.Value)
+	fieldDecoders []func(dec *Decoder, rv reflect.Value)
+}
+
+func (c *rowStructCoder[T]) Encode(enc *Encoder, v T) {
+	rv := reflect.ValueOf(v)
+	enc2 := NewEncoder()
+	for i := 0; i < rv.NumField(); i++ {
+		c.fieldEncoders[i](enc2, rv.Field(i))
+	}
+	enc.Bytes(enc2.Data())
+}
+
+func (c *rowStructCoder[T]) Decode(dec *Decoder) T {
+	var v T
+	rv := reflect.ValueOf(&v).Elem()
+	i := 0
+	defer func() {
+		if e := recover(); e != nil {
+			panic(fmt.Sprintf("field %v:\n%v", i, e))
+		}
+	}()
+	dec2 := NewDecoder(dec.Bytes())
+	for ; i < rv.NumField(); i++ {
+		c.fieldDecoders[i](dec2, rv.Field(i))
+	}
+	return rv.Interface().(T)
 }
 
 type varintCoder[T constraints.Integer] struct{}
@@ -86,4 +145,14 @@ func (bytesCoder) Encode(enc *Encoder, v []byte) {
 
 func (bytesCoder) Decode(dec *Decoder) []byte {
 	return dec.Bytes()
+}
+
+type doubleCoder struct{}
+
+func (doubleCoder) Encode(enc *Encoder, v float64) {
+	enc.Double(v)
+}
+
+func (doubleCoder) Decode(dec *Decoder) float64 {
+	return dec.Double()
 }

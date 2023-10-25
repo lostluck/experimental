@@ -36,6 +36,8 @@ func (e *edgeDataSource[E]) source(dc harness.DataContext) (processor, processor
 	// This is what the Datasource emits to.
 	toConsumer := newDFC[E](e.output, nil)
 
+	// TODO, produce the coder via the
+
 	// But we're lazy and just kick it off with an impulse.
 	root := newDFC[[]byte](e.output, []processor{toConsumer})
 	root.dofn = &datasource[E]{
@@ -79,7 +81,6 @@ func (fn *datasource[E]) ProcessBundle(ctx context.Context, dfc *DFC[[]byte]) er
 
 				et, ws, pn := coders.DecodeWindowedValueHeader[coders.GWC](dec)
 				e := fn.Coder.Decode(dec)
-
 				fn.Output.Emit(ElmC{
 					elmContext: elmContext{
 						eventTime: et,
@@ -154,7 +155,6 @@ func (fn *datasink[E]) ProcessBundle(ctx context.Context, dfc *DFC[E]) error {
 		coders.EncodeWindowedValueHeader(enc, ec.EventTime(), []coders.GWC{{}}, coders.PaneInfo{})
 
 		fn.Coder.Encode(enc, elm)
-
 		wc.Write(enc.Data())
 		return nil
 	})

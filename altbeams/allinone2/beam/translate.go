@@ -7,6 +7,7 @@ import (
 
 	"github.com/go-json-experiment/json"
 	"github.com/go-json-experiment/json/jsontext"
+	"github.com/google/uuid"
 	"github.com/lostluck/experimental/altbeams/allinone2/beam/internal/beamopts"
 	"github.com/lostluck/experimental/altbeams/allinone2/beam/internal/harness"
 	fnpb "github.com/lostluck/experimental/altbeams/allinone2/beam/internal/model/fnexecution_v1"
@@ -201,6 +202,18 @@ type structuralCoder interface {
 	addCoder(intern map[string]string, coders map[string]*pipepb.Coder) string
 }
 
+func putCoder(coders map[string]*pipepb.Coder, urn string, payload []byte, components []string) string {
+	id := fmt.Sprintf("c%d", len(coders))
+	coders[id] = &pipepb.Coder{
+		Spec: &pipepb.FunctionSpec{
+			Urn:     urn,
+			Payload: payload,
+		},
+		ComponentCoderIds: components,
+	}
+	return id
+}
+
 func addCoder[E any](intern map[string]string, coders map[string]*pipepb.Coder) string {
 	var t E
 	at := any(t)
@@ -213,69 +226,108 @@ func addCoder[E any](intern map[string]string, coders map[string]*pipepb.Coder) 
 	}
 
 	var urn string
-	switch at := at.(type) {
-	case []byte:
-		urn = "beam:coder:bytes:v1"
-	case bool:
-		urn = "beam:coder:bytes:v1"
-	case int, int16, int32, int64:
-		urn = "beam:coder:varint:v1"
-	case float64, float32:
-		urn = "beam:coder:double:v1"
-	case string:
-		urn = "beam:coder:string_utf8:v1"
-	case structuralCoder:
+	if at, ok := at.(structuralCoder); ok {
 		return at.addCoder(intern, coders)
+	}
+
+	switch rt.Kind() {
+	case reflect.Slice:
+		if rt.Elem().Kind() == reflect.Uint8 {
+			urn = "beam:coder:bytes:v1"
+		}
+	case reflect.Bool:
+		urn = "beam:coder:bool:v1"
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		urn = "beam:coder:varint:v1"
+	case reflect.Float32, reflect.Float64:
+		urn = "beam:coder:double:v1"
+	case reflect.String:
+		urn = "beam:coder:string_utf8:v1"
+	case reflect.Struct:
+		return addRowCoder(rt, intern, coders)
 	default:
 		panic(fmt.Sprintf("unknown coder type: generic %T, resolved %v", t, rt))
 	}
-	id := fmt.Sprintf("c%d", len(coders))
-	coders[id] = &pipepb.Coder{
-		Spec: &pipepb.FunctionSpec{
-			Urn:     urn,
-			Payload: nil,
-		},
-		ComponentCoderIds: nil,
-	}
 
-	return id
+	return putCoder(coders, urn, nil, nil)
 
 	// TODO
 	// urnLengthPrefixCoder        = "beam:coder:length_prefix:v1"
-	// urnKVCoder                  = "beam:coder:kv:v1"
-	// urnIterableCoder            = "beam:coder:iterable:v1"
 	// urnStateBackedIterableCoder = "beam:coder:state_backed_iterable:v1"
 	// urnWindowedValueCoder       = "beam:coder:windowed_value:v1"
 	// urnParamWindowedValueCoder  = "beam:coder:param_windowed_value:v1"
 	// urnTimerCoder               = "beam:coder:timer:v1"
-	// urnRowCoder                 = "beam:coder:row:v1"
 	// urnNullableCoder            = "beam:coder:nullable:v1"
 }
 
 func (KV[K, V]) addCoder(intern map[string]string, coders map[string]*pipepb.Coder) string {
 	kID, vID := addCoder[K](intern, coders), addCoder[V](intern, coders)
-	id := fmt.Sprintf("c%d", len(coders))
-	coders[id] = &pipepb.Coder{
-		Spec: &pipepb.FunctionSpec{
-			Urn:     "beam:coder:kv:v1",
-			Payload: nil,
-		},
-		ComponentCoderIds: []string{kID, vID},
-	}
-	return id
+	return putCoder(coders, "beam:coder:kv:v1", nil, []string{kID, vID})
 }
 
 func (Iter[V]) addCoder(intern map[string]string, coders map[string]*pipepb.Coder) string {
 	vID := addCoder[V](intern, coders)
-	id := fmt.Sprintf("c%d", len(coders))
-	coders[id] = &pipepb.Coder{
-		Spec: &pipepb.FunctionSpec{
-			Urn:     "beam:coder:iterable:v1",
-			Payload: nil,
-		},
-		ComponentCoderIds: []string{vID},
+	return putCoder(coders, "beam:coder:iterable:v1", nil, []string{vID})
+}
+
+func addRowCoder(rt reflect.Type, intern map[string]string, coders map[string]*pipepb.Coder) string {
+	urn := "beam:coder:row:v1"
+
+	schm := &pipepb.Schema{
+		Id:     uuid.NewString(),
+		Fields: []*pipepb.Field{},
 	}
-	return id
+
+	noneExported := true
+	for i := 0; i < rt.NumField(); i++ {
+		sf := rt.Field(i)
+		if !sf.IsExported() {
+			continue
+		}
+		noneExported = false
+		schm.Fields = append(schm.Fields, &pipepb.Field{
+			Id:   int32(i),
+			Name: sf.Name,
+			Type: schemaFieldType(sf.Type),
+		})
+	}
+	if noneExported && rt.NumField() == 0 {
+		panic(fmt.Sprintf("%v doesn't export any fields", rt))
+	}
+
+	// Now we need to build the row coder.
+
+	buf, err := proto.Marshal(schm)
+	if err != nil {
+		panic(err)
+	}
+
+	return putCoder(coders, urn, buf, nil)
+}
+
+func schemaFieldType(ft reflect.Type) *pipepb.FieldType {
+	sft := &pipepb.FieldType{}
+	switch ft.Kind() {
+	case reflect.Int, reflect.Int64:
+		sft.TypeInfo = &pipepb.FieldType_AtomicType{
+			AtomicType: pipepb.AtomicType_INT64,
+		}
+	case reflect.Int32:
+		sft.TypeInfo = &pipepb.FieldType_AtomicType{
+			AtomicType: pipepb.AtomicType_INT32,
+		}
+	case reflect.Float32:
+		sft.TypeInfo = &pipepb.FieldType_AtomicType{
+			AtomicType: pipepb.AtomicType_FLOAT,
+		}
+	case reflect.Float64:
+		sft.TypeInfo = &pipepb.FieldType_AtomicType{
+			AtomicType: pipepb.AtomicType_DOUBLE,
+		}
+	default:
+		panic("can't handle this field type yet: " + ft.String())
+	}
+	return sft
 }
 
 // Figure out the necessary unmarshalling for coders.
