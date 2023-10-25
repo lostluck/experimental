@@ -467,17 +467,15 @@ func unmarshalToGraph(typeReg map[string]reflect.Type, pbd subGraphProto) *graph
 			dofnType = dofnPtrRT.Elem()
 			proc = reflect.New(dfcRT).Interface().(processor)
 
-			// if len(pt.GetInputs()) > 1 {
-			// 	panic(fmt.Sprintf("unimplemented: transform %v has side inputs: %v", name, pt.Inputs))
-			// }
-
 			edgeID := g.curEdgeIndex()
-
 			ins := routeInputs(pt, edgeID)
 			for _, global := range pt.GetInputs() {
 				id := pcolToIndex[global]
 				if g.nodes[id] == nil {
-					g.nodes[id] = proc.produceTypedNode(id, pbd.GetPcollections()[global].GetIsBounded() == pipepb.IsBounded_BOUNDED)
+					pcol := pbd.GetPcollections()[global]
+					tn := proc.produceTypedNode(global, id, pcol.GetIsBounded() == pipepb.IsBounded_BOUNDED)
+					tn.initCoder(pcol.GetCoderId(), pbd.GetCoders())
+					g.nodes[id] = tn
 				}
 			}
 			outs := routeOutputs(pt, edgeID)
@@ -488,7 +486,10 @@ func unmarshalToGraph(typeReg map[string]reflect.Type, pbd subGraphProto) *graph
 					if !ok {
 						panic(fmt.Sprintf("consistency error: transform %v of type %v has no output field named %v", name, dofnType, local))
 					}
-					g.nodes[id] = emt.newNode(id, edgeID, pbd.GetPcollections()[global].GetIsBounded() == pipepb.IsBounded_BOUNDED)
+					pcol := pbd.GetPcollections()[global]
+					tn := emt.newNode(global, id, edgeID, pcol.GetIsBounded() == pipepb.IsBounded_BOUNDED)
+					tn.initCoder(pcol.GetCoderId(), pbd.GetCoders())
+					g.nodes[id] = tn
 				}
 			}
 			opt := beamopts.Struct{

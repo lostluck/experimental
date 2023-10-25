@@ -91,8 +91,7 @@ type processor interface {
 	// multiplex indicates this input is used by several consumers.
 	multiplex(int) []processor
 
-	// newTypeMultiEdge produces a configured edge of the matching type and generic parameter.
-	produceTypedNode(id nodeIndex, bounded bool) node
+	produceTypedNode(global string, id nodeIndex, bounded bool) node
 	produceDoFnEdge(transform string, id edgeIndex, dofn any, ins, outs map[string]nodeIndex, opts beamopts.Struct) multiEdge
 
 	start(ctx context.Context) error
@@ -103,9 +102,9 @@ type processor interface {
 
 var _ processor = &DFC[int]{}
 
-func (c *DFC[E]) produceTypedNode(id nodeIndex, bounded bool) node {
+func (c *DFC[E]) produceTypedNode(global string, id nodeIndex, bounded bool) node {
 	c.id = id
-	return &typedNode[E]{index: id, isBounded: bounded}
+	return &typedNode[E]{index: id, id: global, isBounded: bounded}
 }
 
 func (c *DFC[E]) produceDoFnEdge(transform string, id edgeIndex, dofn any, ins, outs map[string]nodeIndex, opts beamopts.Struct) multiEdge {
@@ -139,7 +138,6 @@ func (c *DFC[E]) multiplex(numOut int) []processor {
 	var procs []processor
 	for i := range mplex.Outs {
 		emt := &mplex.Outs[i] // Get a pointer to the emitter, rather than a value copy from the loop.
-		emt.setPColKey(c.id, i)
 		procs = append(procs, emt.newDFC(c.id))
 	}
 	c.dofn = mplex

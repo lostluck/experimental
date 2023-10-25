@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/lostluck/experimental/altbeams/allinone2/beam/coders"
 	"github.com/lostluck/experimental/altbeams/allinone2/beam/internal/harness"
 	pipepb "github.com/lostluck/experimental/altbeams/allinone2/beam/internal/model/pipeline_v1"
 )
@@ -48,10 +49,13 @@ type graph struct {
 }
 
 type node interface {
+	protoID() string
 	bounded() bool
 	windowingStrat()
 	addCoder(intern map[string]string, coders map[string]*pipepb.Coder) string
 	newTypeMultiEdge(*edgePlaceholder, map[string]*pipepb.Coder) multiEdge
+	initCoder(cid string, cs map[string]*pipepb.Coder)
+	getCoder() any
 }
 
 var _ node = &typedNode[int]{}
@@ -60,7 +64,21 @@ type typedNode[E Element] struct {
 	index      nodeIndex
 	parentEdge edgeIndex // for debugging
 
+	id        string
 	isBounded bool
+	coder     coders.Coder[E]
+}
+
+func (n *typedNode[E]) initCoder(cid string, cs map[string]*pipepb.Coder) {
+	n.coder = coderFromProto[E](cs, cid)
+}
+
+func (n *typedNode[E]) getCoder() any {
+	return n.coder
+}
+
+func (n *typedNode[E]) protoID() string {
+	return n.id
 }
 
 func (n *typedNode[E]) bounded() bool {
@@ -69,11 +87,6 @@ func (n *typedNode[E]) bounded() bool {
 
 func (n *typedNode[E]) windowingStrat() {
 	// TODO, add windowing strategies.
-}
-
-// TODO remove.
-func (n *typedNode[E]) setParent(parent edgeIndex) {
-	n.parentEdge = parent
 }
 
 // multiEdges represent transforms.
@@ -114,6 +127,8 @@ func (g *graph) build(ctx context.Context, dataCon harness.DataContext) ([]proce
 	mets := metricsStore{
 		metricNames: map[int]metricLabels{},
 	}
+	// We have a dummy metric to allow uninitialized metrics to know
+	// they need to register themselves.
 	mets.initMetric("none", "dummy", nil)
 
 	var c consumer
@@ -151,7 +166,7 @@ func (g *graph) build(ctx context.Context, dataCon harness.DataContext) ([]proce
 			roots = append(roots, imp)
 			addConsumers(imp, e.output)
 		case sourcer:
-			root, toConsumer := e.source(dataCon)
+			root, toConsumer := e.source(dataCon, &mets)
 			roots = append(roots, root)
 			addConsumers(toConsumer, getSingleValue(e.outputs()))
 		case sinker:
@@ -169,7 +184,7 @@ func (g *graph) build(ctx context.Context, dataCon harness.DataContext) ([]proce
 			// Initialize side inputs.
 
 			// Look at the inputs, and check if this is a side input field.
-			for name, _ := range e.inputs() {
+			for name := range e.inputs() {
 				fv := rv.FieldByName(name)
 				if !fv.IsValid() {
 					continue
@@ -197,7 +212,9 @@ func (g *graph) build(ctx context.Context, dataCon harness.DataContext) ([]proce
 					panic("unexpected name value")
 				}
 				emt := fv.Addr().Interface().(emitIface)
-				emt.setPColKey(nodeID, len(procs)) // set the output index
+				pcolMets := emt.setPColKey(nodeID, len(procs), g.nodes[nodeID].getCoder()) // set the output index
+				mets.metrics = append(mets.metrics, pcolMets)
+
 				proc := emt.newDFC(nodeID)
 				procs = append(procs, proc)
 

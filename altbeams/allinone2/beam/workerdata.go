@@ -2,6 +2,7 @@ package beam
 
 import (
 	"context"
+	"sync/atomic"
 
 	"github.com/lostluck/experimental/altbeams/allinone2/beam/coders"
 	"github.com/lostluck/experimental/altbeams/allinone2/beam/internal/harness"
@@ -32,14 +33,16 @@ func (e *edgeDataSource[E]) outputs() map[string]nodeIndex {
 	return map[string]nodeIndex{"o0": e.output}
 }
 
-func (e *edgeDataSource[E]) source(dc harness.DataContext) (processor, processor) {
+func (e *edgeDataSource[E]) source(dc harness.DataContext, mets *metricsStore) (processor, processor) {
 	// This is what the Datasource emits to.
 	toConsumer := newDFC[E](e.output, nil)
+	toConsumer.metrics = mets
 
 	// TODO, produce the coder via the
 
 	// But we're lazy and just kick it off with an impulse.
 	root := newDFC[[]byte](e.output, []processor{toConsumer})
+	root.metrics = mets
 	root.dofn = &datasource[E]{
 		DC:     dc,
 		SID:    harness.StreamID{PtransformID: e.transform, Port: e.port},
@@ -53,7 +56,7 @@ var _ sourcer = (*edgeDataSource[int])(nil)
 
 type sourcer interface {
 	multiEdge
-	source(dc harness.DataContext) (processor, processor)
+	source(dc harness.DataContext, mets *metricsStore) (processor, processor)
 }
 
 type datasource[E Element] struct {
@@ -64,6 +67,8 @@ type datasource[E Element] struct {
 	Coder coders.Coder[E]
 
 	Output Emitter[E]
+
+	split atomic.Int64
 }
 
 func (fn *datasource[E]) ProcessBundle(ctx context.Context, dfc *DFC[[]byte]) error {
@@ -72,8 +77,15 @@ func (fn *datasource[E]) ProcessBundle(ctx context.Context, dfc *DFC[[]byte]) er
 	if err != nil {
 		return err
 	}
+
+	// Track the data channel index for progress and split handling.
+	dc := &dataChannelIndex{transform: fn.SID.PtransformID}
+	dc.index.Store(-1)
+	fn.split.Store(1<<63 - 1)
+
 	// TODO outputing to timers callbacks
 	dfc.Process(func(ec ElmC, _ []byte) error {
+	dataChan:
 		for dataElm := range elmsChan {
 			// Start reading byte blobs.
 			dec := coders.NewDecoder(dataElm.Data)
@@ -89,6 +101,9 @@ func (fn *datasource[E]) ProcessBundle(ctx context.Context, dfc *DFC[[]byte]) er
 					},
 					pcollections: ec.pcollections,
 				}, e)
+				if dc.IncrementAndCheckSplit(dfc, fn.split.Load()) {
+					break dataChan
+				}
 			}
 		}
 		return nil

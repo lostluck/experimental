@@ -87,8 +87,8 @@ func (g *graph) deferDoFn(dofn any, input nodeIndex, global edgeIndex) (ins, out
 func (g *graph) initEmitter(emt emitIface, global edgeIndex, input nodeIndex, name string, outs map[string]nodeIndex) {
 	localIndex := len(outs)
 	globalIndex := g.curNodeIndex()
-	emt.setPColKey(globalIndex, localIndex)
-	node := emt.newNode(globalIndex, global, g.nodes[input].bounded())
+	emt.setPColKey(globalIndex, localIndex, nil)
+	node := emt.newNode(globalIndex.String(), globalIndex, global, g.nodes[input].bounded())
 	g.nodes = append(g.nodes, node)
 	outs[name] = globalIndex
 }

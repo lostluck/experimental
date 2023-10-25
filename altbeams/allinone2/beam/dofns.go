@@ -1,5 +1,9 @@
 package beam
 
+import (
+	"github.com/lostluck/experimental/altbeams/allinone2/beam/coders"
+)
+
 // beamMixin is added to all DoFn beam field types to allow them to bypass
 // encoding. Only needed when the value has state and shouldn't be embedded.
 type beamMixin struct{}
@@ -24,36 +28,51 @@ type Emitter[E Element] struct {
 	valid                bool
 	globalIndex          nodeIndex
 	localDownstreamIndex int
+	mets                 *pcollectionMetrics
+	coder                coders.Coder[E]
 }
 
 type emitIface interface {
-	setPColKey(global nodeIndex, id int)
+	setPColKey(global nodeIndex, id int, coder any) *pcollectionMetrics
 	newDFC(id nodeIndex) processor
-	newNode(global nodeIndex, parent edgeIndex, bounded bool) node
+	newNode(protoID string, global nodeIndex, parent edgeIndex, bounded bool) node
 }
 
 var _ emitIface = (*Emitter[any])(nil)
 
-func (emt *Emitter[E]) setPColKey(global nodeIndex, id int) {
+func (emt *Emitter[E]) setPColKey(global nodeIndex, id int, coder any) *pcollectionMetrics {
 	emt.valid = true
 	emt.globalIndex = global
 	emt.localDownstreamIndex = id
+	emt.mets = &pcollectionMetrics{nodeIdx: global, nextSampleIdx: 1}
+	if coder != nil {
+		emt.coder = coder.(coders.Coder[E])
+	}
+	return emt.mets
 }
 
 func (_ *Emitter[E]) newDFC(id nodeIndex) processor {
 	return newDFC[E](id, nil)
 }
 
-func (_ *Emitter[E]) newNode(global nodeIndex, parent edgeIndex, bounded bool) node {
-	return &typedNode[E]{index: global, parentEdge: parent, isBounded: bounded}
+func (_ *Emitter[E]) newNode(protoID string, global nodeIndex, parent edgeIndex, bounded bool) node {
+	return &typedNode[E]{id: protoID, index: global, parentEdge: parent, isBounded: bounded}
 }
 
 // Emit the element within the current element's context.
 //
 // The ElmC value is sourced from the [DFC.Process] method.
 func (emt *Emitter[E]) Emit(ec ElmC, elm E) {
+	if emt.mets != nil {
+		if emt.mets.Count() {
+			enc := coders.NewEncoder()
+			// TODO, optimize this with a sizer instead?
+			emt.coder.Encode(enc, elm)
+			emt.mets.Sample(int64(len(enc.Data())))
+		}
+	}
+
 	proc := ec.pcollections[emt.localDownstreamIndex]
-	// TODO: PCollection metrics are correct here.
 	dfc := proc.(*DFC[E])
 	dfc.processE(ec.elmContext, elm)
 }
