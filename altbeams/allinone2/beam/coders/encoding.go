@@ -51,7 +51,7 @@ func (e *Encoder) Grow(bytesNeeded int) []byte {
 
 // Bytes encodes an arg of type []byte.
 // For a byte slice, we encode its length as a varint, followed by the serialized content.
-// Nil slices are encoded identically to 0 length slcies.
+// Nil slices are encoded identically to 0 length slices.
 //
 // This matches with "beam:coder:bytes:v1" of the beam_runner_api.proto coders.
 func (e *Encoder) Bytes(arg []byte) {

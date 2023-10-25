@@ -188,15 +188,11 @@ func (d *Decoder) Pane() PaneInfo {
 
 func DecodeWindowedValueHeader[W window](d *Decoder) (time.Time, []W, PaneInfo) {
 	et := d.Timestamp()
-	fmt.Println(d)
 	n := d.Uint32()
-	fmt.Println(d)
 	windows := make([]W, int(n))
 	for _, w := range windows {
 		w.decode(d)
 	}
-	fmt.Println(d)
 	pane := d.Pane()
-	fmt.Println(d)
 	return et, windows, pane
 }

@@ -15,8 +15,8 @@ import (
 type edgeDataSource[E Element] struct {
 	transform string
 
-	port    harness.Port
-	coderID string
+	port      harness.Port
+	makeCoder func() coders.Coder[E]
 
 	output nodeIndex
 }
@@ -44,7 +44,7 @@ func (e *edgeDataSource[E]) source(dc harness.DataContext) (processor, processor
 		DC:     dc,
 		SID:    harness.StreamID{PtransformID: e.transform, Port: e.port},
 		Output: Emitter[E]{valid: true, globalIndex: e.output, localDownstreamIndex: 0},
-		Coder:  MakeCoder[E](),
+		Coder:  e.makeCoder(),
 	}
 	return root, toConsumer
 }
@@ -100,8 +100,8 @@ func (fn *datasource[E]) ProcessBundle(ctx context.Context, dfc *DFC[[]byte]) er
 type edgeDataSink[E Element] struct {
 	transform string
 
-	port    harness.Port
-	coderID string
+	port      harness.Port
+	makeCoder func() coders.Coder[E]
 
 	input nodeIndex
 }
@@ -127,7 +127,7 @@ type sinker interface {
 func (e *edgeDataSink[E]) sinkDoFn(dc harness.DataContext) any {
 	return &datasink[E]{DC: dc,
 		SID:   harness.StreamID{PtransformID: e.transform, Port: e.port},
-		Coder: MakeCoder[E](),
+		Coder: e.makeCoder(),
 	}
 }
 

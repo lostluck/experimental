@@ -51,7 +51,7 @@ type node interface {
 	bounded() bool
 	windowingStrat()
 	addCoder(intern map[string]string, coders map[string]*pipepb.Coder) string
-	newTypeMultiEdge(*edgePlaceholder) multiEdge
+	newTypeMultiEdge(*edgePlaceholder, map[string]*pipepb.Coder) multiEdge
 }
 
 var _ node = &typedNode[int]{}

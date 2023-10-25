@@ -8,6 +8,7 @@ import (
 	"github.com/go-json-experiment/json"
 	"github.com/go-json-experiment/json/jsontext"
 	"github.com/google/uuid"
+	"github.com/lostluck/experimental/altbeams/allinone2/beam/coders"
 	"github.com/lostluck/experimental/altbeams/allinone2/beam/internal/beamopts"
 	"github.com/lostluck/experimental/altbeams/allinone2/beam/internal/harness"
 	fnpb "github.com/lostluck/experimental/altbeams/allinone2/beam/internal/model/fnexecution_v1"
@@ -506,11 +507,11 @@ placeholderLoop:
 		e := g.edges[edgeID].(*edgePlaceholder)
 		// Check the inputs and outputs for actual node types.
 		for _, nodeID := range e.inputs() {
-			g.edges[edgeID] = g.nodes[nodeID].newTypeMultiEdge(e)
+			g.edges[edgeID] = g.nodes[nodeID].newTypeMultiEdge(e, pbd.GetCoders())
 			continue placeholderLoop
 		}
 		for _, nodeID := range e.outputs() {
-			g.edges[edgeID] = g.nodes[nodeID].newTypeMultiEdge(e)
+			g.edges[edgeID] = g.nodes[nodeID].newTypeMultiEdge(e, pbd.GetCoders())
 			continue placeholderLoop
 		}
 		panic(fmt.Sprintf("couldn't create placeholder node: %+v", e))
@@ -522,25 +523,29 @@ placeholderLoop:
 // This is required to be able to produce Source and Sink nodes of the right type
 // at bundle processing at pipeline execution time, since we don't have a real type
 // for them yet.
-func (c *typedNode[E]) newTypeMultiEdge(ph *edgePlaceholder) multiEdge {
+func (c *typedNode[E]) newTypeMultiEdge(ph *edgePlaceholder, cs map[string]*pipepb.Coder) multiEdge {
 	switch ph.kind {
 	case "flatten":
 		out := getSingleValue(ph.outs)
 		return &edgeFlatten[E]{transform: ph.transform, ins: maps.Values(ph.ins), output: out}
 	case "source":
-		port, coder, err := decodePort(ph.payload)
+		port, cid, err := decodePort(ph.payload)
 		if err != nil {
 			panic(err)
 		}
 		out := getSingleValue(ph.outs)
-		return &edgeDataSource[E]{transform: ph.transform, output: out, port: port, coderID: coder}
+		// TODO, extract windowed value coder for header
+		return &edgeDataSource[E]{transform: ph.transform, output: out, port: port,
+			makeCoder: func() coders.Coder[E] { return coderFromProto[E](cs, cid) }}
 	case "sink":
-		port, coder, err := decodePort(ph.payload)
+		port, cid, err := decodePort(ph.payload)
 		if err != nil {
 			panic(err)
 		}
 		in := getSingleValue(ph.ins)
-		return &edgeDataSink[E]{transform: ph.transform, input: in, port: port, coderID: coder}
+		// TODO, extract windowed value coder for header
+		return &edgeDataSink[E]{transform: ph.transform, input: in, port: port,
+			makeCoder: func() coders.Coder[E] { return coderFromProto[E](cs, cid) }}
 	default:
 		panic(fmt.Sprintf("unknown placeholder kind: %v", ph.kind))
 	}

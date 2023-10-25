@@ -68,17 +68,12 @@ func (si *SideInputIter[E]) All(ec ElmC) func(perElm func(elm E) bool) {
 }
 
 func iterClosure[E Element](r harness.NextBuffer) func(perElm func(elm E) bool) {
-
-	fmt.Println("show me the keys")
 	c := MakeCoder[E]()
 	return func(perElm func(elm E) bool) {
 
-		fmt.Println("starting the iter")
-		//	defer r.Close()
+		defer r.Close()
 		for {
 			buf, err := r.NextBuf()
-
-			fmt.Println("iter", buf, err)
 			if err != nil {
 				if err == io.EOF {
 					return
@@ -173,10 +168,7 @@ func (si *SideInputMap[K, V]) Get(ec ElmC, k K) func(perElm func(elm V) bool) {
 	kc := MakeCoder[K]()
 	encK := coders.NewEncoder()
 	kc.Encode(encK, k)
-
-	fmt.Println("getting values for ", k)
 	r := si.initMapReader(encW.Data(), encK.Data())
-	fmt.Println("got values for ", k)
 	return iterClosure[V](r)
 }
 
@@ -185,11 +177,7 @@ func (si *SideInputMap[K, V]) Keys(ec ElmC) func(perElm func(elm K) bool) {
 	w := ec.windows[0]
 	encW := coders.NewEncoder()
 	w.Encode(encW)
-
-	fmt.Println("getting the keys")
 	r := si.initMapKeysReader(encW.Data())
-
-	fmt.Println("got the keys")
 	return iterClosure[K](r)
 }
 

@@ -94,11 +94,10 @@ type rowStructCoder[T any] struct {
 
 func (c *rowStructCoder[T]) Encode(enc *Encoder, v T) {
 	rv := reflect.ValueOf(v)
-	enc2 := NewEncoder()
+	enc.Varint(uint64(rv.NumField()))
 	for i := 0; i < rv.NumField(); i++ {
-		c.fieldEncoders[i](enc2, rv.Field(i))
+		c.fieldEncoders[i](enc, rv.Field(i))
 	}
-	enc.Bytes(enc2.Data())
 }
 
 func (c *rowStructCoder[T]) Decode(dec *Decoder) T {
@@ -110,9 +109,12 @@ func (c *rowStructCoder[T]) Decode(dec *Decoder) T {
 			panic(fmt.Sprintf("field %v:\n%v", i, e))
 		}
 	}()
-	dec2 := NewDecoder(dec.Bytes())
+	n := dec.Varint()
+	if int(n) != rv.NumField() {
+		panic(fmt.Sprintf("row value got %v fields want %v fields for a %v", n, rv.NumField(), rv.Type()))
+	}
 	for ; i < rv.NumField(); i++ {
-		c.fieldDecoders[i](dec2, rv.Field(i))
+		c.fieldDecoders[i](dec, rv.Field(i))
 	}
 	return rv.Interface().(T)
 }
