@@ -126,9 +126,9 @@ func (ms *metricsStore) MonitoringInfos(g *graph) []*pipepb.MonitoringInfo {
 			Labels:  labels,
 		}
 		total := &pipepb.MonitoringInfo{
-			Urn:     "beam:metric:pardo_execution_time:total_msecs:v1",
+			Urn:     "beam:metric:ptransform_execution_time:total_msecs:v1",
 			Type:    "beam:metrics:sum_int64:v1",
-			Payload: encVarInt((sample[1] + sample[1] + sample[2]).Milliseconds()),
+			Payload: encVarInt((sample[0] + sample[1] + sample[2]).Milliseconds()),
 			Labels:  labels,
 		}
 		mons = append(mons, start, process, finish, total)
