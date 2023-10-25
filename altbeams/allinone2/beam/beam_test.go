@@ -396,10 +396,10 @@ func TestTwoSubGraphs(t *testing.T) {
 		t.Errorf("discard2 got %v, want %v", got, want)
 	}
 	if got, want := int(pr.Counters["sink1.Finished"]), 1; got != want {
-		t.Fatalf("finished didn't match bundle counter: got %v want %v", got, want)
+		t.Fatalf("finished1 didn't match bundle counter: got %v want %v", got, want)
 	}
 	if got, want := int(pr.Counters["sink2.Finished"]), 1; got != want {
-		t.Fatalf("finished didn't match bundle counter: got %v want %v", got, want)
+		t.Fatalf("finished2 didn't match bundle counter: got %v want %v", got, want)
 	}
 }
 
@@ -422,9 +422,9 @@ func TestMultiplex(t *testing.T) {
 		t.Errorf("discard2 got %v, want %v", got, want)
 	}
 	if got, want := int(pr.Counters["sink1.Finished"]), 1; got != want {
-		t.Fatalf("finished didn't match bundle counter: got %v want %v", got, want)
+		t.Fatalf("finished1 didn't match bundle counter: got %v want %v", got, want)
 	}
 	if got, want := int(pr.Counters["sink2.Finished"]), 1; got != want {
-		t.Fatalf("finished didn't match bundle counter: got %v want %v", got, want)
+		t.Fatalf("finished2 didn't match bundle counter: got %v want %v", got, want)
 	}
 }
