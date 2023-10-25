@@ -26,6 +26,8 @@ import (
 	fnpb "github.com/lostluck/experimental/altbeams/allinone2/beam/internal/model/fnexecution_v1"
 	"github.com/pkg/errors"
 	"golang.org/x/exp/slog"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/prototext"
 )
 
@@ -537,7 +539,12 @@ func (c *StateChannel) read(ctx context.Context) {
 				slog.WarnContext(ctx, "StateChannel.read: closed", "id", c.id)
 				return
 			}
-			slog.ErrorContext(ctx, "StateChannel.read bad: %v", "id", c.id, "error", err)
+			switch status.Code(err) {
+			case codes.Canceled:
+				// Don't log on context canceled path.
+			default:
+				slog.ErrorContext(ctx, "StateChannel.read bad: %v", "id", c.id, "error", err)
+			}
 			return
 		}
 
