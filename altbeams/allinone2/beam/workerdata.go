@@ -2,7 +2,6 @@ package beam
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/lostluck/experimental/altbeams/allinone2/beam/coders"
 	"github.com/lostluck/experimental/altbeams/allinone2/beam/internal/harness"
@@ -103,13 +102,11 @@ func (fn *datasource[E]) ProcessBundle(ctx context.Context, dfc *DFC[[]byte]) er
 	dfc.Process(func(ec ElmC, _ []byte) error {
 	dataChan:
 		for dataElm := range elmsChan {
-			fmt.Println("buffer started")
 			// Start reading byte blobs.
 			dec := coders.NewDecoder(dataElm.Data)
 			for !dec.Empty() {
 				et, ws, pn := coders.DecodeWindowedValueHeader[coders.GWC](dec)
 				elm := fn.Coder.Decode(dec)
-				fmt.Println("data source element", elm)
 				fn.Output.Emit(ElmC{
 					elmContext: elmContext{
 						eventTime: et,
@@ -119,13 +116,10 @@ func (fn *datasource[E]) ProcessBundle(ctx context.Context, dfc *DFC[[]byte]) er
 					pcollections: ec.pcollections,
 				}, elm)
 				if fn.dc.IncrementAndCheckSplit(dfc) {
-					fmt.Println("split reached, after element", elm, "index", fn.dc.index, "split", fn.dc.split)
 					break dataChan
 				}
 			}
-			fmt.Println("buffer complete")
 		}
-		fmt.Println("bundle complete", "index", fn.dc.index, "split", fn.dc.split)
 		return nil
 	})
 	return nil
@@ -141,11 +135,10 @@ func (fn *datasource[E]) status(helper func(index, split int64, prog float64) (i
 	if fn.dc.index < 0 {
 		prog = 1.0
 	}
-	newSplit, fr, err := helper(fn.dc.index, fn.dc.split, prog)
+	newSplit, _, err := helper(fn.dc.index, fn.dc.split, prog)
 	if err != nil {
 		return -1, false
 	}
-	fmt.Println("split done", fn.dc.index, newSplit, fr)
 	fn.dc.split = newSplit
 	return fn.dc.split, true
 }

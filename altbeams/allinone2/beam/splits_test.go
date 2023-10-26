@@ -281,7 +281,6 @@ func (ws *Watchers) Check(args *Args, unblocked *bool) error {
 	w.mu.Lock()
 	*unblocked = w.sentinelCount >= w.sentinelCap
 	w.mu.Unlock()
-	fmt.Printf("sentinel target for watcher%d is %d/%d. unblocked=%v\n", args.WatcherID, w.sentinelCount, w.sentinelCap, *unblocked)
 	return nil
 }
 
@@ -446,13 +445,10 @@ func (fn *sepHarness[E]) ProcessBundle(ctx context.Context, dfc *DFC[E]) error {
 
 	return dfc.Process(func(ec ElmC, elm E) error {
 		if fn.Base.isSentinel(elm) {
-			fmt.Println("blocking on sentinel", elm)
 			fn.Base.block()
-			fmt.Println("unblocking from sentinel", elm)
 		} else {
 			time.Sleep(fn.Base.Sleep)
 		}
-		fmt.Println("sepHarness emitting:", elm)
 		fn.Output.Emit(ec, elm)
 		return nil
 	})
