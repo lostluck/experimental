@@ -14,20 +14,12 @@ import (
 	pipepb "github.com/lostluck/experimental/altbeams/allinone2/beam/internal/model/pipeline_v1"
 	"github.com/pkg/errors"
 	"golang.org/x/exp/maps"
+	"golang.org/x/sync/singleflight"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
 
-// Figure out the necessary unmarshalling for coders.
-type SubGraphProto interface {
-	GetCoders() map[string]*pipepb.Coder
-	GetEnvironments() map[string]*pipepb.Environment
-	GetPcollections() map[string]*pipepb.PCollection
-	GetTransforms() map[string]*pipepb.PTransform
-	GetWindowingStrategies() map[string]*pipepb.WindowingStrategy
-}
-
-type ExecFunc func(context.Context, SubGraphProto, DataContext) (*fnpb.ProcessBundleResponse, map[string]*pipepb.MonitoringInfo, error)
+type ExecFunc func(context.Context, *Control, DataContext) (*fnpb.ProcessBundleResponse, error)
 
 // Options for harness.Main that affect execution of the harness, such as runner capabilities.
 type Options struct {
@@ -45,10 +37,6 @@ func Main(ctx context.Context, controlEndpoint string, opts Options, exec ExecFu
 	defer conn.Close()
 
 	client := fnpb.NewBeamFnControlClient(conn)
-
-	lookupDesc := func(id bundleDescriptorID) (*fnpb.ProcessBundleDescriptor, error) {
-		return client.GetProcessBundleDescriptor(ctx, &fnpb.GetProcessBundleDescriptorRequest{ProcessBundleDescriptorId: string(id)})
-	}
 
 	controlStub, err := client.Control(ctx)
 	if err != nil {
@@ -71,8 +59,18 @@ func Main(ctx context.Context, controlEndpoint string, opts Options, exec ExecFu
 		slog.DebugContext(ctx, "control response channel closed")
 	}()
 
-	dataMan := &DataChannelManager{}
-	stateMan := &StateChannelManager{}
+	ctrl := &Control{
+		dataMan:     &DataChannelManager{},
+		stateMan:    &StateChannelManager{},
+		descriptors: map[bundleDescriptorID]*fnpb.ProcessBundleDescriptor{},
+		plans:       map[bundleDescriptorID][]any{},
+		monitors:    map[instructionID]Monitor{},
+
+		exec: exec,
+		fetchBD: func(id bundleDescriptorID) (*fnpb.ProcessBundleDescriptor, error) {
+			return client.GetProcessBundleDescriptor(ctx, &fnpb.GetProcessBundleDescriptorRequest{ProcessBundleDescriptorId: string(id)})
+		},
+	}
 	// gRPC requires all readers of a stream be the same goroutine, so this goroutine
 	// is responsible for managing the network data. All it does is pull data from
 	// the stream, and hand off the message to a goroutine to actually be handled,
@@ -93,7 +91,7 @@ func Main(ctx context.Context, controlEndpoint string, opts Options, exec ExecFu
 
 		// Launch a goroutine to handle the control message.
 		fn := func(ctx context.Context, req *fnpb.InstructionRequest) {
-			resp := handleInstruction(ctx, req, lookupDesc, exec, dataMan, stateMan)
+			resp := handleInstruction(ctx, req, ctrl)
 
 			if resp != nil && atomic.LoadInt32(&shutdown) == 0 {
 				respc <- resp
@@ -114,8 +112,6 @@ func Main(ctx context.Context, controlEndpoint string, opts Options, exec ExecFu
 			fn(ctx, req)
 		}
 	}
-
-	return nil
 }
 
 // Dial is a convenience wrapper over grpc.Dial. It can be overridden
@@ -142,46 +138,52 @@ var (
 	cachedLabels = map[string]*pipepb.MonitoringInfo{}
 )
 
-func handleInstruction(ctx context.Context, req *fnpb.InstructionRequest, fetchBD func(id bundleDescriptorID) (*fnpb.ProcessBundleDescriptor, error), exec ExecFunc, dataMan *DataChannelManager, stateMan *StateChannelManager) *fnpb.InstructionResponse {
+func handleInstruction(ctx context.Context, req *fnpb.InstructionRequest, ctrl *Control) *fnpb.InstructionResponse {
 	instID := instructionID(req.GetInstructionId())
 	//ctx = metrics.SetBundleID(ctx, string(instID))
 
 	switch {
-	case req.GetRegister() != nil:
-		//	msg := req.GetRegister()
+	// case req.GetRegister() != nil:
+	// 	//	msg := req.GetRegister()
 
-		//	c.mu.Lock()
-		//	for _, desc := range msg.GetProcessBundleDescriptor() {
-		//		c.descriptors[bundleDescriptorID(desc.GetId())] = desc
-		//	}
-		//	c.mu.Unlock()
+	// 	//	c.mu.Lock()
+	// 	//	for _, desc := range msg.GetProcessBundleDescriptor() {
+	// 	//		c.descriptors[bundleDescriptorID(desc.GetId())] = desc
+	// 	//	}
+	// 	//	c.mu.Unlock()
 
-		return &fnpb.InstructionResponse{
-			InstructionId: string(instID),
-			Response: &fnpb.InstructionResponse_Register{
-				Register: &fnpb.RegisterResponse{},
-			},
-		}
+	// 	return &fnpb.InstructionResponse{
+	// 		InstructionId: string(instID),
+	// 		Response: &fnpb.InstructionResponse_Register{
+	// 			Register: &fnpb.RegisterResponse{},
+	// 		},
+	// 	}
 
 	case req.GetProcessBundle() != nil:
 		msg := req.GetProcessBundle()
 
 		bdID := bundleDescriptorID(msg.GetProcessBundleDescriptorId())
 
-		bd, err := fetchBD(bdID)
-		if err != nil {
-			return fail(ctx, instID, "process bundle failed %v", err)
-		}
-		data := NewScopedDataManager(dataMan, instID)
-		state := NewScopedStateManager(stateMan, instID, bd.GetStateApiServiceDescriptor().GetUrl())
+		data := NewScopedDataManager(ctrl.dataMan, instID)
+		state := NewScopedStateManager(ctrl.stateMan, instID)
 
-		pbr, labels, err := exec(ctx, bd, DataContext{Data: data, State: state})
+		pbr, err := ctrl.exec(ctx, ctrl, DataContext{Data: data, State: state, bdID: bdID, instID: instID})
 		if err != nil {
 			return fail(ctx, instID, "process bundle failed %v", err)
 		}
-		labelMu.Lock()
-		maps.Copy(cachedLabels, labels)
-		labelMu.Unlock()
+
+		ctrl.mu.Lock()
+		mon, ok := ctrl.monitors[instID]
+		ctrl.mu.Unlock()
+		if ok {
+			labels, pylds := mon()
+
+			labelMu.Lock()
+			maps.Copy(cachedLabels, labels)
+			labelMu.Unlock()
+
+			pbr.MonitoringData = pylds
+		}
 
 		// TODO(lostluck): 2023/03/29 fix debug level logging to be flagged.
 		// log.Debugf(ctx, "PB [%v]: %v", instID, msg)
@@ -320,31 +322,24 @@ func handleInstruction(ctx context.Context, req *fnpb.InstructionRequest, fetchB
 		}
 
 	case req.GetProcessBundleProgress() != nil:
-		// msg := req.GetProcessBundleProgress()
+		msg := req.GetProcessBundleProgress()
 
-		// ref := instructionID(msg.GetInstructionId())
+		instID := instructionID(msg.GetInstructionId())
+		ctrl.mu.Lock()
+		mon := ctrl.monitors[instID]
+		ctrl.mu.Unlock()
 
-		// plan, _, resp := c.getPlanOrResponse(ctx, "progress", instID, ref)
-		// if resp != nil {
-		// 	return resp
-		// }
-		// if plan == nil && resp == nil {
-		// 	return &fnpb.InstructionResponse{
-		// 		InstructionId: string(instID),
-		// 		Response: &fnpb.InstructionResponse_ProcessBundleProgress{
-		// 			ProcessBundleProgress: &fnpb.ProcessBundleProgressResponse{},
-		// 		},
-		// 	}
-		// }
+		labels, pylds := mon()
 
-		//	mons, pylds := monitoring(plan, store, c.runnerCapabilities[URNMonitoringInfoShortID])
+		labelMu.Lock()
+		maps.Copy(cachedLabels, labels)
+		labelMu.Unlock()
 
 		return &fnpb.InstructionResponse{
 			InstructionId: string(instID),
 			Response: &fnpb.InstructionResponse_ProcessBundleProgress{
 				ProcessBundleProgress: &fnpb.ProcessBundleProgressResponse{
-					// MonitoringData:  pylds,
-					// MonitoringInfos: mons,
+					MonitoringData: pylds,
 				},
 			},
 		}
@@ -477,4 +472,61 @@ func fail(ctx context.Context, id instructionID, format string, args ...any) *fn
 		Error:         fmt.Sprintf(format, args...),
 		Response:      dummy,
 	}
+}
+
+type Control struct {
+	fetchBD  func(bundleDescriptorID) (*fnpb.ProcessBundleDescriptor, error)
+	exec     ExecFunc
+	dataMan  *DataChannelManager
+	stateMan *StateChannelManager
+
+	mu          sync.Mutex
+	plans       map[bundleDescriptorID][]any
+	singleDesc  singleflight.Group
+	descriptors map[bundleDescriptorID]*fnpb.ProcessBundleDescriptor
+	monitors    map[instructionID]Monitor
+}
+
+// GetOrLookupPlan does a layered check to get an execution plan.
+//
+// If there's a cached plan available already.  If so, we're done.
+// Otherwise we'll need to build a new one from a ProcessBundleDescriptor.
+// We first check the local cache, and if it doesn't exist, we request it
+// from the runner, reducing duplicate requests.
+func (ctrl *Control) GetOrLookupPlan(dc DataContext, unmarshal func(pbd *fnpb.ProcessBundleDescriptor) any) (any, error) {
+	ctrl.mu.Lock()
+	if p, ok := ctrl.plans[dc.bdID]; ok {
+		ctrl.mu.Unlock()
+		return p, nil
+	}
+	pbd, ok := ctrl.descriptors[dc.bdID]
+	ctrl.mu.Unlock()
+	if !ok {
+		desc, err, _ := ctrl.singleDesc.Do(string(dc.bdID), func() (any, error) {
+			pbd, err := ctrl.fetchBD(dc.bdID)
+			if err != nil {
+				return nil, err
+			}
+			ctrl.mu.Lock()
+			ctrl.descriptors[dc.bdID] = pbd
+			ctrl.mu.Unlock()
+			return pbd, nil
+		})
+		if err != nil {
+			return err, nil
+		}
+		pbd = desc.(*fnpb.ProcessBundleDescriptor)
+	}
+
+	return unmarshal(pbd), nil
+}
+
+// Monitor is a function that returns any new labels, and the set of payloads
+// being returned to the runner.
+type Monitor func() (map[string]*pipepb.MonitoringInfo, map[string][]byte)
+
+func (ctrl *Control) RegisterMonitor(dc DataContext, monFn Monitor) {
+	ctrl.mu.Lock()
+	defer ctrl.mu.Unlock()
+	ctrl.monitors[dc.instID] = monFn
 }

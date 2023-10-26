@@ -133,6 +133,24 @@ func (s *Scope) String() string {
 	return s.parent.String() + "/" + s.name
 }
 
+// Pipeline is a handle to a running or terminated pipeline for
+// programmatic access to the given runner.
+type Pipeline struct {
+	Counters map[string]int64
+}
+
+// Composite transforms allow structural re-use of sub pipelines.
+type Composite[O any] interface {
+	Expand(s *Scope) O
+}
+
+func Expand[I Composite[O], O any](parent *Scope, name string, comp I) O {
+	s := &Scope{name: name, parent: parent, g: parent.g}
+	// We do all the expected connections here.
+	// Side inputs, are put on the side input at the DoFn creation time being passed in.
+	return comp.Expand(s)
+}
+
 // Run begins executes the pipeline built in the construction function.
 func Run(ctx context.Context, expand func(*Scope) error, opts ...Options) (Pipeline, error) {
 	opt := beamopts.Struct{
@@ -188,62 +206,71 @@ func Run(ctx context.Context, expand func(*Scope) error, opts ...Options) (Pipel
 }
 
 func executeSubgraph(typeReg map[string]reflect.Type) harness.ExecFunc {
-	var i atomic.Uint32
-	return func(ctx context.Context, comps harness.SubGraphProto, dataCon harness.DataContext) (*fnpb.ProcessBundleResponse, map[string]*pipepb.MonitoringInfo, error) {
-		newG := unmarshalToGraph(typeReg, comps)
+	var shortID atomic.Uint32
+	return func(ctx context.Context, ctrl *harness.Control, dataCon harness.DataContext) (*fnpb.ProcessBundleResponse, error) {
+		// 1. Provide translation function (unmarshalToGraph + types closure) to harness.
+		//    * Harness then returns a graph, either getting a cached old version, or building a new one from proto.
+		//    * Caches the proto in a weak map somewhere...
+		g, err := ctrl.GetOrLookupPlan(dataCon, func(comps *fnpb.ProcessBundleDescriptor) any {
+			return unmarshalToGraph(typeReg, comps)
+		})
+		if err != nil {
+			return nil, err
+		}
+		newG := g.(*graph)
+
+		// 2. Build a new runnable instance, get execution roots and metrics.
 		roots, mets := newG.build(ctx, dataCon)
 
+		ctrl.RegisterMonitor(dataCon, func() (map[string]*pipepb.MonitoringInfo, map[string][]byte) {
+			mons := mets.MonitoringInfos(newG)
+			pylds := map[string][]byte{}
+			labels := map[string]*pipepb.MonitoringInfo{}
+			for _, mon := range mons {
+				key := strconv.FormatInt(int64(shortID.Add(1)), 36)
+
+				pylds[key] = mon.GetPayload()
+				labels[key] = &pipepb.MonitoringInfo{
+					Urn:    mon.GetUrn(),
+					Type:   mon.GetType(),
+					Labels: mon.GetLabels(),
+				}
+			}
+			return labels, pylds
+		})
+
+		// 3. Register the metrics handling function for this instruction with the harness.
+		//    * This handles progress and tentative metrics
+		// 4. Register a split handler with the harness
+		//    * This handles channel splits and SDF splits
+		// // Probably the same register.
+		//  (Also bundle finalization)
+		//
+		// 5. Start DoFn sampling for this processing thread.
 		mets.startSampling(ctx, 10*time.Millisecond, 5*time.Minute)
 		defer mets.stopSampling()
 
-		// Process the bundle.
+		// 6. Process the bundle.
 		for _, root := range roots {
 			if err := start(ctx, root.(*DFC[[]byte])); err != nil {
-				return nil, nil, err
+				return nil, err
 			}
 		}
+		// 7. Run finishes bundles.
 		for _, root := range roots {
 			if err := root.finish(); err != nil {
-				return nil, nil, err
+				return nil, err
 			}
 		}
 
-		mons := mets.MonitoringInfos(newG)
+		// 8. Respond.
 
-		pylds := map[string][]byte{}
-		labels := map[string]*pipepb.MonitoringInfo{}
-		for _, mon := range mons {
-			key := strconv.FormatInt(int64(i.Add(1)), 36)
-
-			pylds[key] = mon.GetPayload()
-			labels[key] = &pipepb.MonitoringInfo{
-				Urn:    mon.GetUrn(),
-				Type:   mon.GetType(),
-				Labels: mon.GetLabels(),
-			}
-		}
-
+		// Note, Metrics and Data would be handled outside.
+		// Since we may have residuals for ProcessContinuations, or finalization
+		// we return this here for those in the future.
 		return &fnpb.ProcessBundleResponse{
 			// ResidualRoots:        rRoots,
-			MonitoringData: pylds,
-			// MonitoringInfos: mons,
 			// RequiresFinalization: requiresFinalization,
-		}, labels, nil
+		}, nil
 	}
-}
-
-type Pipeline struct {
-	Counters map[string]int64
-}
-
-// Composite transforms allow structural re-use of sub pipelines.
-type Composite[O any] interface {
-	Expand(s *Scope) O
-}
-
-func Expand[I Composite[O], O any](parent *Scope, name string, comp I) O {
-	s := &Scope{name: name, parent: parent, g: parent.g}
-	// We do all the expected connections here.
-	// Side inputs, are put on the side input at the DoFn creation time being passed in.
-	return comp.Expand(s)
 }

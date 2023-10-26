@@ -43,7 +43,6 @@ const (
 type ScopedStateManager struct {
 	mgr    *StateChannelManager
 	instID instructionID
-	url    string
 
 	closed bool
 	mu     sync.Mutex
@@ -52,8 +51,8 @@ type ScopedStateManager struct {
 }
 
 // NewScopedStateManager returns a ScopedStateReader for the given instruction.
-func NewScopedStateManager(mgr *StateChannelManager, instID instructionID, stateURL string) *ScopedStateManager {
-	return &ScopedStateManager{mgr: mgr, instID: instID, url: stateURL}
+func NewScopedStateManager(mgr *StateChannelManager, instID instructionID) *ScopedStateManager {
+	return &ScopedStateManager{mgr: mgr, instID: instID}
 }
 
 // // GetSideInputCache returns a pointer to the SideInputCache being used by the SDK harness.
@@ -61,8 +60,8 @@ func NewScopedStateManager(mgr *StateChannelManager, instID instructionID, state
 // 	return s.cache
 // }
 
-func (s *ScopedStateManager) OpenReader(ctx context.Context, key *fnpb.StateKey) (NextBuffer, error) {
-	ch, err := s.open(ctx)
+func (s *ScopedStateManager) OpenReader(ctx context.Context, url string, key *fnpb.StateKey) (NextBuffer, error) {
+	ch, err := s.open(ctx, url)
 	if err != nil {
 		return nil, err
 	}
@@ -81,8 +80,8 @@ func (s *ScopedStateManager) OpenReader(ctx context.Context, key *fnpb.StateKey)
 	return ret, nil
 }
 
-func (s *ScopedStateManager) OpenWriter(ctx context.Context, key *fnpb.StateKey, wt writeTypeEnum) (io.Writer, error) {
-	ch, err := s.open(ctx)
+func (s *ScopedStateManager) OpenWriter(ctx context.Context, url string, key *fnpb.StateKey, wt writeTypeEnum) (io.Writer, error) {
+	ch, err := s.open(ctx, url)
 	if err != nil {
 		return nil, err
 	}
@@ -102,7 +101,7 @@ func (s *ScopedStateManager) OpenWriter(ctx context.Context, key *fnpb.StateKey,
 	return ret, nil
 }
 
-func (s *ScopedStateManager) open(ctx context.Context) (*StateChannel, error) {
+func (s *ScopedStateManager) open(ctx context.Context, url string) (*StateChannel, error) {
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
@@ -111,7 +110,7 @@ func (s *ScopedStateManager) open(ctx context.Context) (*StateChannel, error) {
 	localMgr := s.mgr
 	s.mu.Unlock()
 
-	return localMgr.Open(ctx, s.url) // don't hold lock over potentially slow operation
+	return localMgr.Open(ctx, url) // don't hold lock over potentially slow operation
 }
 
 // Close closes all open readers.

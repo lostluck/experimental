@@ -331,15 +331,6 @@ func schemaFieldType(ft reflect.Type) *pipepb.FieldType {
 	return sft
 }
 
-// Figure out the necessary unmarshalling for coders.
-type subGraphProto interface {
-	GetCoders() map[string]*pipepb.Coder
-	GetEnvironments() map[string]*pipepb.Environment
-	GetPcollections() map[string]*pipepb.PCollection
-	GetTransforms() map[string]*pipepb.PTransform
-	GetWindowingStrategies() map[string]*pipepb.WindowingStrategy
-}
-
 // edgePlaceholder represents a transform that can't be created at translation time.
 // It needs to be produced while building the graph from a bundle descriptor, so
 // the transform can use the real types from upstream or downstream transforms.
@@ -368,8 +359,9 @@ func (e *edgePlaceholder) outputs() map[string]nodeIndex {
 	return e.outs
 }
 
-func unmarshalToGraph(typeReg map[string]reflect.Type, pbd subGraphProto) *graph {
+func unmarshalToGraph(typeReg map[string]reflect.Type, pbd *fnpb.ProcessBundleDescriptor) *graph {
 	var g graph
+	g.stateUrl = pbd.GetStateApiServiceDescriptor().GetUrl()
 	g.consumers = map[nodeIndex][]edgeIndex{}
 
 	pcolParents := map[nodeIndex]edgeIndex{}
@@ -451,8 +443,7 @@ func unmarshalToGraph(typeReg map[string]reflect.Type, pbd subGraphProto) *graph
 			var wrap dofnWrap
 			switch spec.GetUrn() {
 			case "beam:transform:pardo:v1":
-				dofnPayload := decodeDoFn(spec.GetPayload(), &wrap, typeReg, name)
-				dofnPayload.GetSideInputs()
+				decodeDoFn(spec.GetPayload(), &wrap, typeReg, name)
 			case "beam:transform:combine_per_key_precombine:v1":
 				decodeCombineFn(spec.GetPayload(), &wrap, typeReg, name)
 				cmb := wrap.DoFn.(combiner)
@@ -617,7 +608,7 @@ func getEmitIfaceByName(doFnT reflect.Type, field string, outs map[string]nodeIn
 	return reflect.New(rt).Interface().(emitIface), true
 }
 
-func decodeDoFn(payload []byte, wrap *dofnWrap, typeReg map[string]reflect.Type, name string) *pipepb.ParDoPayload {
+func decodeDoFn(payload []byte, wrap *dofnWrap, typeReg map[string]reflect.Type, name string) {
 	var dofnPayload pipepb.ParDoPayload
 	if err := proto.Unmarshal(payload, &dofnPayload); err != nil {
 		panic(err)
@@ -631,7 +622,6 @@ func decodeDoFn(payload []byte, wrap *dofnWrap, typeReg map[string]reflect.Type,
 	if err := json.Unmarshal(dofnSpec.GetPayload(), &wrap, json.DefaultOptionsV2(), jsonDoFnUnmarshallers(typeReg, name)); err != nil {
 		panic(err)
 	}
-	return &dofnPayload
 }
 
 func decodeCombineFn(payload []byte, wrap *dofnWrap, typeReg map[string]reflect.Type, name string) {

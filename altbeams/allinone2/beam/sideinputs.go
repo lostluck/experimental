@@ -24,7 +24,7 @@ func (si *sideInputCommon) sideInput() nodeIndex {
 type sideIface interface {
 	sideInput() nodeIndex
 	accessPatternUrn() string
-	initialize(ctx context.Context, dataCon harness.DataContext, sideID, transformID string)
+	initialize(ctx context.Context, dataCon harness.DataContext, url, sideID, transformID string)
 }
 
 type SideInputIter[E Element] struct {
@@ -37,7 +37,7 @@ func (*SideInputIter[E]) accessPatternUrn() string {
 	return "beam:side_input:iterable:v1"
 }
 
-func (si *SideInputIter[E]) initialize(ctx context.Context, dataCon harness.DataContext, sideID, transformID string) {
+func (si *SideInputIter[E]) initialize(ctx context.Context, dataCon harness.DataContext, url, sideID, transformID string) {
 	si.initIterReader = func(w []byte) harness.NextBuffer {
 		key := &fnpb.StateKey{
 			Type: &fnpb.StateKey_IterableSideInput_{
@@ -49,7 +49,7 @@ func (si *SideInputIter[E]) initialize(ctx context.Context, dataCon harness.Data
 			},
 		}
 		// 50/50 on putting this on processor directly instead
-		r, err := dataCon.State.OpenReader(ctx, key)
+		r, err := dataCon.State.OpenReader(ctx, url, key)
 		if err != nil {
 			panic(err)
 		}
@@ -119,7 +119,7 @@ func (*SideInputMap[K, V]) accessPatternUrn() string {
 	return "beam:side_input:multimap:v1"
 }
 
-func (si *SideInputMap[K, V]) initialize(ctx context.Context, dataCon harness.DataContext, sideID, transformID string) {
+func (si *SideInputMap[K, V]) initialize(ctx context.Context, dataCon harness.DataContext, url, sideID, transformID string) {
 	si.initMapReader = func(w, k []byte) harness.NextBuffer {
 		key := &fnpb.StateKey{
 			Type: &fnpb.StateKey_MultimapSideInput_{
@@ -131,7 +131,7 @@ func (si *SideInputMap[K, V]) initialize(ctx context.Context, dataCon harness.Da
 				},
 			},
 		}
-		r, err := dataCon.State.OpenReader(ctx, key)
+		r, err := dataCon.State.OpenReader(ctx, url, key)
 		if err != nil {
 			panic(err)
 		}
@@ -148,7 +148,7 @@ func (si *SideInputMap[K, V]) initialize(ctx context.Context, dataCon harness.Da
 			},
 		}
 		// 50/50 on putting this on processor directly instead
-		r, err := dataCon.State.OpenReader(ctx, key)
+		r, err := dataCon.State.OpenReader(ctx, url, key)
 		if err != nil {
 			panic(err)
 		}

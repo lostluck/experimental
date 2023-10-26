@@ -23,6 +23,8 @@ type Elements struct {
 
 // DataContext holds connectors to various data connections, incl. state and side input.
 type DataContext struct {
-	Data  *ScopedDataManager
-	State *ScopedStateManager
+	Data   *ScopedDataManager
+	State  *ScopedStateManager
+	bdID   bundleDescriptorID
+	instID instructionID
 }

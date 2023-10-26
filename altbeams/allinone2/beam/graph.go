@@ -46,6 +46,8 @@ type graph struct {
 	consumers map[nodeIndex][]edgeIndex
 
 	root *Scope
+
+	stateUrl string
 }
 
 type node interface {
@@ -191,7 +193,7 @@ func (g *graph) build(ctx context.Context, dataCon harness.DataContext) ([]proce
 				}
 				si := fv.Addr().Interface().(sideIface)
 
-				si.initialize(ctx, dataCon, name, e.transformID())
+				si.initialize(ctx, dataCon, g.stateUrl, name, e.transformID())
 			}
 
 			var procs []processor // Needs to be set on the incoming DFC.
