@@ -2,7 +2,7 @@ package beam
 
 import (
 	"context"
-	"sync/atomic"
+	"fmt"
 
 	"github.com/lostluck/experimental/altbeams/allinone2/beam/coders"
 	"github.com/lostluck/experimental/altbeams/allinone2/beam/internal/harness"
@@ -51,6 +51,7 @@ func (e *edgeDataSource[E]) source(dc harness.DataContext, mets *metricsStore) (
 
 	// But we're lazy and just kick it off with an impulse.
 	root := newDFC[[]byte](e.output, []processor{toConsumer})
+	root.transform = e.transform
 	root.metrics = mets
 	root.dofn = &datasource[E]{
 		DC:     dc,
@@ -68,6 +69,10 @@ type sourcer interface {
 	source(dc harness.DataContext, mets *metricsStore) (processor, processor)
 }
 
+// datasource reads from GRPC and emits of the specified type.
+//
+// Unlike most generic Transforms, the generic isn't on the
+// input type (which is alwas []byte), but the output type.
 type datasource[E Element] struct {
 	DC  harness.DataContext
 	SID harness.StreamID
@@ -77,7 +82,7 @@ type datasource[E Element] struct {
 
 	Output Emitter[E]
 
-	split atomic.Int64
+	dc *dataChannelIndex
 }
 
 func (fn *datasource[E]) ProcessBundle(ctx context.Context, dfc *DFC[[]byte]) error {
@@ -88,20 +93,23 @@ func (fn *datasource[E]) ProcessBundle(ctx context.Context, dfc *DFC[[]byte]) er
 	}
 
 	// Track the data channel index for progress and split handling.
-	dc := &dataChannelIndex{transform: fn.SID.PtransformID}
-	dc.index.Store(-1)
-	fn.split.Store(1<<63 - 1)
+	fn.dc = &dataChannelIndex{
+		transform: fn.SID.PtransformID,
+		index:     0, // Should this be -1 per data read index definition?
+		split:     (1<<63 - 1),
+	}
 
 	// TODO outputing to timers callbacks
 	dfc.Process(func(ec ElmC, _ []byte) error {
 	dataChan:
 		for dataElm := range elmsChan {
+			fmt.Println("buffer started")
 			// Start reading byte blobs.
 			dec := coders.NewDecoder(dataElm.Data)
 			for !dec.Empty() {
-
 				et, ws, pn := coders.DecodeWindowedValueHeader[coders.GWC](dec)
-				e := fn.Coder.Decode(dec)
+				elm := fn.Coder.Decode(dec)
+				fmt.Println("data source element", elm)
 				fn.Output.Emit(ElmC{
 					elmContext: elmContext{
 						eventTime: et,
@@ -109,15 +117,37 @@ func (fn *datasource[E]) ProcessBundle(ctx context.Context, dfc *DFC[[]byte]) er
 						pane:      pn,
 					},
 					pcollections: ec.pcollections,
-				}, e)
-				if dc.IncrementAndCheckSplit(dfc, fn.split.Load()) {
+				}, elm)
+				if fn.dc.IncrementAndCheckSplit(dfc) {
+					fmt.Println("split reached, after element", elm, "index", fn.dc.index, "split", fn.dc.split)
 					break dataChan
 				}
 			}
+			fmt.Println("buffer complete")
 		}
+		fmt.Println("bundle complete", "index", fn.dc.index, "split", fn.dc.split)
 		return nil
 	})
 	return nil
+}
+
+var _ splitAware = &datasource[int]{}
+
+func (fn *datasource[E]) status(helper func(index, split int64, prog float64) (int64, float64, error)) (int64, bool) {
+	// We lock here to avoid moving past the new split.
+	fn.dc.mu.Lock()
+	defer fn.dc.mu.Unlock()
+	prog := 0.5
+	if fn.dc.index < 0 {
+		prog = 1.0
+	}
+	newSplit, fr, err := helper(fn.dc.index, fn.dc.split, prog)
+	if err != nil {
+		return -1, false
+	}
+	fmt.Println("split done", fn.dc.index, newSplit, fr)
+	fn.dc.split = newSplit
+	return fn.dc.split, true
 }
 
 // edgeDataSink represents a data connection back to the runner.

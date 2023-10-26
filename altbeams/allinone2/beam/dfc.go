@@ -7,6 +7,7 @@ import (
 
 	"github.com/lostluck/experimental/altbeams/allinone2/beam/coders"
 	"github.com/lostluck/experimental/altbeams/allinone2/beam/internal/beamopts"
+	fnpb "github.com/lostluck/experimental/altbeams/allinone2/beam/internal/model/fnexecution_v1"
 )
 
 // DFC is the DoFn Context for simple DoFns.
@@ -85,6 +86,7 @@ func (c *DFC[E]) ToElmC(eventTime time.Time) ElmC {
 
 // processor allows a uniform type for different generic types.
 type processor interface {
+	transformID() string
 	update(edgeID edgeIndex, transform string, dofn any, procs []processor, mets *metricsStore)
 
 	// discard signals that input this processor receives can be discarded.
@@ -96,9 +98,8 @@ type processor interface {
 	produceDoFnEdge(transform string, id edgeIndex, dofn any, ins, outs map[string]nodeIndex, opts beamopts.Struct) multiEdge
 
 	start(ctx context.Context) error
+	split(*fnpb.ProcessBundleSplitRequest_DesiredSplit) *fnpb.ProcessBundleSplitResponse
 	finish() error
-
-	metricsStore() *metricsStore
 }
 
 var _ processor = &DFC[int]{}
@@ -173,6 +174,32 @@ func (c *DFC[E]) start(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+type splitAware interface {
+	status(func(index, split int64, prog float64) (int64, float64, error)) (int64, bool)
+}
+
+func (c *DFC[E]) split(desired *fnpb.ProcessBundleSplitRequest_DesiredSplit) *fnpb.ProcessBundleSplitResponse {
+	newSplit, ok := c.dofn.(splitAware).status(func(index, split int64, prog float64) (int64, float64, error) {
+		bufSize := desired.GetEstimatedInputElements()
+		if bufSize <= 0 || split < bufSize {
+			bufSize = split
+		}
+		return splitHelper(index, bufSize, prog, desired.GetAllowedSplitPoints(), desired.GetFractionOfRemainder(), false)
+	})
+	if !ok {
+		return &fnpb.ProcessBundleSplitResponse{}
+	}
+	return &fnpb.ProcessBundleSplitResponse{
+		ChannelSplits: []*fnpb.ProcessBundleSplitResponse_ChannelSplit{
+			{
+				TransformId:          c.transform,
+				LastPrimaryElement:   newSplit - 1,
+				FirstResidualElement: newSplit,
+			},
+		},
+	}
 }
 
 func (c *DFC[E]) finish() error {

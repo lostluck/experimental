@@ -239,6 +239,19 @@ func executeSubgraph(typeReg map[string]reflect.Type) harness.ExecFunc {
 			return labels, pylds
 		})
 
+		ctrl.RegisterSplitter(dataCon, func(splits map[string]*fnpb.ProcessBundleSplitRequest_DesiredSplit) (*fnpb.ProcessBundleSplitResponse, error) {
+			ret := &fnpb.ProcessBundleSplitResponse{}
+			for _, root := range roots {
+				split, ok := splits[root.transformID()]
+				if !ok {
+					continue
+				}
+				resp := root.split(split)
+				proto.Merge(ret, resp)
+			}
+			return ret, nil
+		})
+
 		// 3. Register the metrics handling function for this instruction with the harness.
 		//    * This handles progress and tentative metrics
 		// 4. Register a split handler with the harness

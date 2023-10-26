@@ -65,6 +65,7 @@ func Main(ctx context.Context, controlEndpoint string, opts Options, exec ExecFu
 		descriptors: map[bundleDescriptorID]*fnpb.ProcessBundleDescriptor{},
 		plans:       map[bundleDescriptorID][]any{},
 		monitors:    map[instructionID]Monitor{},
+		active:      map[instructionID]Splitter{},
 
 		exec: exec,
 		fetchBD: func(id bundleDescriptorID) (*fnpb.ProcessBundleDescriptor, error) {
@@ -346,12 +347,38 @@ func handleInstruction(ctx context.Context, req *fnpb.InstructionRequest, ctrl *
 		}
 
 	case req.GetProcessBundleSplit() != nil:
-		// msg := req.GetProcessBundleSplit()
+		msg := req.GetProcessBundleSplit()
 
 		// // TODO(lostluck): 2023/03/29 fix debug level logging to be flagged.
 		// // log.Debugf(ctx, "PB Split: %v", msg)
-		// ref := instructionID(msg.GetInstructionId())
+		ref := instructionID(msg.GetInstructionId())
+		splitter, ok := ctrl.active[ref]
+		if !ok {
+			return &fnpb.InstructionResponse{
+				InstructionId: string(instID),
+				Response: &fnpb.InstructionResponse_ProcessBundleSplit{
+					ProcessBundleSplit: &fnpb.ProcessBundleSplitResponse{},
+				},
+			}
+		}
 
+		splits := msg.GetDesiredSplits()
+
+		resp, err := splitter(splits)
+		if err != nil {
+			return &fnpb.InstructionResponse{
+				InstructionId: string(instID),
+				Response: &fnpb.InstructionResponse_ProcessBundleSplit{
+					ProcessBundleSplit: &fnpb.ProcessBundleSplitResponse{},
+				},
+			}
+		}
+		return &fnpb.InstructionResponse{
+			InstructionId: string(instID),
+			Response: &fnpb.InstructionResponse_ProcessBundleSplit{
+				ProcessBundleSplit: resp,
+			},
+		}
 		// plan, _, resp := c.getPlanOrResponse(ctx, "split", instID, ref)
 		// if resp != nil {
 		// 	return resp
@@ -486,6 +513,7 @@ type Control struct {
 	singleDesc  singleflight.Group
 	descriptors map[bundleDescriptorID]*fnpb.ProcessBundleDescriptor
 	monitors    map[instructionID]Monitor
+	active      map[instructionID]Splitter
 }
 
 // GetOrLookupPlan does a layered check to get an execution plan.
@@ -530,4 +558,13 @@ func (ctrl *Control) RegisterMonitor(dc DataContext, monFn Monitor) {
 	ctrl.mu.Lock()
 	defer ctrl.mu.Unlock()
 	ctrl.monitors[dc.instID] = monFn
+}
+
+// Splitter is a function that requests a split from a given set of plans.
+type Splitter func(map[string]*fnpb.ProcessBundleSplitRequest_DesiredSplit) (*fnpb.ProcessBundleSplitResponse, error)
+
+func (ctrl *Control) RegisterSplitter(dc DataContext, splitFn Splitter) {
+	ctrl.mu.Lock()
+	defer ctrl.mu.Unlock()
+	ctrl.active[dc.instID] = splitFn
 }

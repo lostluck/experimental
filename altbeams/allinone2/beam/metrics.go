@@ -69,7 +69,11 @@ func (ms *metricsStore) MonitoringInfos(g *graph) []*pipepb.MonitoringInfo {
 		case *dataChannelIndex:
 			mon.Urn = "beam:metric:data_channel:read_index:v1"
 			mon.Type = "beam:metrics:sum_int64:v1"
-			mon.Payload = encVarInt(m.index.Load())
+			m.mu.Lock()
+			index := m.index
+			// Should this be one less? We're starting at 0 right now.
+			m.mu.Unlock()
+			mon.Payload = encVarInt(index)
 		case *pcollectionMetrics:
 			labels := map[string]string{
 				"PCOLLECTION": g.nodes[m.nodeIdx].protoID(),
@@ -148,22 +152,26 @@ func (m *int64Sum) add(d int64) {
 type dataChannelIndex struct {
 	transform   string
 	metricIndex int
-	index       atomic.Int64
+
+	mu           sync.Mutex
+	index, split int64
 }
 
 // incrementIndexAndCheckSplit increments DataSource.index by one and checks if
 // the caller should abort further element processing, and finish the bundle.
 // Returns true if the new value of index is greater than or equal to the split
 // index, and false otherwise.
-func (c *dataChannelIndex) IncrementAndCheckSplit(dfc metricSource, split int64) bool {
+func (c *dataChannelIndex) IncrementAndCheckSplit(dfc metricSource) bool {
 	if c.metricIndex == 0 {
 		ms := dfc.metricsStore()
 		c.metricIndex = len(ms.metrics)
 		ms.metrics = append(ms.metrics, c)
 		ms.metricNames[c.metricIndex] = metricLabels{Ptransform: c.transform}
 	}
-	newIndex := c.index.Add(1)
-	return newIndex > split
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.index++
+	return c.index >= c.split
 }
 
 type metricscommon struct {
