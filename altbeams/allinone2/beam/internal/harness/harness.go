@@ -323,10 +323,11 @@ func handleInstruction(ctx context.Context, req *fnpb.InstructionRequest, ctrl *
 
 	case req.GetProcessBundleProgress() != nil:
 		msg := req.GetProcessBundleProgress()
+		msg.GetInstructionId()
 
-		instID := instructionID(msg.GetInstructionId())
+		ref := instructionID(msg.GetInstructionId())
 		ctrl.mu.Lock()
-		mon := ctrl.monitors[instID]
+		mon := ctrl.monitors[ref]
 		ctrl.mu.Unlock()
 
 		labels, pylds := mon()
