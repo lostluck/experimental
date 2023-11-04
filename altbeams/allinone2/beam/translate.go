@@ -479,12 +479,15 @@ func unmarshalToGraph(typeReg map[string]reflect.Type, pbd *fnpb.ProcessBundleDe
 			}
 			outs := routeOutputs(pt, edgeID)
 			for local, global := range pt.GetOutputs() {
+				// Always extract agaist the DoFn, incase
+				// we need to rename an output.
+				// But we don't need to always override a node.
+				emt, ok := getEmitIfaceByName(dofnType, local, outs)
+				if !ok {
+					panic(fmt.Sprintf("consistency error: transform %v of type %v has no output field named %v", name, dofnType, local))
+				}
 				id := pcolToIndex[global]
 				if g.nodes[id] == nil {
-					emt, ok := getEmitIfaceByName(dofnType, local, outs)
-					if !ok {
-						panic(fmt.Sprintf("consistency error: transform %v of type %v has no output field named %v", name, dofnType, local))
-					}
 					pcol := pbd.GetPcollections()[global]
 					tn := emt.newNode(global, id, edgeID, pcol.GetIsBounded() == pipepb.IsBounded_BOUNDED)
 					tn.initCoder(pcol.GetCoderId(), pbd.GetCoders())

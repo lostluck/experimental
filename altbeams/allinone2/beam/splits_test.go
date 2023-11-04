@@ -266,6 +266,7 @@ func (ws *Watchers) Block(args *Args, _ *bool) error {
 	}
 	w.mu.Lock()
 	w.sentinelCount++
+	slog.Debug("sentinel target increased", slog.Int("watcherID", args.WatcherID), slog.Int("count", w.sentinelCount))
 	w.mu.Unlock()
 	return nil
 }
@@ -280,6 +281,7 @@ func (ws *Watchers) Check(args *Args, unblocked *bool) error {
 	}
 	w.mu.Lock()
 	*unblocked = w.sentinelCount >= w.sentinelCap
+	slog.Debug("sentinel target for watcher not met", slog.Int("watcherID", args.WatcherID), slog.Int("count", w.sentinelCount), slog.Int("target", w.sentinelCap))
 	w.mu.Unlock()
 	return nil
 }
@@ -299,7 +301,7 @@ func (ws *Watchers) Delay(args *Args, delay *bool) error {
 	// Delay as long as the sentinel count is under the cap.
 	*delay = w.sentinelCount < w.sentinelCap
 	w.mu.Unlock()
-	slog.Info("Delay: sentinel target", "watcher", w, slog.Bool("delay", *delay))
+	slog.Debug("Delay: sentinel target", "watcher", w, slog.Bool("delay", *delay))
 	return nil
 }
 
@@ -374,7 +376,7 @@ func (fn *sepHarnessBase[E]) setup() error {
 	sepWaitMap[fn.WatcherID] = c
 	go func(id int, c chan struct{}) {
 		for {
-			time.Sleep(time.Second * 1) // Check counts every second.
+			time.Sleep(time.Millisecond * 50) // Check counts every 50 milliseconds.
 			sepClientMu.Lock()
 			var unblock bool
 			err := sepClient.Call("Watchers.Check", &Args{WatcherID: id}, &unblock)
@@ -384,11 +386,11 @@ func (fn *sepHarnessBase[E]) setup() error {
 			}
 			if unblock {
 				close(c) // unblock all the local waiters.
-				slog.Info("sentinel target for watcher, unblocking", slog.Int("watcherID", id))
+				slog.Debug("sentinel target for watcher, unblocking", slog.Int("watcherID", id))
 				sepClientMu.Unlock()
 				return
 			}
-			slog.Info("sentinel target for watcher not met", slog.Int("watcherID", id))
+			slog.Debug("sentinel target for watcher not met", slog.Int("watcherID", id))
 			sepClientMu.Unlock()
 		}
 	}(fn.WatcherID, c)
@@ -466,7 +468,7 @@ func TestSeparation(t *testing.T) {
 			pipeline: func(s *Scope) error {
 				imp := Impulse(s)
 				src := ParDo(s, imp, &SourceFn{Count: 10})
-				sep := ParDo(s, src.Output, &sepHarness[int]{
+				sep := ParDo(s, Reshuffle(s, src.Output), &sepHarness[int]{
 					Base: sepHarnessBase[int]{
 						WatcherID:    ws.newWatcher(3),
 						Sleep:        10 * time.Millisecond,

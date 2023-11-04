@@ -49,9 +49,12 @@ func (fn *DiscardFn[E]) ProcessBundle(ctx context.Context, dfc *DFC[E]) error {
 
 type IdenFn[E Element] struct {
 	Output Emitter[E]
+
+	BundleStarts Counter
 }
 
 func (fn *IdenFn[E]) ProcessBundle(ctx context.Context, dfc *DFC[E]) error {
+	fn.BundleStarts.Inc(dfc, 1)
 	dfc.Process(func(ec ElmC, elm E) error {
 		fn.Output.Emit(ec, elm)
 		return nil
@@ -235,7 +238,7 @@ func BenchmarkPartitionPipe(b *testing.B) {
 		}
 	}
 	for _, numDoFns := range []int{1, 2, 3, 5, 10, 100} {
-		b.Run(fmt.Sprintf("num_partitions_%d", numDoFns), makeBench(numDoFns))
+		b.Run(fmt.Sprintf("num_partitions=%d", numDoFns), makeBench(numDoFns))
 	}
 }
 

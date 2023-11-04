@@ -21,8 +21,6 @@ func GBK[K Keys, V Element](s *Scope, input Emitter[KV[K, V]], opts ...Options) 
 	s.g.edges = append(s.g.edges, &edgeGBK[K, V]{index: edgeID, input: input.globalIndex, output: nodeID, opts: opt})
 	s.g.nodes = append(s.g.nodes, &typedNode[KV[K, Iter[V]]]{index: nodeID, parentEdge: edgeID})
 
-	// We do all the expected connections here.
-	// Side inputs, are put on the side input at the DoFn creation time being passed in.
 	return Emitter[KV[K, Iter[V]]]{globalIndex: nodeID}
 }
 
@@ -46,7 +44,7 @@ func (e *edgeGBK[K, V]) inputs() map[string]nodeIndex {
 	return map[string]nodeIndex{"i0": e.input}
 }
 
-// inputs for GBKs are one.
+// outputs for GBKs are one.
 func (e *edgeGBK[K, V]) outputs() map[string]nodeIndex {
 	return map[string]nodeIndex{"o0": e.output}
 }
@@ -59,3 +57,55 @@ func (e *edgeGBK[K, V]) toProtoParts(translateParams) (spec *pipepb.FunctionSpec
 }
 
 var _ protoDescMultiEdge = (*edgeGBK[int, int])(nil)
+
+// Reshuffle inserts a fusion break in the pipeline, preventing a
+// producer transform from being fused with the consuming transform.
+func Reshuffle[E Element](s *Scope, input Emitter[E], opts ...Options) Emitter[E] {
+	if s.g.consumers == nil {
+		s.g.consumers = map[nodeIndex][]edgeIndex{}
+	}
+
+	var opt beamopts.Struct
+	opt.Join(opts...)
+
+	edgeID := s.g.curEdgeIndex()
+	nodeID := s.g.curNodeIndex()
+	s.g.consumers[input.globalIndex] = append(s.g.consumers[input.globalIndex], edgeID)
+
+	s.g.edges = append(s.g.edges, &edgeReshuffle[E]{index: edgeID, input: input.globalIndex, output: nodeID, opts: opt})
+	s.g.nodes = append(s.g.nodes, &typedNode[E]{index: nodeID, parentEdge: edgeID})
+
+	return Emitter[E]{globalIndex: nodeID}
+}
+
+// edgeReshuffle represents a
+type edgeReshuffle[E Element] struct {
+	index edgeIndex
+
+	input, output nodeIndex
+	opts          beamopts.Struct
+}
+
+func (e *edgeReshuffle[E]) protoID() string {
+	return "invalid-Reshuffle-id"
+}
+func (e *edgeReshuffle[E]) edgeID() edgeIndex {
+	return e.index
+}
+
+// inputs for Reshuffles are one.
+func (e *edgeReshuffle[E]) inputs() map[string]nodeIndex {
+	return map[string]nodeIndex{"i0": e.input}
+}
+
+// outputs for Reshuffles are one.
+func (e *edgeReshuffle[E]) outputs() map[string]nodeIndex {
+	return map[string]nodeIndex{"o0": e.output}
+}
+
+func (e *edgeReshuffle[E]) toProtoParts(translateParams) (spec *pipepb.FunctionSpec, envID, name string) {
+	spec = &pipepb.FunctionSpec{Urn: "beam:transform:reshuffle:v1"}
+	envID = "" // Runner transforms are left blank.
+	name = "Reshuffle"
+	return spec, envID, name
+}
