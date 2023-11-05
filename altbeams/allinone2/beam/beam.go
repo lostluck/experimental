@@ -222,6 +222,8 @@ func executeSubgraph(typeReg map[string]reflect.Type) harness.ExecFunc {
 		// 2. Build a new runnable instance, get execution roots and metrics.
 		roots, mets := newG.build(ctx, dataCon)
 
+		// 3. Register the metrics handling function for this instruction with the harness.
+		//    * This handles progress and tentative metrics
 		ctrl.RegisterMonitor(dataCon, func() (map[string]*pipepb.MonitoringInfo, map[string][]byte) {
 			mons := mets.MonitoringInfos(newG)
 			pylds := map[string][]byte{}
@@ -239,6 +241,8 @@ func executeSubgraph(typeReg map[string]reflect.Type) harness.ExecFunc {
 			return labels, pylds
 		})
 
+		// 4. Register a split handler with the harness
+		//    * This handles channel splits and SDF splits
 		ctrl.RegisterSplitter(dataCon, func(splits map[string]*fnpb.ProcessBundleSplitRequest_DesiredSplit) (*fnpb.ProcessBundleSplitResponse, error) {
 			ret := &fnpb.ProcessBundleSplitResponse{}
 			for _, root := range roots {
@@ -252,13 +256,9 @@ func executeSubgraph(typeReg map[string]reflect.Type) harness.ExecFunc {
 			return ret, nil
 		})
 
-		// 3. Register the metrics handling function for this instruction with the harness.
-		//    * This handles progress and tentative metrics
-		// 4. Register a split handler with the harness
-		//    * This handles channel splits and SDF splits
-		// // Probably the same register.
-		//  (Also bundle finalization)
-		//
+		// TODO bundle finalization
+		// The above would be cleaned up in the harness.
+
 		// 5. Start DoFn sampling for this processing thread.
 		mets.startSampling(ctx, 10*time.Millisecond, 5*time.Minute)
 		defer mets.stopSampling()
