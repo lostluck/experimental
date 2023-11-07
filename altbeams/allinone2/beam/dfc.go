@@ -8,6 +8,7 @@ import (
 	"github.com/lostluck/experimental/altbeams/allinone2/beam/coders"
 	"github.com/lostluck/experimental/altbeams/allinone2/beam/internal/beamopts"
 	fnpb "github.com/lostluck/experimental/altbeams/allinone2/beam/internal/model/fnexecution_v1"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // DFC is the DoFn Context for simple DoFns.
@@ -33,13 +34,6 @@ type elmContext struct {
 	eventTime time.Time
 	windows   []coders.GWC
 	pane      coders.PaneInfo
-}
-
-func newDFC[E Element](id nodeIndex, ds []processor) *DFC[E] {
-	return &DFC[E]{
-		id:         id,
-		downstream: ds,
-	}
 }
 
 // Process is what the user calls to handle the bundle of elements.
@@ -99,6 +93,7 @@ type processor interface {
 
 	start(ctx context.Context) error
 	split(*fnpb.ProcessBundleSplitRequest_DesiredSplit) *fnpb.ProcessBundleSplitResponse
+	elementSplit() (prog float64, splitElm elmSplitCallback)
 	finish() error
 }
 
@@ -140,7 +135,8 @@ func (c *DFC[E]) multiplex(numOut int) []processor {
 	mplex := &multiplex[E]{Outs: make([]Emitter[E], numOut)}
 	var procs []processor
 	for i := range mplex.Outs {
-		emt := &mplex.Outs[i] // Get a pointer to the emitter, rather than a value copy from the loop.
+		emt := &mplex.Outs[i]        // Get a pointer to the emitter, rather than a value copy from the loop.
+		emt.localDownstreamIndex = i // Manually set emitter id for multiplex nodes, they aren't reprocessed.
 		procs = append(procs, emt.newDFC(c.id))
 	}
 	c.dofn = mplex
@@ -176,30 +172,125 @@ func (c *DFC[E]) start(ctx context.Context) error {
 	return nil
 }
 
-type splitAware interface {
-	status(func(index, split int64, prog float64) (int64, float64, error)) (int64, bool)
+type sourceSplitter interface {
+	splitSource(func(index, split int64) int64)
 }
 
 func (c *DFC[E]) split(desired *fnpb.ProcessBundleSplitRequest_DesiredSplit) *fnpb.ProcessBundleSplitResponse {
-	newSplit, ok := c.dofn.(splitAware).status(func(index, split int64, prog float64) (int64, float64, error) {
+	// Splits are conducted in the datasource's critical section to not race to downstream processing.
+	var lastPrimary, firstResidual int64
+	var pRoots []*fnpb.BundleApplication
+	var rRoots []*fnpb.DelayedBundleApplication
+	var splitSuccess bool
+	c.dofn.(sourceSplitter).splitSource(func(index, split int64) int64 {
 		bufSize := desired.GetEstimatedInputElements()
 		if bufSize <= 0 || split < bufSize {
 			bufSize = split
 		}
-		return splitHelper(index, bufSize, prog, desired.GetAllowedSplitPoints(), desired.GetFractionOfRemainder(), false)
+
+		// c.downstream[0] // Check if the single downstream has an SDF & get progress.
+		// I assume it should lock down restriction tracker handling too.
+		// TODO defer unlock the downstream SDF if available.
+		prog, splitCallback := c.downstream[0].elementSplit()
+
+		// We now need to use the fraction on the Splittable DoFn.
+		// But we don't *have* the SDF. That's on the downstream DFC.
+		// So ultimately, this DoFn shouldn't do anything about it, it should delegate.
+
+		suggestedSplit, fr, err := splitHelper(
+			index, bufSize, prog,
+			desired.GetAllowedSplitPoints(),
+			desired.GetFractionOfRemainder(),
+			splitCallback != nil)
+		if err != nil {
+			// TODO log error
+			return split // return original split. No changes here.
+		}
+		// A fraction less than 0 means this is a channel split. We're done!
+		if fr < 0 {
+			splitSuccess = true
+			lastPrimary = suggestedSplit - 1
+			firstResidual = suggestedSplit
+			// inform the datasource of new split
+			return firstResidual
+		}
+		// Do Sub Element Splitting!
+
+		// While technically this is blocking new sub element and datasource progress the whole time the split
+		// is taking place, the source lock is already blocked since sub element processing is happening.
+		// However, the callback should minimize the time it maintains a lock blocking processing.
+		// TODO evaluate lock contention WRT progress requests and processing on sub element splits.
+		sr := splitCallback(fr)
+
+		// In a sub-element split, newSplit is currIdx, so we need to increment it, so we don't pre-maturely channel split.
+		firstResidual = suggestedSplit + 1
+		lastPrimary = suggestedSplit - 1
+		if sr.PS != nil && len(sr.PS) > 0 && sr.RS != nil && len(sr.RS) > 0 {
+			pRoots = make([]*fnpb.BundleApplication, len(sr.PS))
+			for i, p := range sr.PS {
+				pRoots[i] = &fnpb.BundleApplication{
+					TransformId: sr.TId,
+					InputId:     sr.InId,
+					Element:     p,
+				}
+			}
+			rRoots = make([]*fnpb.DelayedBundleApplication, len(sr.RS))
+			for i, r := range sr.RS {
+				rRoots[i] = &fnpb.DelayedBundleApplication{
+					Application: &fnpb.BundleApplication{
+						TransformId:      sr.TId,
+						InputId:          sr.InId,
+						Element:          r,
+						OutputWatermarks: sr.OW,
+					},
+				}
+			}
+		}
+
+		return firstResidual
 	})
-	if !ok {
+	// Split didn't succeed, return a neutral response since split failures are not Bundle failures.
+	if !splitSuccess {
 		return &fnpb.ProcessBundleSplitResponse{}
 	}
 	return &fnpb.ProcessBundleSplitResponse{
 		ChannelSplits: []*fnpb.ProcessBundleSplitResponse_ChannelSplit{
 			{
 				TransformId:          c.transform,
-				LastPrimaryElement:   newSplit - 1,
-				FirstResidualElement: newSplit,
+				LastPrimaryElement:   lastPrimary,
+				FirstResidualElement: firstResidual,
 			},
 		},
 	}
+}
+
+// elmSplitCallback handles sub element splitting against the SDF, commits the split
+// and returns the serialized split result.
+type elmSplitCallback func(fraction float64) elementSplitResult
+
+// elementSplitResult is the result of sub element splitting.
+type elementSplitResult struct {
+	PS   [][]byte // Primary splits. If an element is split, these are the encoded primaries.
+	RS   [][]byte // Residual splits. If an element is split, these are the encoded residuals.
+	TId  string   // Transform ID of the transform receiving the split elements.
+	InId string   // Input ID of the input the split elements are received from.
+
+	OW map[string]*timestamppb.Timestamp // Map of outputs to output watermark for the plan being split
+}
+
+type elementSplitter interface {
+	// splitElementSource returns the progress fraction of the current element, and a callback to handle sub element splits.
+	// If the source can't sub element split, the callback must be nil.
+	splitElementSource() (prog float64, splitElement elmSplitCallback)
+}
+
+// elementSplit is called on the DFC for a downstream Splittable DoFn.
+func (c *DFC[E]) elementSplit() (prog float64, splitElement elmSplitCallback) {
+	es, ok := c.dofn.(elementSplitter)
+	if !ok {
+		return 0.5, nil
+	}
+	return es.splitElementSource()
 }
 
 func (c *DFC[E]) finish() error {

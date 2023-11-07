@@ -217,6 +217,7 @@ type pcollectionMetrics struct {
 }
 
 // Count increments the current counter, and with exponential backoff executes the sampling func.
+// Returns true if a sample should be taken.
 func (c *pcollectionMetrics) Count() bool {
 	cur := c.elementCount.Add(1)
 	if cur == c.nextSampleIdx {

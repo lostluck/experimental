@@ -43,20 +43,21 @@ func (e *edgeDataSource[E]) outputs() map[string]nodeIndex {
 
 func (e *edgeDataSource[E]) source(dc harness.DataContext, mets *metricsStore) (processor, processor) {
 	// This is what the Datasource emits to.
-	toConsumer := newDFC[E](e.output, nil)
+	toConsumer := &DFC[E]{id: e.output}
 	toConsumer.metrics = mets
 
-	// TODO, produce the coder via the
-
-	// But we're lazy and just kick it off with an impulse.
-	root := newDFC[[]byte](e.output, []processor{toConsumer})
-	root.transform = e.transform
-	root.metrics = mets
-	root.dofn = &datasource[E]{
-		DC:     dc,
-		SID:    harness.StreamID{PtransformID: e.transform, Port: e.port},
-		Output: Emitter[E]{valid: true, globalIndex: e.output, localDownstreamIndex: 0},
-		Coder:  e.makeCoder(),
+	// Just kick it off with an impulse.
+	root := &DFC[[]byte]{
+		id:         e.output,
+		downstream: []processor{toConsumer},
+		transform:  e.transform,
+		metrics:    mets,
+		dofn: &datasource[E]{
+			DC:     dc,
+			SID:    harness.StreamID{PtransformID: e.transform, Port: e.port},
+			Output: Emitter[E]{valid: true, globalIndex: e.output, localDownstreamIndex: 0},
+			Coder:  e.makeCoder(),
+		},
 	}
 	return root, toConsumer
 }
@@ -94,7 +95,7 @@ func (fn *datasource[E]) ProcessBundle(ctx context.Context, dfc *DFC[[]byte]) er
 	// Track the data channel index for progress and split handling.
 	fn.dc = &dataChannelIndex{
 		transform: fn.SID.PtransformID,
-		index:     0, // Should this be -1 per data read index definition?
+		index:     0,
 		split:     (1<<63 - 1),
 	}
 
@@ -125,22 +126,13 @@ func (fn *datasource[E]) ProcessBundle(ctx context.Context, dfc *DFC[[]byte]) er
 	return nil
 }
 
-var _ splitAware = &datasource[int]{}
+var _ sourceSplitter = &datasource[int]{}
 
-func (fn *datasource[E]) status(helper func(index, split int64, prog float64) (int64, float64, error)) (int64, bool) {
+func (fn *datasource[E]) splitSource(helper func(index, split int64) int64) {
 	// We lock here to avoid moving past the new split.
 	fn.dc.mu.Lock()
 	defer fn.dc.mu.Unlock()
-	prog := 0.5
-	if fn.dc.index < 0 {
-		prog = 1.0
-	}
-	newSplit, _, err := helper(fn.dc.index, fn.dc.split, prog)
-	if err != nil {
-		return -1, false
-	}
-	fn.dc.split = newSplit
-	return fn.dc.split, true
+	fn.dc.split = helper(fn.dc.index, fn.dc.split)
 }
 
 // edgeDataSink represents a data connection back to the runner.

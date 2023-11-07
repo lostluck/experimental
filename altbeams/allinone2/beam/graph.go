@@ -164,7 +164,7 @@ func (g *graph) build(ctx context.Context, dataCon harness.DataContext) ([]proce
 		stack = stack[0 : len(stack)-1]
 		switch e := c.edge.(type) {
 		case *edgeImpulse:
-			imp := newDFC[[]byte](e.output, nil)
+			imp := &DFC[[]byte]{id: e.output}
 			roots = append(roots, imp)
 			addConsumers(imp, e.output)
 		case sourcer:

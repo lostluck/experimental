@@ -406,15 +406,15 @@ func TestTwoSubGraphs(t *testing.T) {
 	}
 }
 
-func TestMultiplex(t *testing.T) {
+func TestMultiplexImpulse(t *testing.T) {
 	count := 10
 	pr, err := Run(context.TODO(), func(s *Scope) error {
-		imp := Impulse(s)
+		imp := Impulse(s) // As a Runner transform, impulses don't multiplex.
 		src1, src2 := ParDo(s, imp, &SourceFn{Count: count + 1}), ParDo(s, imp, &SourceFn{Count: count + 2})
 		ParDo(s, src1.Output, &DiscardFn[int]{}, Name("sink1"))
 		ParDo(s, src2.Output, &DiscardFn[int]{}, Name("sink2"))
 		return nil
-	})
+	}, pipeName(t))
 	if err != nil {
 		t.Error(err)
 	}
@@ -422,6 +422,32 @@ func TestMultiplex(t *testing.T) {
 		t.Errorf("discard1 got %v, want %v", got, want)
 	}
 	if got, want := int(pr.Counters["sink2.Processed"]), count+2; got != want {
+		t.Errorf("discard2 got %v, want %v", got, want)
+	}
+	if got, want := int(pr.Counters["sink1.Finished"]), 1; got != want {
+		t.Fatalf("finished1 didn't match bundle counter: got %v want %v", got, want)
+	}
+	if got, want := int(pr.Counters["sink2.Finished"]), 1; got != want {
+		t.Fatalf("finished2 didn't match bundle counter: got %v want %v", got, want)
+	}
+}
+
+func TestMultiplex(t *testing.T) {
+	count := 10
+	pr, err := Run(context.TODO(), func(s *Scope) error {
+		imp := Impulse(s)
+		src := ParDo(s, imp, &SourceFn{Count: count})
+		ParDo(s, src.Output, &DiscardFn[int]{}, Name("sink1"))
+		ParDo(s, src.Output, &DiscardFn[int]{}, Name("sink2"))
+		return nil
+	}, pipeName(t))
+	if err != nil {
+		t.Error(err)
+	}
+	if got, want := int(pr.Counters["sink1.Processed"]), count; got != want {
+		t.Errorf("discard1 got %v, want %v", got, want)
+	}
+	if got, want := int(pr.Counters["sink2.Processed"]), count; got != want {
 		t.Errorf("discard2 got %v, want %v", got, want)
 	}
 	if got, want := int(pr.Counters["sink1.Finished"]), 1; got != want {

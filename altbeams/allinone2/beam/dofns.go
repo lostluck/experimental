@@ -52,7 +52,7 @@ func (emt *Emitter[E]) setPColKey(global nodeIndex, id int, coder any) *pcollect
 }
 
 func (_ *Emitter[E]) newDFC(id nodeIndex) processor {
-	return newDFC[E](id, nil)
+	return &DFC[E]{id: id}
 }
 
 func (_ *Emitter[E]) newNode(protoID string, global nodeIndex, parent edgeIndex, bounded bool) node {
@@ -71,7 +71,6 @@ func (emt *Emitter[E]) Emit(ec ElmC, elm E) {
 			emt.mets.Sample(int64(len(enc.Data())))
 		}
 	}
-
 	proc := ec.pcollections[emt.localDownstreamIndex]
 	dfc := proc.(*DFC[E])
 	dfc.processE(ec.elmContext, elm)
@@ -103,7 +102,7 @@ func (*OnBundleFinish) Do(dfc bundleFinisher, finishBundle func() error) {
 // Typical use is to embed ObserveWindows as a field.
 type ObserveWindow struct{}
 
-func (*ObserveWindow) Of(ec ElmC) any {
+func (*ObserveWindow) Of(ec ElmC) any { // TODO make this a concrete window type.
 	// When windows are observable, only a single window is present.
 	return ec.windows[0]
 }
