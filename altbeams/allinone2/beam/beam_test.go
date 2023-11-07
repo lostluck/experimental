@@ -13,7 +13,7 @@ import (
 
 type SourceFn struct {
 	Count  int
-	Output Emitter[int]
+	Output Output[int]
 }
 
 func (fn *SourceFn) ProcessBundle(ctx context.Context, dfc *DFC[[]byte]) error {
@@ -48,7 +48,7 @@ func (fn *DiscardFn[E]) ProcessBundle(ctx context.Context, dfc *DFC[E]) error {
 }
 
 type IdenFn[E Element] struct {
-	Output Emitter[E]
+	Output Output[E]
 
 	BundleStarts Counter
 }
@@ -158,7 +158,7 @@ func BenchmarkPipe(b *testing.B) {
 }
 
 type ModPartition[V constraints.Integer] struct {
-	Outputs []Emitter[V] // The count needs to be properly serialized, ultimately.
+	Outputs []Output[V] // The count needs to be properly serialized, ultimately.
 }
 
 func (fn *ModPartition[V]) ProcessBundle(ctx context.Context, dfc *DFC[V]) error {
@@ -174,13 +174,13 @@ func (fn *ModPartition[V]) ProcessBundle(ctx context.Context, dfc *DFC[V]) error
 type WideNarrow struct {
 	Wide int
 
-	In Emitter[int]
+	In Output[int]
 }
 
-var _ Composite[struct{ Out Emitter[int] }] = ((*WideNarrow)(nil))
+var _ Composite[struct{ Out Output[int] }] = ((*WideNarrow)(nil))
 
-func (src *WideNarrow) Expand(s *Scope) (out struct{ Out Emitter[int] }) {
-	partition := ParDo(s, src.In, &ModPartition[int]{Outputs: make([]Emitter[int], src.Wide)})
+func (src *WideNarrow) Expand(s *Scope) (out struct{ Out Output[int] }) {
+	partition := ParDo(s, src.In, &ModPartition[int]{Outputs: make([]Output[int], src.Wide)})
 	out.Out = Flatten(s, partition.Outputs...)
 	return out
 }
@@ -245,7 +245,7 @@ func BenchmarkPartitionPipe(b *testing.B) {
 type KeyMod[V constraints.Integer] struct {
 	Mod V
 
-	Output Emitter[KV[V, V]]
+	Output Output[KV[V, V]]
 }
 
 func (fn *KeyMod[V]) ProcessBundle(ctx context.Context, dfc *DFC[V]) error {
@@ -261,7 +261,7 @@ func (fn *KeyMod[V]) ProcessBundle(ctx context.Context, dfc *DFC[V]) error {
 }
 
 type SumByKey[K Keys, V constraints.Integer | constraints.Float] struct {
-	Output Emitter[KV[K, V]]
+	Output Output[KV[K, V]]
 }
 
 func (fn *SumByKey[K, V]) ProcessBundle(ctx context.Context, dfc *DFC[KV[K, Iter[V]]]) error {
@@ -280,7 +280,7 @@ func (fn *SumByKey[K, V]) ProcessBundle(ctx context.Context, dfc *DFC[KV[K, Iter
 type GroupKeyModSum[V constraints.Integer] struct {
 	Mod V
 
-	Output Emitter[KV[V, V]]
+	Output Output[KV[V, V]]
 
 	OnBundleFinish
 }

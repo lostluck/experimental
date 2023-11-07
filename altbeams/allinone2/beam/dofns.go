@@ -16,13 +16,14 @@ type bypassInterface interface {
 
 // dofns.go is about the different mix-ins and addons that can be added.
 
-// Emitter represents an output of a DoFn.
+// Output represents an output of a DoFn.
 //
 // At pipeline construction time, they represent an output PCollection, and
-// can be connected as an input to downstream DoFns. At pipeline execution
-// time, they are used in a ProcessBundle method to emit outputs and pass along
-// per element context, such as the EventTime and Window.
-type Emitter[E Element] struct {
+// can be connected as inputs to downstream DoFns.
+//
+// At pipeline execution time, they are used in a ProcessBundle method to emit
+// elements and pass along per element context, such as the EventTime and Window.
+type Output[E Element] struct {
 	beamMixin
 
 	valid                bool
@@ -38,9 +39,9 @@ type emitIface interface {
 	newNode(protoID string, global nodeIndex, parent edgeIndex, bounded bool) node
 }
 
-var _ emitIface = (*Emitter[any])(nil)
+var _ emitIface = (*Output[any])(nil)
 
-func (emt *Emitter[E]) setPColKey(global nodeIndex, id int, coder any) *pcollectionMetrics {
+func (emt *Output[E]) setPColKey(global nodeIndex, id int, coder any) *pcollectionMetrics {
 	emt.valid = true
 	emt.globalIndex = global
 	emt.localDownstreamIndex = id
@@ -51,18 +52,18 @@ func (emt *Emitter[E]) setPColKey(global nodeIndex, id int, coder any) *pcollect
 	return emt.mets
 }
 
-func (_ *Emitter[E]) newDFC(id nodeIndex) processor {
+func (_ *Output[E]) newDFC(id nodeIndex) processor {
 	return &DFC[E]{id: id}
 }
 
-func (_ *Emitter[E]) newNode(protoID string, global nodeIndex, parent edgeIndex, bounded bool) node {
+func (_ *Output[E]) newNode(protoID string, global nodeIndex, parent edgeIndex, bounded bool) node {
 	return &typedNode[E]{id: protoID, index: global, parentEdge: parent, isBounded: bounded}
 }
 
 // Emit the element within the current element's context.
 //
 // The ElmC value is sourced from the [DFC.Process] method.
-func (emt *Emitter[E]) Emit(ec ElmC, elm E) {
+func (emt *Output[E]) Emit(ec ElmC, elm E) {
 	if emt.mets != nil {
 		if emt.mets.Count() {
 			enc := coders.NewEncoder()

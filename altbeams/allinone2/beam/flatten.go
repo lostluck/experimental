@@ -9,7 +9,7 @@ import (
 
 // Flatten joins together multiple Emitters of the same type into a single Emitter for
 // downstream consumption.
-func Flatten[E Element](s *Scope, inputs ...Emitter[E]) Emitter[E] {
+func Flatten[E Element](s *Scope, inputs ...Output[E]) Output[E] {
 	edgeID := s.g.curEdgeIndex()
 	nodeID := s.g.curNodeIndex()
 	if s.g.consumers == nil {
@@ -26,7 +26,7 @@ func Flatten[E Element](s *Scope, inputs ...Emitter[E]) Emitter[E] {
 
 	// We do all the expected connections here.
 	// Side inputs, are put on the side input at the DoFn creation time being passed in.
-	return Emitter[E]{globalIndex: nodeID}
+	return Output[E]{globalIndex: nodeID}
 }
 
 // edgeFlatten represents a Flatten transform.
@@ -77,7 +77,7 @@ func (e *edgeFlatten[E]) flatten() (string, any, []processor, bool) {
 	if e.instance == nil {
 		first = true
 		e.instance = &flatten[E]{
-			Output: Emitter[E]{globalIndex: e.output},
+			Output: Output[E]{globalIndex: e.output},
 		}
 		e.procs = []processor{e.instance.Output.newDFC(e.output)}
 	}
@@ -95,7 +95,7 @@ var _ flattener = (*edgeFlatten[int])(nil)
 // flatten implements an SDK side flatten, being a single point to funnel together
 // multiple outputs together.
 type flatten[E Element] struct {
-	Output Emitter[E]
+	Output Output[E]
 }
 
 func (fn *flatten[E]) ProcessBundle(ctx context.Context, dfc *DFC[E]) error {

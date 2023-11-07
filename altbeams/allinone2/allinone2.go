@@ -20,7 +20,7 @@ import (
 type MyDoFn struct {
 	Name string
 
-	Output beam.Emitter[string]
+	Output beam.Output[string]
 	beam.OnBundleFinish
 }
 
@@ -47,7 +47,7 @@ func (fn *MyDoFn) ProcessBundle(ctx context.Context, dfc *beam.DFC[string]) erro
 type MyIncDoFn struct {
 	Name string
 
-	Output beam.Emitter[int]
+	Output beam.Output[int]
 	beam.OnBundleFinish
 }
 
@@ -76,7 +76,7 @@ type SourceFn struct {
 	Name  string
 	Count int
 
-	Output beam.Emitter[int]
+	Output beam.Output[int]
 	beam.OnBundleFinish
 }
 

@@ -16,7 +16,7 @@ import (
 // multiple downstream Transforms. The same element is emitted to each
 // consuming emitter in order.
 type multiplex[E Element] struct {
-	Outs []Emitter[E]
+	Outs []Output[E]
 }
 
 func (fn *multiplex[E]) ProcessBundle(ctx context.Context, dfc *DFC[E]) error {

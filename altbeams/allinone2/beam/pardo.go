@@ -16,7 +16,7 @@ import (
 // What if we used Emitters as PCollections directly?
 // Obviously, we'd rename the type PCollection or similar
 // If only to also
-func ParDo[E Element, DF Transform[E]](s *Scope, input Emitter[E], dofn DF, opts ...Options) DF {
+func ParDo[E Element, DF Transform[E]](s *Scope, input Output[E], dofn DF, opts ...Options) DF {
 	var opt beamopts.Struct
 	opt.Join(opts...)
 

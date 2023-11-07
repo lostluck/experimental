@@ -55,7 +55,7 @@ func (e *edgeDataSource[E]) source(dc harness.DataContext, mets *metricsStore) (
 		dofn: &datasource[E]{
 			DC:     dc,
 			SID:    harness.StreamID{PtransformID: e.transform, Port: e.port},
-			Output: Emitter[E]{valid: true, globalIndex: e.output, localDownstreamIndex: 0},
+			Output: Output[E]{valid: true, globalIndex: e.output, localDownstreamIndex: 0},
 			Coder:  e.makeCoder(),
 		},
 	}
@@ -80,7 +80,7 @@ type datasource[E Element] struct {
 	// Window Coder to produce windows
 	Coder coders.Coder[E]
 
-	Output Emitter[E]
+	Output Output[E]
 
 	dc *dataChannelIndex
 }

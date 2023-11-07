@@ -132,7 +132,7 @@ func getSingleValue[K comparable, V any](in map[K]V) V {
 }
 
 func (c *DFC[E]) multiplex(numOut int) []processor {
-	mplex := &multiplex[E]{Outs: make([]Emitter[E], numOut)}
+	mplex := &multiplex[E]{Outs: make([]Output[E], numOut)}
 	var procs []processor
 	for i := range mplex.Outs {
 		emt := &mplex.Outs[i]        // Get a pointer to the emitter, rather than a value copy from the loop.

@@ -439,7 +439,7 @@ func (fn *sepHarnessBase[E]) delay() bool {
 type sepHarness[E comparable] struct {
 	Base sepHarnessBase[E]
 
-	Output Emitter[E]
+	Output Output[E]
 }
 
 func (fn *sepHarness[E]) ProcessBundle(ctx context.Context, dfc *DFC[E]) error {

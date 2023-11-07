@@ -6,7 +6,7 @@ import (
 )
 
 // convenience function to allow the discard type to be inferred.
-func namedDiscard[E Element](s *Scope, input Emitter[E], name string) {
+func namedDiscard[E Element](s *Scope, input Output[E], name string) {
 	ParDo(s, input, &DiscardFn[E]{}, Name(name))
 }
 
@@ -46,7 +46,7 @@ func TestSideInputMap(t *testing.T) {
 type OnlySideIter[E Element] struct {
 	Side SideInputIter[E]
 
-	Out Emitter[E]
+	Out Output[E]
 }
 
 func (fn *OnlySideIter[E]) ProcessBundle(ctx context.Context, dfc *DFC[[]byte]) error {
@@ -62,7 +62,7 @@ func (fn *OnlySideIter[E]) ProcessBundle(ctx context.Context, dfc *DFC[[]byte]) 
 type OnlySideMap[K Keys, V Element] struct {
 	Side SideInputMap[K, V]
 
-	Out Emitter[KV[K, V]]
+	Out Output[KV[K, V]]
 }
 
 func (fn *OnlySideMap[K, V]) ProcessBundle(ctx context.Context, dfc *DFC[[]byte]) error {
