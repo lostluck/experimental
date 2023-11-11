@@ -144,23 +144,12 @@ func (c *DFC[E]) multiplex(numOut int) []processor {
 	return procs
 }
 
-func (c *DFC[E]) processE(ec elmContext, elm E) {
-	if c.metrics != nil {
-		c.metrics.setState(1, c.edgeID)
-	}
-	if err := c.perElm(ElmC{ec, c.downstream}, elm); err != nil {
-		panic(fmt.Errorf("doFn id %v failed: %w", c.id, err))
-	}
-}
-
 func (c *DFC[E]) start(ctx context.Context) error {
 	// Defend against multiple initializations due to SDK side flattens.
 	if c.perElm != nil {
 		return nil
 	}
-	if c.metrics != nil {
-		c.metrics.setState(0, c.edgeID)
-	}
+	c.metrics.setState(0, c.edgeID)
 	if err := c.dofn.ProcessBundle(ctx, c); err != nil {
 		return nil
 	}
@@ -294,9 +283,7 @@ func (c *DFC[E]) elementSplit() (prog float64, splitElement elmSplitCallback) {
 }
 
 func (c *DFC[E]) finish() error {
-	if c.metrics != nil {
-		c.metrics.setState(2, c.edgeID)
-	}
+	c.metrics.setState(2, c.edgeID)
 	if c.finishBundle != nil {
 		if err := c.finishBundle(); err != nil {
 			return err

@@ -108,7 +108,7 @@ func AsSideIter[E Element](emt Output[E]) SideInputIter[E] {
 }
 
 // SideInputMap allows a side input to be accessed via multip-map key lookups.
-type SideInputMap[K Keys, V Element] struct {
+type SideInputMap[K, V Element] struct {
 	sideInputCommon
 
 	initMapReader     func(w, k []byte) harness.NextBuffer
@@ -182,7 +182,7 @@ func (si *SideInputMap[K, V]) Keys(ec ElmC) func(perElm func(elm K) bool) {
 }
 
 // AsSideMap initializes a MapSideInput from a valid upstream Emitter.
-func AsSideMap[K Keys, V Element](emt Output[KV[K, V]]) SideInputMap[K, V] {
+func AsSideMap[K, V Element](emt Output[KV[K, V]]) SideInputMap[K, V] {
 	validateSideInput(emt)
 	return SideInputMap[K, V]{sideInputCommon: sideInputCommon{valid: true, global: emt.globalIndex}}
 }

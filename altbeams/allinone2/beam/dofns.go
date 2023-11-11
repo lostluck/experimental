@@ -1,7 +1,10 @@
 package beam
 
 import (
+	"fmt"
+
 	"github.com/lostluck/experimental/altbeams/allinone2/beam/coders"
+	"pgregory.net/rand"
 )
 
 // beamMixin is added to all DoFn beam field types to allow them to bypass
@@ -64,17 +67,36 @@ func (_ *Output[E]) newNode(protoID string, global nodeIndex, parent edgeIndex, 
 //
 // The ElmC value is sourced from the [DFC.Process] method.
 func (emt *Output[E]) Emit(ec ElmC, elm E) {
+	// IMPLEMENTATION NOTES:
+	// Emit is complicated due to manually inlining PCollection metrics gathering,
+	// and calling the downstream processElement function directly.
+	// These inlines save measurable per element overhead compared to
+	// more ordinary factoring to methods.
+	// On a per element per dofn scale, the savings are significant.
 	if emt.mets != nil {
-		if emt.mets.Count() {
+		cur := emt.mets.elementCount.Add(1)
+		if cur == emt.mets.nextSampleIdx {
+			// It's not important for code inside the sampling block here to
+			// be inlined since it's run infrequently.
+			// TODO move to a helper method?
+			if emt.mets.nextSampleIdx < 4 {
+				emt.mets.nextSampleIdx++
+			} else {
+				emt.mets.nextSampleIdx = cur + rand.Int63n(cur/10+2) + 1
+			}
 			enc := coders.NewEncoder()
 			// TODO, optimize this with a sizer instead?
 			emt.coder.Encode(enc, elm)
 			emt.mets.Sample(int64(len(enc.Data())))
 		}
 	}
+	// Metrics collected, call the downstream function directly to avoid another function layer.
 	proc := ec.pcollections[emt.localDownstreamIndex]
 	dfc := proc.(*DFC[E])
-	dfc.processE(ec.elmContext, elm)
+	dfc.metrics.setState(1, dfc.edgeID) // Set current sampling state.
+	if err := dfc.perElm(ElmC{ec.elmContext, dfc.downstream}, elm); err != nil {
+		panic(fmt.Errorf("doFn id %v failed: %w", dfc.id, err))
+	}
 }
 
 // OnBundleFinish allows a DoFn to register a function that runs just before
@@ -124,47 +146,6 @@ type bundleFinalizer interface {
 func (*AfterBundle) Do(dfc bundleFinalizer, finalizeBundle func() error) {
 	dfc.regBundleFinalizer(finalizeBundle)
 }
-
-// How do we make SDFs work as expected with this paradigm, and be more construction time
-// safe? Eg. Require both the marker, and certain methods to be implemented on the DoFn.
-
-type Restriction interface {
-	Element
-	Size() float64
-}
-type Tracker[R Restriction] interface {
-	Split(R) []R
-	TrySplit(fraction float64) (primary, residual R, err error)
-}
-
-type Splittable[E Element, R Restriction, T Tracker[R]] struct{}
-
-func (*Splittable[E, R, T]) CreateInitialRestriction(func(E) R) {}
-
-func (*Splittable[E, R, T]) InitialSplits(func(R) []R) {}
-
-func (*Splittable[E, R, T]) SplitRestriction() {}
-
-func (*Splittable[E, R, T]) CreateTracker() T {
-	var t T
-	return t
-}
-
-// SDFs
-// PairWithRestriction + Size Restriction
-// Initial Splits / Split Restriction
-// ProcessBundle(E, R[P], T[R])
-//  -> GetInitialPosition(R) P
-//  -> for T.Claim(P) {
-//       DoWork emit whatever
-//    }
-//
-////
-/// But what if we Combine Claim and the position into a callback loop?
-//
-// T.ProcessClaims(initialPosition	func(R)P,  func(P) P, error)
-//
-//
 
 // OK, so we want to avoid users specifying manual looping, claiming etc. It's a feels bad API.
 //

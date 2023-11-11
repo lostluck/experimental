@@ -5,6 +5,10 @@ import (
 	pipepb "github.com/lostluck/experimental/altbeams/allinone2/beam/internal/model/pipeline_v1"
 )
 
+type Keys interface {
+	comparable
+}
+
 // GBK produces an output PCollection of grouped values.
 func GBK[K Keys, V Element](s *Scope, input Output[KV[K, V]], opts ...Options) Output[KV[K, Iter[V]]] {
 	if s.g.consumers == nil {

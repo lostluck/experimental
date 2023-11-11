@@ -9,7 +9,6 @@ import (
 
 	"github.com/lostluck/experimental/altbeams/allinone2/beam/coders"
 	pipepb "github.com/lostluck/experimental/altbeams/allinone2/beam/internal/model/pipeline_v1"
-	"pgregory.net/rand"
 )
 
 type metricsStore struct {
@@ -199,6 +198,7 @@ type metricSource interface {
 }
 
 func (c *Counter) Inc(dfc metricSource, diff int64) {
+	// TODO determine if there's a way to get this to be inlined.
 	ms := dfc.metricsStore()
 	if c.index == 0 {
 		c.index = ms.initMetric(dfc.transformID(), c.name, &int64Sum{})
@@ -214,21 +214,6 @@ type pcollectionMetrics struct {
 
 	sampleMu                                     sync.Mutex
 	sampleCount, sampleSum, sampleMin, sampleMax int64
-}
-
-// Count increments the current counter, and with exponential backoff executes the sampling func.
-// Returns true if a sample should be taken.
-func (c *pcollectionMetrics) Count() bool {
-	cur := c.elementCount.Add(1)
-	if cur == c.nextSampleIdx {
-		if c.nextSampleIdx < 4 {
-			c.nextSampleIdx++
-		} else {
-			c.nextSampleIdx = cur + rand.Int63n(cur/10+2) + 1
-		}
-		return true
-	}
-	return false
 }
 
 func (c *pcollectionMetrics) Sample(size int64) {
@@ -251,6 +236,13 @@ type currentSampleState struct {
 
 // setState must only be called by the bundle processing goroutine.
 func (ms *metricsStore) setState(phase uint8, edgeID edgeIndex) {
+	// If a method is inlinable with an internal nil check, it's
+	// worth inlining the nil check. Otherwise it's better to
+	// "outline" the nil check to avoid unnecessary function call
+	// overhead.
+	if ms == nil {
+		return
+	}
 	ms.transitions++
 	ms.transitions = ms.transitions % 0x3FFF
 	ms.storeState(uint32(phase), ms.transitions, uint32(edgeID))

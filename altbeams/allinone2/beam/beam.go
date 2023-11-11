@@ -23,11 +23,7 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-type Keys interface {
-	comparable
-}
-
-type KV[K Keys, V Element] struct {
+type KV[K, V Element] struct {
 	Key   K
 	Value V
 }
@@ -107,9 +103,12 @@ func start(ctx context.Context, dfc *DFC[[]byte]) error {
 	if err := dfc.start(ctx); err != nil {
 		return err
 	}
-	dfc.processE(elmContext{
+	dfc.metrics.setState(1, dfc.edgeID)
+	if err := dfc.perElm(ElmC{elmContext{
 		eventTime: time.Now(),
-	}, []byte{1, 2, 3, 4, 5, 6, 7, 7})
+	}, dfc.downstream}, []byte{1, 2, 3, 4, 5, 6, 7, 7}); err != nil {
+		panic(fmt.Errorf("doFn id %v failed: %w", dfc.id, err))
+	}
 	return nil
 }
 

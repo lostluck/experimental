@@ -16,7 +16,7 @@ func coderFromProto[E any](cs map[string]*pipepb.Coder, cid string) coders.Coder
 			ccid := c.GetComponentCoderIds()[0]
 			return &lpCoder[E]{Coder: coderFromProto[E](cs, ccid)}
 		case "beam:coder:windowed_value:v1":
-			// Doesn't happen often, but generally for 
+			// Doesn't happen often, but generally for
 			ccid := c.GetComponentCoderIds()[0]
 			return coderFromProto[E](cs, ccid)
 		case "beam:coder:kv:v1",
@@ -59,7 +59,7 @@ func (KV[K, V]) makeCoder(cs map[string]*pipepb.Coder, cid string) any {
 	}
 }
 
-type kvCoder[K Keys, V Element] struct {
+type kvCoder[K, V Element] struct {
 	KCoder coders.Coder[K]
 	VCoder coders.Coder[V]
 }

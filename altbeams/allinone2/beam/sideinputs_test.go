@@ -59,7 +59,7 @@ func (fn *OnlySideIter[E]) ProcessBundle(ctx context.Context, dfc *DFC[[]byte]) 
 	})
 }
 
-type OnlySideMap[K Keys, V Element] struct {
+type OnlySideMap[K, V Element] struct {
 	Side SideInputMap[K, V]
 
 	Out Output[KV[K, V]]
