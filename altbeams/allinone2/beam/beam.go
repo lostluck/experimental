@@ -19,6 +19,7 @@ import (
 	"github.com/lostluck/experimental/altbeams/allinone2/beam/internal/harness"
 	fnpb "github.com/lostluck/experimental/altbeams/allinone2/beam/internal/model/fnexecution_v1"
 	pipepb "github.com/lostluck/experimental/altbeams/allinone2/beam/internal/model/pipeline_v1"
+	"github.com/lostluck/experimental/altbeams/allinone2/beam/internal/runner/prism"
 	"github.com/lostluck/experimental/altbeams/allinone2/beam/internal/runner/universal"
 	"google.golang.org/protobuf/proto"
 )
@@ -152,6 +153,12 @@ func Expand[I Composite[O], O any](parent *Scope, name string, comp I) O {
 
 // Run begins executes the pipeline built in the construction function.
 func Run(ctx context.Context, expand func(*Scope) error, opts ...Options) (Pipeline, error) {
+
+	if err := prism.Start(ctx); err != nil {
+		return Pipeline{}, err
+	}
+
+	// TODO extract job port selection
 	opt := beamopts.Struct{
 		Endpoint: "localhost:8073",
 	}

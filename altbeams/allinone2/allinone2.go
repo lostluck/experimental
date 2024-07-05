@@ -13,6 +13,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/lostluck/experimental/altbeams/allinone2/beam"
 )
@@ -129,7 +130,10 @@ func (fn *DiscardFn[E]) ProcessBundle(ctx context.Context, dfc *beam.DFC[E]) err
 }
 
 func main() {
-	pr, err := beam.Run(context.TODO(), func(s *beam.Scope) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	pr, err := beam.Run(ctx, func(s *beam.Scope) error {
 		imp := beam.Impulse(s)
 		src := beam.ParDo(s, imp, &SourceFn{
 			Name:  "Source",
