@@ -4,6 +4,7 @@ package prism
 import (
 	"archive/zip"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -105,33 +106,44 @@ func unzipCachedFile(zipfile, outputDir string) (string, error) {
 	return output, nil
 }
 
+type Options struct {
+	Location string // if specified, indicates where a prism binary or zip of the binary can be found.
+}
+
 // Start downloads and begins a prism process.
 //
 // TODO return port or other info back up? Receive other options?
-func Start(ctx context.Context) error {
-	url := constructDownloadPath(beamVersion, beamVersion)
+func Start(ctx context.Context, opts Options) error {
+	localPath := opts.Location
+	if localPath == "" {
+		url := constructDownloadPath(beamVersion, beamVersion)
 
-	// Ensure the cache exists.
-	if err := os.MkdirAll(prismBinCache, 0777); err != nil {
-		return err
-	}
-	basename := path.Base(url)
-	localPath := filepath.Join(prismBinCache, basename)
-
-	// TODO check if the file's in the cache.
-	if err := downloadToCache(url, localPath); err != nil {
-		return fmt.Errorf("couldn't download %v to cache %s: %w", url, localPath, err)
+		// Ensure the cache exists.
+		if err := os.MkdirAll(prismBinCache, 0777); err != nil {
+			return err
+		}
+		basename := path.Base(url)
+		localPath = filepath.Join(prismBinCache, basename)
+		// Check if the zip is already in the cache.
+		if _, err := os.Stat(localPath); err != nil {
+			// Assume the file doesn't exist.
+			if err := downloadToCache(url, localPath); err != nil {
+				return fmt.Errorf("couldn't download %v to cache %s: %w", url, localPath, err)
+			}
+		}
 	}
 	bin, err := unzipCachedFile(localPath, prismBinCache)
 	if err != nil {
-		return err
+		if !errors.Is(err, zip.ErrFormat) {
+			return fmt.Errorf("couldn't unzip %q: %w", localPath, err)
+		}
+		// If it's a format error, assume it's an executable.
+		bin = localPath
 	}
 
 	cmd := exec.CommandContext(ctx, bin)
 	if err := cmd.Start(); err != nil {
-		return err
+		return fmt.Errorf("couldn't start command %q: %w", bin, err)
 	}
-	fmt.Println("prism started from:", bin)
-
 	return nil
 }
