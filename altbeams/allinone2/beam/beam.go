@@ -155,7 +155,7 @@ func Expand[I Composite[O], O any](parent *Scope, name string, comp I) O {
 func Run(ctx context.Context, expand func(*Scope) error, opts ...Options) (Pipeline, error) {
 
 	if err := prism.Start(ctx, prism.Options{
-		Location: "/home/lostluck/.cache/apache_beam/prism/bin/apache_beam-v2.57.0-prism-linux-amd64",
+		Location: "/home/lostluck/git/beam/sdks/go/cmd/prism/prism",
 	}); err != nil {
 		return Pipeline{}, err
 	}

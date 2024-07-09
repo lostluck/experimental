@@ -13,6 +13,8 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
+	"sync"
+	"sync/atomic"
 )
 
 // TODO: Allow configuration of port/ return of auto selected ports.
@@ -110,10 +112,28 @@ type Options struct {
 	Location string // if specified, indicates where a prism binary or zip of the binary can be found.
 }
 
+// TODO handle multiple configurations of prism.
+var (
+	active  sync.WaitGroup
+	started atomic.Bool
+)
+
 // Start downloads and begins a prism process.
 //
 // TODO return port or other info back up? Receive other options?
 func Start(ctx context.Context, opts Options) error {
+	active.Add(1)
+	go func() {
+		select {
+		case <-ctx.Done():
+			active.Done()
+		}
+	}()
+	if started.Load() {
+		// We're done here.
+		return nil
+	}
+
 	localPath := opts.Location
 	if localPath == "" {
 		url := constructDownloadPath(beamVersion, beamVersion)
@@ -141,9 +161,17 @@ func Start(ctx context.Context, opts Options) error {
 		bin = localPath
 	}
 
-	cmd := exec.CommandContext(ctx, bin)
+	cmd := exec.Command(bin)
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("couldn't start command %q: %w", bin, err)
 	}
+	fmt.Println("started prism")
+	started.Store(true)
+	go func() {
+		active.Wait()
+		cmd.Process.Kill()
+		started.Store(false)
+		fmt.Println("killed prism")
+	}()
 	return nil
 }
