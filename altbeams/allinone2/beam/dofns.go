@@ -2,10 +2,13 @@ package beam
 
 import (
 	"fmt"
+	"sync"
 
 	"github.com/lostluck/experimental/altbeams/allinone2/beam/coders"
 	"pgregory.net/rand"
 )
+
+// dofns.go is about the different mix-ins and addons that can be added.
 
 // beamMixin is added to all DoFn beam field types to allow them to bypass
 // encoding. Only needed when the value has state and shouldn't be embedded.
@@ -16,8 +19,6 @@ func (beamMixin) beamBypass() {}
 type bypassInterface interface {
 	beamBypass()
 }
-
-// dofns.go is about the different mix-ins and addons that can be added.
 
 // Output represents an output of a DoFn.
 //
@@ -149,7 +150,140 @@ func (*AfterBundle) Do(dfc bundleFinalizer, finalizeBundle func() error) {
 
 // OK, so we want to avoid users specifying manual looping, claiming etc. It's a feels bad API.
 //
+// HOW DO WE AVOID THE FEELS BAD?
+// We need to have it so the user is authoring something discoverable.
+// We need to avoid giving the user the tracker, but enable what the user needs a tracker for.
+
+// Restriction is a range of logical positions to be processed for this element.
+// Restriction implementations must be serializable.
+type Restriction[P any] interface {
+	// Start is the earliest position in this restriction.
+	Start() P
+	// End is the last position that must be processed with this restriction.
+	End() P
+	// Bounded whether this restiction is bounded or not.
+	Bounded() bool
+}
+
+// Tracker manages state around splitting an element.
 //
+// Tracker implementations are not serialized.
+type Tracker[R Restriction[P], P any] interface {
+	// Size returns a an estimate of the amount of work in this restrction.
+	// A zero size restriction
+	Size(R) float64
+	// TryClaim attempts to claim the given position within the restriction.
+	// Claiming a position at or beyond the end of the restriction signals that the
+	// entire restriction has been processed and is now done, at which point this
+	// method signals to end processing.
+	TryClaim(P) bool
+
+	// TrySplit splits at the nearest position greater than the given fraction of the remainder. If the
+	// fraction given is outside of the position's range, it is clamped to Min or Max.
+	TrySplit(fraction float64) (primary, residual R, err error)
+	IsDone() bool
+	GetError() error
+	GetProgress() (done, remaining float64)
+	GetRestriction() R
+}
+
+// lockingTracker wraps a Tracker in a mutex to synchronize access.
+type lockingTracker[T Tracker[R, P], R Restriction[P], P any] struct {
+	mu      sync.Mutex
+	wrapped T
+}
+
+func wrapWithLockTracker[T Tracker[R, P], R Restriction[P], P any](t T) *lockingTracker[T, R, P] {
+	return &lockingTracker[T, R, P]{wrapped: t}
+}
+
+func (t *lockingTracker[T, R, P]) Size(rest R) float64 {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.wrapped.Size(rest)
+}
+
+func (t *lockingTracker[T, R, P]) TryClaim(pos P) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.wrapped.TryClaim(pos)
+}
+
+func (t *lockingTracker[T, R, P]) TrySplit(fraction float64) (R, R, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.wrapped.TrySplit(fraction)
+}
+
+func (t *lockingTracker[T, R, P]) GetError() error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.wrapped.GetError()
+}
+
+func (t *lockingTracker[T, R, P]) GetRestriction() R {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.wrapped.GetRestriction()
+}
+
+func (t *lockingTracker[T, R, P]) GetProgress() (done float64, remaining float64) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.wrapped.GetProgress()
+}
+
+func (t *lockingTracker[T, R, P]) IsDone() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.wrapped.IsDone()
+}
+
+// TryClaim fis a closure
+type TryClaim[P any] func(func(P) (P, error)) error
+
+// ProcessRestriction defines processing the given element with respect to the provided
+// restriction.
+type ProcessRestriction[E any, R Restriction[P], P any] func(ElmC, E, R, TryClaim[P]) error
+
+// BoundedSDF indicates this DoFn is able to split elements into independantly
+// processessable sub parts, called Restrictions.
+//
+// Due to the handling required, call the BoundedSDF [Process] method, instead
+// of the one on DFC.
+type BoundedSDF[E any, T Tracker[R, P], R Restriction[P], P any] struct{}
+
+// Process is called during ProcessBundle set up to define the processing happening per element.
+func (sdf *BoundedSDF[E, T, R, P]) Process(dfc *DFC[E],
+	makeTracker func(R) T,
+	proc ProcessRestriction[E, R, P]) error {
+	// TODO: Do special handling, likely in upstream handling for
+	// extracting the Restriction, watermark estimator, and size.
+	// And of course, hooking in the split handling externally to this goroutine.
+	return dfc.Process(func(ec ElmC, e E) error {
+		// Do the necessary restriction extraction.
+		var r R
+		t := wrapWithLockTracker(makeTracker(r))
+		return proc(ec, e, t.GetRestriction(), func(perPos func(P) (P, error)) error {
+			p := r.Start()
+			// We don't need to claim the initial position, hence the tail
+			// break condition instead of waiting for the end.
+			for {
+				newPos, err := perPos(p)
+				if err != nil {
+					return err
+				}
+				p = newPos
+				if !t.TryClaim(p) {
+					break
+				}
+			}
+			return t.GetError()
+		})
+	})
+}
+
+// Marker methods for BoundedSDF for type extraction? Also for handling splits?
 
 // TODO Watermark Estimators and ProcessContinuations for StreamingDoFn
 
@@ -192,3 +326,25 @@ type TimerProcessing struct{ timer }
 // DoFn Sampler and State Caching
 //
 // logging is slog.
+
+// Notes for later Axel Wagner talk on Advanced Generics.
+// Type constraint to *only* pointer type, of some interface types.
+// type foo[T any] interface {
+// 	*T
+// 	// other interface, eg json.Unmarshaller
+// }
+
+// Phantom types.
+// type mykey[T any] struct{}
+
+// use as a key into maps of interface types.
+// Useful for type based state instead of using reflect.TypeOf
+// Use phantom typed maps for registries.
+
+// type endpoint[Req, Resp any] string
+// Define specific things.
+// But define vars instead of consts for specific instances.
+// func Call[Req, Resp any](c *Client, e endpoint[Req, Resp], r Req) (Resp, error)
+//
+// Use unnamed fields but typed. Allows type safety and prevents user misuse by casting etc.
+// type endpont[Req, Resp any] struct{ _ [0]Req; _ [0]Resp; name string }

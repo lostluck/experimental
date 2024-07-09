@@ -38,6 +38,34 @@ type elmContext struct {
 
 // Process is what the user calls to handle the bundle of elements.
 //
+// 2024/07/08
+// BUT WHAT IF IT WASN'T?!
+// What if, we just homogenize the whole experience.
+// Yes, even "simple" DoFns would need a struct embed to catch it...
+// but THEY WOULDN'T HAVE TO.
+//
+// Since we'd provide a helper for that simplest case.
+//
+// Then the DFC could refer to all the broad types.
+//
+// beam.DoFn
+// beam.SplittableDoFn
+// beam.UnboundedDoFn
+//
+// Each could be clearly documented.
+//
+// But it does mean repeating the Element type because
+// we *must* have a method with the type so we can get construction time
+// type safety.
+//
+// So we can't get rid of the ProcessBundle method as a result.
+// Cost of having a *DoFn* mixin: repeated element type.
+// Benefit: Similarity across types of DoFn (but not combinefns)
+// Cost of not having that: Additional Complexity in the already complex case.
+// Benefit: Simpler simple case.
+//
+// This does open up the question of whether CombineFns can do the same thing.
+// For even more eveness/parity. Doesn't feel likely due to the labor division.
 
 // Process is where you set the per Element processing function that accepts
 // elements. Process returns an error to allow inlining with the error return
