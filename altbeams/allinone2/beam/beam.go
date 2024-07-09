@@ -24,13 +24,22 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// Element represents any user type. Beam processses arbitary user types, but requires
+// them to be encodeable.
+type Element interface {
+	any // Sadly, can't really restrict this without breaking iterators in GBK results.
+}
+
+// KV represents key vlaue pairs.
+// These are useful to Beam pipelines, including allowing to GroupByKey, and stateful transforms.
 type KV[K, V Element] struct {
 	Key   K
 	Value V
 }
 
-type Element interface {
-	any // Sadly, can't really restrict this without breaking iterators in GBK results.
+// Pair is a convenience function to build generic KVs.
+func Pair[K, V Element](k K, v V) KV[K, V] {
+	return KV[K, V]{Key: k, Value: v}
 }
 
 // ElmC is the catch all context for the current element.
