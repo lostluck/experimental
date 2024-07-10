@@ -8,7 +8,9 @@ package beam
 
 import (
 	"context"
+	"flag"
 	"fmt"
+	"os"
 	"reflect"
 	"strconv"
 	"sync/atomic"
@@ -160,9 +162,32 @@ func Expand[I Composite[O], O any](parent *Scope, name string, comp I) O {
 	return comp.Expand(s)
 }
 
+// TODO do worker initialization better.
+var (
+	// These flags handle the invocation by the container boot code.
+
+	worker = flag.Bool("worker", false, "Whether binary is running in worker mode.")
+
+	id              = flag.String("id", "", "Local identifier (required in worker mode).")
+	loggingEndpoint = flag.String("logging_endpoint", "", "Local logging gRPC endpoint (required in worker mode).")
+	controlEndpoint = flag.String("control_endpoint", "", "Local control gRPC endpoint (required in worker mode).")
+	//lint:ignore U1000 semiPersistDir flag is passed in through the boot container, will need to be removed later
+	semiPersistDir = flag.String("semi_persist_dir", "/tmp", "Local semi-persistent directory (optional in worker mode).")
+	options        = flag.String("options", "", "JSON-encoded pipeline options (required in worker mode). (deprecated)")
+)
+
 // Run begins executes the pipeline built in the construction function.
 func Run(ctx context.Context, expand func(*Scope) error, opts ...Options) (Pipeline, error) {
-
+	if !flag.Parsed() {
+		flag.Parse()
+		if *worker {
+			panic("I AM A WORKER")
+			// TODO have harness initialization respect to container flags.
+			// TODO build/use current binary for uploading
+			// TODO update the pipeline artifacts with the binary.
+		}
+	}
+	fmt.Println("beam.Run: flags:", os.Args)
 	if err := prism.Start(ctx, prism.Options{
 		Location: "/home/lostluck/git/beam/sdks/go/cmd/prism/prism",
 	}); err != nil {
@@ -199,12 +224,22 @@ func Run(ctx context.Context, expand func(*Scope) error, opts ...Options) (Pipel
 	if err != nil {
 		return Pipeline{}, err
 	}
-
 	env := &pipepb.Environment{
 		Urn:          "beam:env:external:v1",
 		Payload:      serializedPayload,
 		Capabilities: nil, // TODO
 	}
+	// TODO have harness initialization respect container flags.
+	// serializedPayload, err := proto.Marshal(&pipepb.DockerPayload{ContainerImage: "apache/beam_go_sdk:2.57.0"})
+	// if err != nil {
+	// 	return Pipeline{}, err
+	// }
+
+	// env := &pipepb.Environment{
+	// 	Urn:          "beam:env:docker:v1",
+	// 	Payload:      serializedPayload,
+	// 	Capabilities: nil, // TODO
+	// }
 	pipe.Components.Environments["go"] = env
 	handle, err := universal.Execute(ctx, pipe, opt)
 	if err != nil {

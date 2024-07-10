@@ -64,13 +64,13 @@ func Execute(ctx context.Context, p *pipepb.Pipeline, opts beamopts.Struct) (*Pi
 		RetrievalToken: prepResp.GetStagingSessionToken(),
 	}
 
-	// slog.InfoContext(ctx, "Submitting job: %v", prepReq.GetJobName())
+	// slog.InfoContext(ctx, "Submitting job", "name", prepReq.GetJobName())
 	runResp, err := client.Run(ctx, runReq)
 	if err != nil {
 		return nil, fmt.Errorf("failed to submit job: %w", err)
 	}
 
-	//slog.InfoContext(ctx, "Submitted job: %v", runResp.GetJobId())
+	// slog.InfoContext(ctx, "Submitted Job", "id", runResp.GetJobId())
 
 	handle := &Pipeline{
 		pipe:   p,
