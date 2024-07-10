@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -13,8 +15,11 @@ import (
 	jobpb "github.com/lostluck/experimental/altbeams/allinone2/beam/internal/model/jobmanagement_v1"
 	pipepb "github.com/lostluck/experimental/altbeams/allinone2/beam/internal/model/pipeline_v1"
 	"github.com/pkg/errors"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/protobuf/encoding/prototext"
 	"google.golang.org/protobuf/encoding/protowire"
+	"google.golang.org/protobuf/proto"
 )
 
 var unique int32
@@ -27,6 +32,20 @@ func getJobName(opts beamopts.Struct) string {
 		return fmt.Sprintf("go-job-%v-%v", id, time.Now().UnixNano())
 	}
 	return opts.Name
+}
+
+const idKey = "worker_id"
+
+// writeWorkerID write the worker ID to an outgoing gRPC request context. It
+// merges the information with any existing gRPC metadata.
+func writeWorkerID(ctx context.Context, id string) context.Context {
+	md := metadata.New(map[string]string{
+		idKey: id,
+	})
+	if old, ok := metadata.FromOutgoingContext(ctx); ok {
+		md = metadata.Join(md, old)
+	}
+	return metadata.NewOutgoingContext(ctx, md)
 }
 
 func Execute(ctx context.Context, p *pipepb.Pipeline, opts beamopts.Struct) (*Pipeline, error) {
@@ -43,20 +62,24 @@ func Execute(ctx context.Context, p *pipepb.Pipeline, opts beamopts.Struct) (*Pi
 	}
 	prepResp, err := client.Prepare(ctx, prepReq)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("preparing job name %v: %w", prepReq.JobName, err)
 	}
 
 	//log.Infof(ctx, "Prepared job with id: %v and staging token: %v", prepID, st)
 
 	// (2) Stage artifacts.
-	// ctx = grpcx.WriteWorkerID(ctx, prepResp.GetPreparationId())
-	// cc, err := grpcx.Dial(ctx, endpoint, 2*time.Minute)
-	// if err != nil {
-	// 	return "", errors.WithContext(err, "connecting to artifact service")
-	// }
-	// defer cc.Close()
+	ctx = writeWorkerID(ctx, prepResp.GetPreparationId())
+	artcc, err := harness.Dial(ctx,
+		prepResp.GetArtifactStagingEndpoint().GetUrl(), 2*time.Minute)
+	if err != nil {
+		return nil, fmt.Errorf("connecting to artifact service: %w", err)
+	}
+	defer artcc.Close()
+	if err := stageViaPortableAPI(ctx, artcc, prepResp.GetStagingSessionToken()); err != nil {
+		return nil, fmt.Errorf("staging artifacts: %w", err)
+	}
 
-	//log.Infof(ctx, "Staged binary artifact with token: %v", token)
+	slog.InfoContext(ctx, "Staged binary artifact", "token", prepResp.GetStagingSessionToken())
 
 	// (3) Submit job
 	runReq := &jobpb.RunJobRequest{
@@ -64,13 +87,13 @@ func Execute(ctx context.Context, p *pipepb.Pipeline, opts beamopts.Struct) (*Pi
 		RetrievalToken: prepResp.GetStagingSessionToken(),
 	}
 
-	// slog.InfoContext(ctx, "Submitting job", "name", prepReq.GetJobName())
+	slog.InfoContext(ctx, "Submitting job", "name", prepReq.GetJobName())
 	runResp, err := client.Run(ctx, runReq)
 	if err != nil {
 		return nil, fmt.Errorf("failed to submit job: %w", err)
 	}
 
-	// slog.InfoContext(ctx, "Submitted Job", "id", runResp.GetJobId())
+	slog.InfoContext(ctx, "Submitted Job", "id", runResp.GetJobId())
 
 	handle := &Pipeline{
 		pipe:   p,
@@ -84,9 +107,9 @@ func Execute(ctx context.Context, p *pipepb.Pipeline, opts beamopts.Struct) (*Pi
 	return handle, handle.Wait(ctx)
 }
 
-// WaitForCompletion monitors the given job until completion. It logs any messages
+// waitForCompletion monitors the given job until completion. It logs any messages
 // and state changes received.
-func WaitForCompletion(ctx context.Context, client jobpb.JobServiceClient, jobID string) error {
+func waitForCompletion(ctx context.Context, client jobpb.JobServiceClient, jobID string) error {
 	stream, err := client.GetMessageStream(ctx, &jobpb.JobMessagesRequest{JobId: jobID})
 	if err != nil {
 		return errors.Wrap(err, "failed to get job stream")
@@ -105,7 +128,7 @@ func WaitForCompletion(ctx context.Context, client jobpb.JobServiceClient, jobID
 				}
 				return nil
 			}
-			return err
+			return fmt.Errorf("message stream ended for job %q: %w", jobID, err)
 		}
 
 		switch {
@@ -128,8 +151,8 @@ func WaitForCompletion(ctx context.Context, client jobpb.JobServiceClient, jobID
 		case msg.GetMessageResponse() != nil:
 			resp := msg.GetMessageResponse()
 
-			// text := fmt.Sprintf("%v (%v): %v", resp.GetTime(), resp.GetMessageId(), resp.GetMessageText())
-			// slog.Log(ctx, messageSeverity(resp.GetImportance()), text)
+			text := fmt.Sprintf("%v (%v): %v", resp.GetTime(), resp.GetMessageId(), resp.GetMessageText())
+			slog.Log(ctx, messageSeverity(resp.GetImportance()), text)
 
 			if resp.GetImportance() >= jobpb.JobMessage_JOB_MESSAGE_ERROR {
 				errReceived = true
@@ -171,7 +194,7 @@ type Pipeline struct {
 }
 
 func (p *Pipeline) Wait(ctx context.Context) error {
-	return WaitForCompletion(ctx, p.client, p.jobID)
+	return waitForCompletion(ctx, p.client, p.jobID)
 }
 
 func (p *Pipeline) Cancel(ctx context.Context) (jobpb.JobState_Enum, error) {
@@ -223,4 +246,127 @@ func (r *Results) Committed(name string) int64 {
 		return int64(v)
 	}
 	return 0
+}
+
+// stageViaPortableAPI is a beam internal function for uploading artifacts to the staging service
+// via the portable API.
+//
+// It will be unexported at a later time.
+func stageViaPortableAPI(ctx context.Context, cc *grpc.ClientConn, st string) error {
+	const attempts = 3
+	var failures []string
+	for {
+		err := stageFiles(ctx, cc, st)
+		if err == nil {
+			return nil // success!
+		}
+		failures = append(failures, err.Error())
+		if len(failures) > attempts {
+			return errors.Errorf("failed to stage artifacts for token %v in %v attempts: %v", st, attempts, strings.Join(failures, ";\n"))
+		}
+	}
+}
+
+func stageFiles(ctx context.Context, cc *grpc.ClientConn, st string) error {
+	client := jobpb.NewArtifactStagingServiceClient(cc)
+	stream, err := client.ReverseArtifactRetrievalService(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err := stream.CloseSend(); err != nil {
+			slog.ErrorContext(ctx, "StageViaPortableApi CloseSend", "error", err)
+		}
+	}()
+
+	if err := stream.Send(&jobpb.ArtifactResponseWrapper{StagingToken: st}); err != nil {
+		return errors.Wrapf(err, "failed to send staging token")
+	}
+
+	for {
+		in, err := stream.Recv()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+
+		slog.InfoContext(ctx, "reverse artifact request", "req", prototext.Format(in))
+
+		switch request := in.Request.(type) {
+		case *jobpb.ArtifactRequestWrapper_ResolveArtifact:
+			err = stream.Send(&jobpb.ArtifactResponseWrapper{
+				Response: &jobpb.ArtifactResponseWrapper_ResolveArtifactResponse{
+					ResolveArtifactResponse: &jobpb.ResolveArtifactsResponse{
+						Replacements: request.ResolveArtifact.Artifacts,
+					},
+				}})
+			if err != nil {
+				return err
+			}
+
+		case *jobpb.ArtifactRequestWrapper_GetArtifact:
+			switch typeUrn := request.GetArtifact.Artifact.TypeUrn; typeUrn {
+			case "beam:artifact:type:file:v1":
+				typePl := pipepb.ArtifactFilePayload{}
+				if err := proto.Unmarshal(request.GetArtifact.Artifact.TypePayload, &typePl); err != nil {
+					return errors.Wrap(err, "failed to parse artifact file payload")
+				}
+				if err := stageFile(typePl.GetPath(), stream); err != nil {
+					if err == io.EOF {
+						continue // so we can get the real error from stream.Recv.
+					}
+					return errors.Wrapf(err, "failed to stage file %v", typePl.GetPath())
+
+				}
+			default:
+				return errors.Errorf("request has unexpected artifact type %s", typeUrn)
+			}
+
+		default:
+			return errors.Errorf("request has unexpected type %T", request)
+		}
+	}
+}
+
+func stageFile(filename string, stream jobpb.ArtifactStagingService_ReverseArtifactRetrievalServiceClient) error {
+	fd, err := os.Open(filename)
+	if err != nil {
+		return errors.Wrapf(err, "unable to open file %v", filename)
+	}
+	defer fd.Close()
+
+	data := make([]byte, 1<<20)
+	for {
+		n, err := fd.Read(data)
+		if n > 0 {
+			sendErr := stream.Send(&jobpb.ArtifactResponseWrapper{
+				Response: &jobpb.ArtifactResponseWrapper_GetArtifactResponse{
+					GetArtifactResponse: &jobpb.GetArtifactResponse{
+						Data: data[:n],
+					},
+				}})
+			if sendErr == io.EOF {
+				return sendErr
+			}
+
+			if sendErr != nil {
+				return errors.Wrap(sendErr, "StageFile chunk send failed")
+			}
+		}
+
+		if err == io.EOF {
+			sendErr := stream.Send(&jobpb.ArtifactResponseWrapper{
+				IsLast: true,
+				Response: &jobpb.ArtifactResponseWrapper_GetArtifactResponse{
+					GetArtifactResponse: &jobpb.GetArtifactResponse{},
+				}})
+			return sendErr
+		}
+
+		if err != nil {
+			return err
+		}
+	}
 }

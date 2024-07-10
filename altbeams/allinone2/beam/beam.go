@@ -21,7 +21,6 @@ import (
 	"github.com/lostluck/experimental/altbeams/allinone2/beam/internal/harness"
 	fnpb "github.com/lostluck/experimental/altbeams/allinone2/beam/internal/model/fnexecution_v1"
 	pipepb "github.com/lostluck/experimental/altbeams/allinone2/beam/internal/model/pipeline_v1"
-	"github.com/lostluck/experimental/altbeams/allinone2/beam/internal/runner/prism"
 	"github.com/lostluck/experimental/altbeams/allinone2/beam/internal/runner/universal"
 	"google.golang.org/protobuf/proto"
 )
@@ -173,27 +172,13 @@ var (
 	controlEndpoint = flag.String("control_endpoint", "", "Local control gRPC endpoint (required in worker mode).")
 	//lint:ignore U1000 semiPersistDir flag is passed in through the boot container, will need to be removed later
 	semiPersistDir = flag.String("semi_persist_dir", "/tmp", "Local semi-persistent directory (optional in worker mode).")
-	options        = flag.String("options", "", "JSON-encoded pipeline options (required in worker mode). (deprecated)")
+
+	useDocker  = flag.Bool("use_docker", false, "Use docker for workers instead of loopback. Temp flag for iteration.")
+	useProcess = flag.Bool("use_process", false, "Spawn a boot container process for workers instead of loopback. Temp flag for iteration.")
 )
 
 // Run begins executes the pipeline built in the construction function.
 func Run(ctx context.Context, expand func(*Scope) error, opts ...Options) (Pipeline, error) {
-	if !flag.Parsed() {
-		flag.Parse()
-		if *worker {
-			panic("I AM A WORKER")
-			// TODO have harness initialization respect to container flags.
-			// TODO build/use current binary for uploading
-			// TODO update the pipeline artifacts with the binary.
-		}
-	}
-	fmt.Println("beam.Run: flags:", os.Args)
-	if err := prism.Start(ctx, prism.Options{
-		Location: "/home/lostluck/git/beam/sdks/go/cmd/prism/prism",
-	}); err != nil {
-		return Pipeline{}, err
-	}
-
 	// TODO extract job port selection
 	opt := beamopts.Struct{
 		Endpoint: "localhost:8073",
@@ -213,33 +198,88 @@ func Run(ctx context.Context, expand func(*Scope) error, opts ...Options) (Pipel
 	typeReg := map[string]reflect.Type{}
 	pipe := g.marshal(typeReg)
 
-	// TODO(BEAM-10610): Allow user configuration of this port, rather than kernel selected.
-	srv, err := extworker.StartLoopback(ctx, 0, executeSubgraph(typeReg))
+	fmt.Println("beam.Run: flags:", os.Args)
 
-	if err != nil {
-		return Pipeline{}, err
+	if !flag.Parsed() {
+		flag.Parse()
+		if *worker {
+			err := harness.Main(ctx, *controlEndpoint, harness.Options{
+				LoggingEndpoint: *loggingEndpoint,
+				// Pull from environment variables.
+				// StatusEndpoint: *TODO,
+				// RunnerCapabilities:  TODO,
+			}, executeSubgraph(typeReg))
+			return Pipeline{}, err
+		}
 	}
-	defer srv.Stop(ctx)
-	serializedPayload, err := proto.Marshal(&pipepb.ExternalPayload{Endpoint: &pipepb.ApiServiceDescriptor{Url: srv.EnvironmentConfig(ctx)}})
-	if err != nil {
-		return Pipeline{}, err
-	}
-	env := &pipepb.Environment{
-		Urn:          "beam:env:external:v1",
-		Payload:      serializedPayload,
-		Capabilities: nil, // TODO
-	}
-	// TODO have harness initialization respect container flags.
-	// serializedPayload, err := proto.Marshal(&pipepb.DockerPayload{ContainerImage: "apache/beam_go_sdk:2.57.0"})
-	// if err != nil {
+
+	// if err := prism.Start(ctx, prism.Options{
+	// 	Location: "/home/lostluck/git/beam/sdks/go/cmd/prism/prism",
+	// }); err != nil {
 	// 	return Pipeline{}, err
 	// }
 
-	// env := &pipepb.Environment{
-	// 	Urn:          "beam:env:docker:v1",
-	// 	Payload:      serializedPayload,
-	// 	Capabilities: nil, // TODO
-	// }
+	var env *pipepb.Environment
+	if !*useProcess {
+		// TODO(BEAM-10610): Allow user configuration of this port, rather than kernel selected.
+		srv, err := extworker.StartLoopback(ctx, 0, executeSubgraph(typeReg))
+		if err != nil {
+			return Pipeline{}, err
+		}
+		defer srv.Stop(ctx)
+		serializedPayload, err := proto.Marshal(&pipepb.ProcessPayload{
+			Command: "/home/lostluck/git/beam/sdks/go/container/boot",
+		})
+		if err != nil {
+			return Pipeline{}, err
+		}
+		env = &pipepb.Environment{
+			Urn:          "beam:env:external:v1",
+			Payload:      serializedPayload,
+			Capabilities: nil, // TODO
+		}
+	} else if !*useDocker {
+		// TODO(BEAM-10610): Allow user configuration of this port, rather than kernel selected.
+		srv, err := extworker.StartLoopback(ctx, 0, executeSubgraph(typeReg))
+
+		if err != nil {
+			return Pipeline{}, err
+		}
+		defer srv.Stop(ctx)
+		serializedPayload, err := proto.Marshal(&pipepb.ExternalPayload{Endpoint: &pipepb.ApiServiceDescriptor{Url: srv.EnvironmentConfig(ctx)}})
+		if err != nil {
+			return Pipeline{}, err
+		}
+		env = &pipepb.Environment{
+			Urn:          "beam:env:external:v1",
+			Payload:      serializedPayload,
+			Capabilities: nil, // TODO
+		}
+	} else {
+		serializedPayload, err := proto.Marshal(&pipepb.DockerPayload{ContainerImage: "apache/beam_go_sdk:latest"}) // 2.57.0"})
+		if err != nil {
+			return Pipeline{}, err
+		}
+		serializedBinPayload, err := proto.Marshal(&pipepb.ArtifactFilePayload{
+			Path: os.Args[0], // Recompile or similar.
+		})
+		if err != nil {
+			return Pipeline{}, err
+		}
+
+		env = &pipepb.Environment{
+			Urn:          "beam:env:docker:v1",
+			Payload:      serializedPayload,
+			Capabilities: nil, // TODO
+			Dependencies: []*pipepb.ArtifactInformation{
+				{
+					TypeUrn:     "beam:artifact:type:file:v1",
+					TypePayload: serializedBinPayload,
+					RoleUrn:     "beam:artifact:role:go_worker_binary:v1",
+				},
+			},
+		}
+	}
 	pipe.Components.Environments["go"] = env
 	handle, err := universal.Execute(ctx, pipe, opt)
 	if err != nil {
