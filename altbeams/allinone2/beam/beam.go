@@ -13,9 +13,11 @@ import (
 	"os"
 	"reflect"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 
+	"github.com/go-json-experiment/json"
 	"github.com/lostluck/experimental/altbeams/allinone2/beam/internal/beamopts"
 	"github.com/lostluck/experimental/altbeams/allinone2/beam/internal/extworker"
 	"github.com/lostluck/experimental/altbeams/allinone2/beam/internal/harness"
@@ -161,21 +163,44 @@ func Expand[I Composite[O], O any](parent *Scope, name string, comp I) O {
 	return comp.Expand(s)
 }
 
-// TODO do worker initialization better.
-var (
-	// These flags handle the invocation by the container boot code.
+type envFlags struct {
+	// EnvironmentType is the environment type to run the user code.
+	EnvironmentType string
 
-	worker = flag.Bool("worker", false, "Whether binary is running in worker mode.")
+	// EnvironmentConfig is the environment configuration for running the user code.
+	EnvironmentConfig string
+}
 
-	id              = flag.String("id", "", "Local identifier (required in worker mode).")
-	loggingEndpoint = flag.String("logging_endpoint", "", "Local logging gRPC endpoint (required in worker mode).")
-	controlEndpoint = flag.String("control_endpoint", "", "Local control gRPC endpoint (required in worker mode).")
-	//lint:ignore U1000 semiPersistDir flag is passed in through the boot container, will need to be removed later
-	semiPersistDir = flag.String("semi_persist_dir", "/tmp", "Local semi-persistent directory (optional in worker mode).")
+func initEnvFlags(fs *flag.FlagSet) *envFlags {
+	var ef envFlags
+	fs.StringVar(&ef.EnvironmentType, "environment_type", "DOCKER",
+		"Environment Type. Possible options are DOCKER, and LOOPBACK.")
+	fs.StringVar(&ef.EnvironmentConfig, "environment_config",
+		"",
+		"Set environment configuration for running the user code.\n"+
+			"For DOCKER: Url for the docker image.\n"+
+			"For PROCESS: json of the form {\"os\": \"<OS>\", "+
+			"\"arch\": \"<ARCHITECTURE>\", \"command\": \"<process to execute>\", "+
+			"\"env\":{\"<Environment variables>\": \"<ENV_VAL>\"} }. "+
+			"All fields in the json are optional except command.")
+	return &ef
+}
 
-	useDocker  = flag.Bool("use_docker", false, "Use docker for workers instead of loopback. Temp flag for iteration.")
-	useProcess = flag.Bool("use_process", false, "Spawn a boot container process for workers instead of loopback. Temp flag for iteration.")
-)
+type workerFlags struct {
+	Worker          bool   // Whether we're operating as a worker or not.
+	ID              string // The worker identity of this process.
+	LoggingEndpoint string // The logging service endpoint
+	ControlEndpoint string // The logging service endpoint
+}
+
+func initWorkerFlags(fs *flag.FlagSet) *workerFlags {
+	var wf workerFlags
+	fs.BoolVar(&wf.Worker, "worker", false, "Whether binary is running in worker mode.")
+	fs.StringVar(&wf.ID, "id", "", "Local identifier (required in worker mode).")
+	fs.StringVar(&wf.LoggingEndpoint, "logging_endpoint", "", "Local logging gRPC endpoint (required in worker mode).")
+	fs.StringVar(&wf.ControlEndpoint, "control_endpoint", "", "Local control gRPC endpoint (required in worker mode).")
+	return &wf
+}
 
 // Run begins executes the pipeline built in the construction function.
 func Run(ctx context.Context, expand func(*Scope) error, opts ...Options) (Pipeline, error) {
@@ -200,17 +225,25 @@ func Run(ctx context.Context, expand func(*Scope) error, opts ...Options) (Pipel
 
 	fmt.Println("beam.Run: flags:", os.Args)
 
+	var ef *envFlags
+	var wf *workerFlags
 	if !flag.Parsed() {
+		wf = initWorkerFlags(flag.CommandLine)
+		ef = initEnvFlags(flag.CommandLine)
 		flag.Parse()
-		if *worker {
-			err := harness.Main(ctx, *controlEndpoint, harness.Options{
-				LoggingEndpoint: *loggingEndpoint,
-				// Pull from environment variables.
-				// StatusEndpoint: *TODO,
-				// RunnerCapabilities:  TODO,
-			}, executeSubgraph(typeReg))
-			return Pipeline{}, err
-		}
+	}
+	// Worker
+	if wf.Worker {
+		fmt.Println("starting worker", wf.ID)
+		// TODO move this into harness directly
+		ctx = extworker.WriteWorkerID(ctx, wf.ID)
+		err := harness.Main(ctx, wf.ControlEndpoint, harness.Options{
+			LoggingEndpoint: wf.LoggingEndpoint,
+			// Pull from environment variables.
+			// StatusEndpoint: *TODO,
+			// RunnerCapabilities:  TODO,
+		}, executeSubgraph(typeReg))
+		return Pipeline{}, err
 	}
 
 	// if err := prism.Start(ctx, prism.Options{
@@ -220,42 +253,34 @@ func Run(ctx context.Context, expand func(*Scope) error, opts ...Options) (Pipel
 	// }
 
 	var env *pipepb.Environment
-	if !*useProcess {
-		// TODO(BEAM-10610): Allow user configuration of this port, rather than kernel selected.
-		srv, err := extworker.StartLoopback(ctx, 0, executeSubgraph(typeReg))
-		if err != nil {
-			return Pipeline{}, err
+	switch strings.ToLower(ef.EnvironmentType) {
+	case "process":
+		raw := &pipepb.ProcessPayload{
+			// Command: "/home/lostluck/git/beam/sdks/go/container/boot",
 		}
-		defer srv.Stop(ctx)
-		serializedPayload, err := proto.Marshal(&pipepb.ProcessPayload{
-			Command: "/home/lostluck/git/beam/sdks/go/container/boot",
+		if err := json.Unmarshal([]byte(ef.EnvironmentConfig), raw); err != nil {
+			return Pipeline{}, fmt.Errorf("Unable to json unmarshal --environment_config: %w", err)
+		}
+		serializedPayload, err := proto.Marshal(raw)
+		if err != nil {
+			return Pipeline{}, fmt.Errorf("Unable to marshal ProcessPayload proto: %w", err)
+		}
+		serializedBinPayload, err := proto.Marshal(&pipepb.ArtifactFilePayload{
+			Path: os.Args[0], // Recompile or similar.
 		})
-		if err != nil {
-			return Pipeline{}, err
-		}
 		env = &pipepb.Environment{
-			Urn:          "beam:env:external:v1",
+			Urn:          "beam:env:process:v1",
 			Payload:      serializedPayload,
 			Capabilities: nil, // TODO
+			Dependencies: []*pipepb.ArtifactInformation{
+				{
+					TypeUrn:     "beam:artifact:type:file:v1",
+					TypePayload: serializedBinPayload,
+					RoleUrn:     "beam:artifact:role:go_worker_binary:v1",
+				},
+			},
 		}
-	} else if !*useDocker {
-		// TODO(BEAM-10610): Allow user configuration of this port, rather than kernel selected.
-		srv, err := extworker.StartLoopback(ctx, 0, executeSubgraph(typeReg))
-
-		if err != nil {
-			return Pipeline{}, err
-		}
-		defer srv.Stop(ctx)
-		serializedPayload, err := proto.Marshal(&pipepb.ExternalPayload{Endpoint: &pipepb.ApiServiceDescriptor{Url: srv.EnvironmentConfig(ctx)}})
-		if err != nil {
-			return Pipeline{}, err
-		}
-		env = &pipepb.Environment{
-			Urn:          "beam:env:external:v1",
-			Payload:      serializedPayload,
-			Capabilities: nil, // TODO
-		}
-	} else {
+	case "docker":
 		serializedPayload, err := proto.Marshal(&pipepb.DockerPayload{ContainerImage: "apache/beam_go_sdk:latest"}) // 2.57.0"})
 		if err != nil {
 			return Pipeline{}, err
@@ -279,6 +304,28 @@ func Run(ctx context.Context, expand func(*Scope) error, opts ...Options) (Pipel
 				},
 			},
 		}
+	case "":
+		fallthrough // TODO determine a better default mechanism than loopback. Multi-arch?
+	case "loopback":
+		// TODO(BEAM-10610): Allow user configuration of this port, rather than kernel selected.
+		srv, err := extworker.StartLoopback(ctx, 0, executeSubgraph(typeReg))
+		if err != nil {
+			return Pipeline{}, err
+		}
+		defer srv.Stop(ctx)
+		serializedPayload, err := proto.Marshal(&pipepb.ExternalPayload{
+			Endpoint: &pipepb.ApiServiceDescriptor{Url: srv.EnvironmentConfig(ctx)},
+		})
+		if err != nil {
+			return Pipeline{}, err
+		}
+		env = &pipepb.Environment{
+			Urn:          "beam:env:external:v1",
+			Payload:      serializedPayload,
+			Capabilities: nil, // TODO
+		}
+	default:
+		panic(fmt.Sprintf("invalid environment_type: got %v, want PROCESS, DOCKER, or LOOPBACK", ef.EnvironmentType))
 	}
 	pipe.Components.Environments["go"] = env
 	handle, err := universal.Execute(ctx, pipe, opt)
