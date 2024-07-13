@@ -164,17 +164,19 @@ func Expand[I Composite[O], O any](parent *Scope, name string, comp I) O {
 }
 
 type envFlags struct {
+	// Endpoint directs the universal environment to an existing JobManagement instance.
+	Endpoint string
 	// EnvironmentType is the environment type to run the user code.
 	EnvironmentType string
-
 	// EnvironmentConfig is the environment configuration for running the user code.
 	EnvironmentConfig string
 }
 
 func initEnvFlags(fs *flag.FlagSet) *envFlags {
 	var ef envFlags
-	fs.StringVar(&ef.EnvironmentType, "environment_type", "DOCKER",
-		"Environment Type. Possible options are DOCKER, and LOOPBACK.")
+	fs.StringVar(&ef.Endpoint, "endpoint", "", "Endpoint for a JobManagement service.")
+	fs.StringVar(&ef.EnvironmentType, "environment_type", "LOOPBACK",
+		"Environment Type. Possible options are DOCKER, PROCESS, and LOOPBACK.")
 	fs.StringVar(&ef.EnvironmentConfig, "environment_config",
 		"",
 		"Set environment configuration for running the user code.\n"+
@@ -189,8 +191,9 @@ func initEnvFlags(fs *flag.FlagSet) *envFlags {
 type workerFlags struct {
 	Worker          bool   // Whether we're operating as a worker or not.
 	ID              string // The worker identity of this process.
-	LoggingEndpoint string // The logging service endpoint
-	ControlEndpoint string // The logging service endpoint
+	LoggingEndpoint string // The Logging service endpoint
+	ControlEndpoint string // The Control service endpoint
+	SemiPersist     string // The Semi persist directory. Deprecated.
 }
 
 func initWorkerFlags(fs *flag.FlagSet) *workerFlags {
@@ -199,17 +202,12 @@ func initWorkerFlags(fs *flag.FlagSet) *workerFlags {
 	fs.StringVar(&wf.ID, "id", "", "Local identifier (required in worker mode).")
 	fs.StringVar(&wf.LoggingEndpoint, "logging_endpoint", "", "Local logging gRPC endpoint (required in worker mode).")
 	fs.StringVar(&wf.ControlEndpoint, "control_endpoint", "", "Local control gRPC endpoint (required in worker mode).")
+	fs.StringVar(&wf.SemiPersist, "semi_persist_dir", "", "Deprecated.")
 	return &wf
 }
 
 // Run begins executes the pipeline built in the construction function.
 func Run(ctx context.Context, expand func(*Scope) error, opts ...Options) (Pipeline, error) {
-	// TODO extract job port selection
-	opt := beamopts.Struct{
-		Endpoint: "localhost:8073",
-	}
-	opt.Join(opts...)
-
 	var g graph
 	s := &Scope{parent: nil, g: &g}
 	g.root = s
@@ -232,6 +230,11 @@ func Run(ctx context.Context, expand func(*Scope) error, opts ...Options) (Pipel
 		ef = initEnvFlags(flag.CommandLine)
 		flag.Parse()
 	}
+	opt := beamopts.Struct{
+		Endpoint: ef.Endpoint,
+	}
+	opt.Join(opts...)
+
 	// Worker
 	if wf.Worker {
 		fmt.Println("starting worker", wf.ID)
@@ -265,44 +268,19 @@ func Run(ctx context.Context, expand func(*Scope) error, opts ...Options) (Pipel
 		if err != nil {
 			return Pipeline{}, fmt.Errorf("Unable to marshal ProcessPayload proto: %w", err)
 		}
-		serializedBinPayload, err := proto.Marshal(&pipepb.ArtifactFilePayload{
-			Path: os.Args[0], // Recompile or similar.
-		})
 		env = &pipepb.Environment{
 			Urn:          "beam:env:process:v1",
 			Payload:      serializedPayload,
 			Capabilities: nil, // TODO
-			Dependencies: []*pipepb.ArtifactInformation{
-				{
-					TypeUrn:     "beam:artifact:type:file:v1",
-					TypePayload: serializedBinPayload,
-					RoleUrn:     "beam:artifact:role:go_worker_binary:v1",
-				},
-			},
 		}
 	case "docker":
 		serializedPayload, err := proto.Marshal(&pipepb.DockerPayload{ContainerImage: "apache/beam_go_sdk:latest"}) // 2.57.0"})
 		if err != nil {
 			return Pipeline{}, err
 		}
-		serializedBinPayload, err := proto.Marshal(&pipepb.ArtifactFilePayload{
-			Path: os.Args[0], // Recompile or similar.
-		})
-		if err != nil {
-			return Pipeline{}, err
-		}
-
 		env = &pipepb.Environment{
-			Urn:          "beam:env:docker:v1",
-			Payload:      serializedPayload,
-			Capabilities: nil, // TODO
-			Dependencies: []*pipepb.ArtifactInformation{
-				{
-					TypeUrn:     "beam:artifact:type:file:v1",
-					TypePayload: serializedBinPayload,
-					RoleUrn:     "beam:artifact:role:go_worker_binary:v1",
-				},
-			},
+			Urn:     "beam:env:docker:v1",
+			Payload: serializedPayload,
 		}
 	case "":
 		fallthrough // TODO determine a better default mechanism than loopback. Multi-arch?
@@ -320,13 +298,29 @@ func Run(ctx context.Context, expand func(*Scope) error, opts ...Options) (Pipel
 			return Pipeline{}, err
 		}
 		env = &pipepb.Environment{
-			Urn:          "beam:env:external:v1",
-			Payload:      serializedPayload,
-			Capabilities: nil, // TODO
+			Urn:     "beam:env:external:v1",
+			Payload: serializedPayload,
 		}
 	default:
 		panic(fmt.Sprintf("invalid environment_type: got %v, want PROCESS, DOCKER, or LOOPBACK", ef.EnvironmentType))
 	}
+	// Only add deps outside of loopback/external mode.
+	if env.Urn != "beam:env:external:v1" {
+		serializedBinPayload, err := proto.Marshal(&pipepb.ArtifactFilePayload{
+			Path: os.Args[0], // Recompile or similar.
+		})
+		if err != nil {
+			return Pipeline{}, err
+		}
+		env.Dependencies = []*pipepb.ArtifactInformation{
+			{
+				TypeUrn:     "beam:artifact:type:file:v1",
+				TypePayload: serializedBinPayload,
+				RoleUrn:     "beam:artifact:role:go_worker_binary:v1",
+			},
+		}
+	}
+	env.Capabilities = nil // TODO
 	pipe.Components.Environments["go"] = env
 	handle, err := universal.Execute(ctx, pipe, opt)
 	if err != nil {

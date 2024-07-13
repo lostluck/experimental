@@ -144,7 +144,7 @@ func main() {
 			Name: "DiscardFn",
 		}, beam.Name("sink"))
 		return nil
-	}, beam.Name("testjob"), beam.Endpoint("localhost:8073"))
+	}, beam.Name("testjob"))
 
 	if err != nil {
 		fmt.Println("error:", err)
