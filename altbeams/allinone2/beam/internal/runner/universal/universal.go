@@ -224,6 +224,10 @@ type Results struct {
 func (r *Results) UserCounters() map[string]int64 {
 	cs := map[string]int64{}
 	for _, mon := range r.res.GetCommitted() {
+		// TODO also report PCollection metrics.
+		if mon.Urn != "beam:metric:user:sum_int64:v1" {
+			continue
+		}
 		if mon.Type != "beam:metrics:sum_int64:v1" {
 			continue
 		}
