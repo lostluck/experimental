@@ -23,6 +23,7 @@ import (
 	"github.com/lostluck/experimental/altbeams/allinone2/beam/internal/harness"
 	fnpb "github.com/lostluck/experimental/altbeams/allinone2/beam/internal/model/fnexecution_v1"
 	pipepb "github.com/lostluck/experimental/altbeams/allinone2/beam/internal/model/pipeline_v1"
+	"github.com/lostluck/experimental/altbeams/allinone2/beam/internal/runner/prism"
 	"github.com/lostluck/experimental/altbeams/allinone2/beam/internal/runner/universal"
 	"google.golang.org/protobuf/proto"
 )
@@ -175,7 +176,7 @@ type envFlags struct {
 func initEnvFlags(fs *flag.FlagSet) *envFlags {
 	var ef envFlags
 	fs.StringVar(&ef.Endpoint, "endpoint", "", "Endpoint for a JobManagement service.")
-	fs.StringVar(&ef.EnvironmentType, "environment_type", "LOOPBACK",
+	fs.StringVar(&ef.EnvironmentType, "environment_type", "",
 		"Environment Type. Possible options are DOCKER, PROCESS, and LOOPBACK.")
 	fs.StringVar(&ef.EnvironmentConfig, "environment_config",
 		"",
@@ -208,6 +209,10 @@ func initWorkerFlags(fs *flag.FlagSet) *workerFlags {
 
 // Run begins executes the pipeline built in the construction function.
 func Run(ctx context.Context, expand func(*Scope) error, opts ...Options) (Pipeline, error) {
+	// TODO move all cancellation signals to hang on passed in context.
+	ctx, cancelCtxFn := context.WithCancel(ctx)
+	// TODO move this onto the pipeline object for async streaming.
+	defer cancelCtxFn()
 	var g graph
 	s := &Scope{parent: nil, g: &g}
 	g.root = s
@@ -223,19 +228,15 @@ func Run(ctx context.Context, expand func(*Scope) error, opts ...Options) (Pipel
 
 	fmt.Println("beam.Run: flags:", os.Args)
 
-	var ef *envFlags
-	var wf *workerFlags
+	ef := new(envFlags)
+	wf := new(workerFlags)
 	if !flag.Parsed() {
 		wf = initWorkerFlags(flag.CommandLine)
 		ef = initEnvFlags(flag.CommandLine)
 		flag.Parse()
 	}
-	opt := beamopts.Struct{
-		Endpoint: ef.Endpoint,
-	}
-	opt.Join(opts...)
 
-	// Worker
+	// Workers don't escape this if block.
 	if wf.Worker {
 		fmt.Println("starting worker", wf.ID)
 		// TODO move this into harness directly
@@ -248,61 +249,39 @@ func Run(ctx context.Context, expand func(*Scope) error, opts ...Options) (Pipel
 		}, executeSubgraph(typeReg))
 		return Pipeline{}, err
 	}
-
-	// if err := prism.Start(ctx, prism.Options{
-	// 	Location: "/home/lostluck/git/beam/sdks/go/cmd/prism/prism",
-	// }); err != nil {
-	// 	return Pipeline{}, err
-	// }
-
-	var env *pipepb.Environment
-	switch strings.ToLower(ef.EnvironmentType) {
-	case "process":
-		raw := &pipepb.ProcessPayload{
-			// Command: "/home/lostluck/git/beam/sdks/go/container/boot",
-		}
-		if err := json.Unmarshal([]byte(ef.EnvironmentConfig), raw); err != nil {
-			return Pipeline{}, fmt.Errorf("Unable to json unmarshal --environment_config: %w", err)
-		}
-		serializedPayload, err := proto.Marshal(raw)
-		if err != nil {
-			return Pipeline{}, fmt.Errorf("Unable to marshal ProcessPayload proto: %w", err)
-		}
-		env = &pipepb.Environment{
-			Urn:          "beam:env:process:v1",
-			Payload:      serializedPayload,
-			Capabilities: nil, // TODO
-		}
-	case "docker":
-		serializedPayload, err := proto.Marshal(&pipepb.DockerPayload{ContainerImage: "apache/beam_go_sdk:latest"}) // 2.57.0"})
-		if err != nil {
-			return Pipeline{}, err
-		}
-		env = &pipepb.Environment{
-			Urn:     "beam:env:docker:v1",
-			Payload: serializedPayload,
-		}
-	case "":
-		fallthrough // TODO determine a better default mechanism than loopback. Multi-arch?
-	case "loopback":
-		// TODO(BEAM-10610): Allow user configuration of this port, rather than kernel selected.
-		srv, err := extworker.StartLoopback(ctx, 0, executeSubgraph(typeReg))
-		if err != nil {
-			return Pipeline{}, err
-		}
-		defer srv.Stop(ctx)
-		serializedPayload, err := proto.Marshal(&pipepb.ExternalPayload{
-			Endpoint: &pipepb.ApiServiceDescriptor{Url: srv.EnvironmentConfig(ctx)},
+	// If we don't have a remote endpoint, start a local prism process.
+	// TODO how to better override default location for development.
+	if ef.Endpoint == "" {
+		cancelFn, err := prism.Start(ctx, prism.Options{
+			Location: "/home/lostluck/git/beam/sdks/go/cmd/prism/prism",
+			// TODO pick a port and pass it down.
 		})
 		if err != nil {
 			return Pipeline{}, err
 		}
-		env = &pipepb.Environment{
-			Urn:     "beam:env:external:v1",
-			Payload: serializedPayload,
+		// TODO: ensure external processes started are shutdown blocking
+		// Otherwise we leave dangling processes around.
+		// TODO determine the right way to handle testing.
+		defer cancelFn()
+		ef.Endpoint = "localhost:8073"
+		// If unset, use loopback mode when using default prism.
+		if ef.EnvironmentType == "" {
+			ef.EnvironmentType = "LOOPBACK"
 		}
-	default:
-		panic(fmt.Sprintf("invalid environment_type: got %v, want PROCESS, DOCKER, or LOOPBACK", ef.EnvironmentType))
+	}
+	if ef.EnvironmentType == "" {
+		ef.EnvironmentType = "DOCKER"
+	}
+	// INVARIANT: ef.EnvironmentType must be set past this point.
+
+	opt := beamopts.Struct{
+		Endpoint: ef.Endpoint,
+	}
+	opt.Join(opts...)
+
+	env, err := extractEnv(ctx, ef, typeReg)
+	if err != nil {
+		return Pipeline{}, fmt.Errorf("error configuring pipeline environment: %w", err)
 	}
 	// Only add deps outside of loopback/external mode.
 	if env.Urn != "beam:env:external:v1" {
@@ -322,6 +301,7 @@ func Run(ctx context.Context, expand func(*Scope) error, opts ...Options) (Pipel
 	}
 	env.Capabilities = nil // TODO
 	pipe.Components.Environments["go"] = env
+
 	handle, err := universal.Execute(ctx, pipe, opt)
 	if err != nil {
 		return Pipeline{}, err
@@ -336,6 +316,71 @@ func Run(ctx context.Context, expand func(*Scope) error, opts ...Options) (Pipel
 		Counters: r.UserCounters(),
 	}
 	return p, nil
+}
+
+// ExtractEnv takes the current environment configuration and pipeline pre-build
+// and produces the environment proto for the runner.
+func extractEnv(ctx context.Context, ef *envFlags, typeReg map[string]reflect.Type) (*pipepb.Environment, error) {
+	var env *pipepb.Environment
+	switch strings.ToLower(ef.EnvironmentType) {
+	case "process":
+		if ef.EnvironmentType == "" {
+			return nil, fmt.Errorf("environment_type PROCESS requires environment_config flag to be set.")
+		}
+		raw := &pipepb.ProcessPayload{}
+		if err := json.Unmarshal([]byte(ef.EnvironmentConfig), raw); err != nil {
+			return nil, fmt.Errorf("Unable to json unmarshal --environment_config: %w", err)
+		}
+		serializedPayload, err := proto.Marshal(raw)
+		if err != nil {
+			return nil, fmt.Errorf("Unable to marshal ProcessPayload proto: %w", err)
+		}
+		env = &pipepb.Environment{
+			Urn:          "beam:env:process:v1",
+			Payload:      serializedPayload,
+			Capabilities: nil,
+		}
+	case "docker":
+		if ef.EnvironmentConfig == "" {
+			ef.EnvironmentConfig = "apache/beam_go_sdk:latest"
+		}
+		serializedPayload, err := proto.Marshal(&pipepb.DockerPayload{
+			// TODO set this to track some specific version.
+			ContainerImage: ef.EnvironmentConfig,
+		})
+		if err != nil {
+			return nil, err
+		}
+		env = &pipepb.Environment{
+			Urn:     "beam:env:docker:v1",
+			Payload: serializedPayload,
+		}
+	case "loopback":
+		srv, err := extworker.StartLoopback(ctx, 0, executeSubgraph(typeReg))
+		if err != nil {
+			return nil, err
+		}
+		// Kill the inprocess server once the context is canceled.
+		go func() {
+			select {
+			case <-ctx.Done():
+				srv.Stop(ctx)
+			}
+		}()
+		serializedPayload, err := proto.Marshal(&pipepb.ExternalPayload{
+			Endpoint: &pipepb.ApiServiceDescriptor{Url: srv.EnvironmentConfig(ctx)},
+		})
+		if err != nil {
+			return nil, err
+		}
+		env = &pipepb.Environment{
+			Urn:     "beam:env:external:v1",
+			Payload: serializedPayload,
+		}
+	default:
+		return nil, fmt.Errorf("invalid environment_type: got %v, want PROCESS, DOCKER, or LOOPBACK", ef.EnvironmentType)
+	}
+	return env, nil
 }
 
 func executeSubgraph(typeReg map[string]reflect.Type) harness.ExecFunc {

@@ -13,8 +13,6 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
-	"sync"
-	"sync/atomic"
 )
 
 // TODO: Allow configuration of port/ return of auto selected ports.
@@ -112,35 +110,18 @@ type Options struct {
 	Location string // if specified, indicates where a prism binary or zip of the binary can be found.
 }
 
-// TODO handle multiple configurations of prism.
-var (
-	active  sync.WaitGroup
-	started atomic.Bool
-)
-
 // Start downloads and begins a prism process.
 //
-// TODO return port or other info back up? Receive other options?
-func Start(ctx context.Context, opts Options) error {
-	active.Add(1)
-	go func() {
-		select {
-		case <-ctx.Done():
-			active.Done()
-		}
-	}()
-	if started.Load() {
-		// We're done here.
-		return nil
-	}
-
+// Returns a cancellation function to be called once the process is no
+// longer needed.
+func Start(ctx context.Context, opts Options) (func(), error) {
 	localPath := opts.Location
 	if localPath == "" {
 		url := constructDownloadPath(beamVersion, beamVersion)
 
 		// Ensure the cache exists.
 		if err := os.MkdirAll(prismBinCache, 0777); err != nil {
-			return err
+			return nil, err
 		}
 		basename := path.Base(url)
 		localPath = filepath.Join(prismBinCache, basename)
@@ -148,14 +129,14 @@ func Start(ctx context.Context, opts Options) error {
 		if _, err := os.Stat(localPath); err != nil {
 			// Assume the file doesn't exist.
 			if err := downloadToCache(url, localPath); err != nil {
-				return fmt.Errorf("couldn't download %v to cache %s: %w", url, localPath, err)
+				return nil, fmt.Errorf("couldn't download %v to cache %s: %w", url, localPath, err)
 			}
 		}
 	}
 	bin, err := unzipCachedFile(localPath, prismBinCache)
 	if err != nil {
 		if !errors.Is(err, zip.ErrFormat) {
-			return fmt.Errorf("couldn't unzip %q: %w", localPath, err)
+			return nil, fmt.Errorf("couldn't unzip %q: %w", localPath, err)
 		}
 		// If it's a format error, assume it's an executable.
 		bin = localPath
@@ -163,15 +144,11 @@ func Start(ctx context.Context, opts Options) error {
 
 	cmd := exec.Command(bin)
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("couldn't start command %q: %w", bin, err)
+		return nil, fmt.Errorf("couldn't start command %q: %w", bin, err)
 	}
 	fmt.Println("started prism")
-	started.Store(true)
-	go func() {
-		active.Wait()
+	return func() {
 		cmd.Process.Kill()
-		started.Store(false)
 		fmt.Println("killed prism")
-	}()
-	return nil
+	}, nil
 }
