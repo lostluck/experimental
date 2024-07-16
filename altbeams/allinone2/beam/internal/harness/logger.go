@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime"
+	"slices"
 	"time"
 
 	"github.com/jba/slog/withsupport"
@@ -28,8 +29,25 @@ func (h *loggingHandler) WithGroup(name string) slog.Handler {
 	return &loggingHandler{h.opts, h.with.WithGroup(name), h.out}
 }
 
+// TransformID will be provided to cached loggers under the hood.
+// So we only need to look for it in WithAttrs, and not when handling
+// a record. 
+const transformIDKey = "beamTransformID"
+
+func withTransformID(tid string) slog.Attr {
+	return slog.Attr{Key: transformIDKey, Value: slog.StringValue(tid)}
+}
+
 func (h *loggingHandler) WithAttrs(as []slog.Attr) slog.Handler {
-	return &loggingHandler{h.opts, h.with.WithAttrs(as), h.out}
+	newOpts := h.opts
+	for i, a := range as {
+		if a.Key == transformIDKey {
+			newOpts.TransformId = a.Value.String()
+			as = slices.Delete(as, i, i)
+			break
+		}
+	}
+	return &loggingHandler{newOpts, h.with.WithAttrs(as), h.out}
 }
 
 type handlerOptions struct {

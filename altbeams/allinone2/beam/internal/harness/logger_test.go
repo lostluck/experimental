@@ -14,11 +14,11 @@ func TestSlogtest(t *testing.T) {
 	slogtest.Run(t,
 		func(_ *testing.T) slog.Handler { return newLoggingHandler(out, nil) },
 		func(_ *testing.T) map[string]any {
-			return parseLogEntries(t, <-out)
+			return parseLogEntries(<-out)
 		})
 }
 
-func parseLogEntries(t *testing.T, data *fnpb.LogEntry) map[string]any {
+func parseLogEntries(data *fnpb.LogEntry) map[string]any {
 	m := map[string]any{
 		slog.MessageKey: data.Message,
 	}
@@ -35,8 +35,6 @@ func parseLogEntries(t *testing.T, data *fnpb.LogEntry) map[string]any {
 	for k, v := range structToMap(data.CustomData) {
 		m[k] = v
 	}
-	t.Log(m)
-
 	return m
 }
 
@@ -51,4 +49,42 @@ func structToMap(s *structpb.Struct) map[string]any {
 		}
 	}
 	return m
+}
+
+func TestWithTransformID(t *testing.T) {
+	out := make(chan *fnpb.LogEntry, 100)
+	want := handlerOptions{
+		InstID: "testInstruction",
+	}
+
+	l := slog.New(newLoggingHandler(out, &want))
+	l.Info("testMsg1")
+
+	got := <-out
+	if got.InstructionId != string(want.InstID) {
+		t.Errorf("logging handler didn't set InstructionID, got %q want %q", got.InstructionId, want.InstID)
+	}
+	if got.TransformId != want.TransformId {
+		t.Errorf("logging handler didn't set TransformId, got %q want %q", got.TransformId, want.TransformId)
+	}
+
+	want.TransformId = "testTransformID"
+	l2 := l.With(withTransformID(want.TransformId))
+
+	l2.Info("testMsg2")
+
+	got = <-out
+	if got.InstructionId != string(want.InstID) {
+		t.Errorf("logging handler didn't set InstructionID, got %q want %q", got.InstructionId, want.InstID)
+	}
+	if got.TransformId != want.TransformId {
+		t.Errorf("logging handler didn't set TransformId, got %q want %q", got.TransformId, want.TransformId)
+	}
+
+	// The original logger should still have an unset transform id.
+	l.Warn("testMsg1")
+	got = <-out
+	if got.TransformId != "" {
+		t.Errorf("initial logging handler is aliasing TransformId, got %q want %q", got.TransformId, "")
+	}
 }
