@@ -173,7 +173,7 @@ func (g *graph) build(ctx context.Context, dataCon harness.DataContext) ([]proce
 			addConsumers(toConsumer, getSingleValue(e.outputs()))
 		case sinker:
 			sink := e.sinkDoFn(dataCon)
-			c.input.update(c.edge.edgeID(), "sink", sink, nil, mets)
+			c.input.update(c.edge.edgeID(), "sink", sink, nil, mets, dataCon.LoggerForTransform(c.edge.protoID()))
 		case bundleProcer: // Can't type assert generic types.
 			dofn := e.actualTransform()
 			uniqueName := e.options().Name
@@ -231,12 +231,12 @@ func (g *graph) build(ctx context.Context, dataCon harness.DataContext) ([]proce
 				}
 			}
 			// If this is the parallel input, the dofn needs to be set on the incoming DFC.
-			c.input.update(c.edge.edgeID(), uniqueName, dofn, procs, mets)
+			c.input.update(c.edge.edgeID(), uniqueName, dofn, procs, mets, dataCon.LoggerForTransform(c.edge.protoID()))
 		case flattener: // Can't type assert generic types.
 			// The same flatten edge will be re-invoked multiple times, once for each input node.
 			// But those nodes just need to point to the same dofn instance, and outputs
 			transform, dofn, procs, first := e.flatten()
-			c.input.update(e.edgeID(), transform, dofn, procs, mets)
+			c.input.update(e.edgeID(), transform, dofn, procs, mets, dataCon.LoggerForTransform(c.edge.protoID()))
 			if first {
 				// There's only one, so the loop is the best way out.
 				for _, nodeID := range e.outputs() {

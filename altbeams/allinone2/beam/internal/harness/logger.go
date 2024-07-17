@@ -31,7 +31,7 @@ func (h *loggingHandler) WithGroup(name string) slog.Handler {
 
 // TransformID will be provided to cached loggers under the hood.
 // So we only need to look for it in WithAttrs, and not when handling
-// a record. 
+// a record.
 const transformIDKey = "beamTransformID"
 
 func withTransformID(tid string) slog.Attr {
@@ -43,7 +43,7 @@ func (h *loggingHandler) WithAttrs(as []slog.Attr) slog.Handler {
 	for i, a := range as {
 		if a.Key == transformIDKey {
 			newOpts.TransformId = a.Value.String()
-			as = slices.Delete(as, i, i)
+			as = slices.Delete(as, i, i+1)
 			break
 		}
 	}
@@ -127,7 +127,6 @@ func (h *loggingHandler) addAttr(groups []string, data *structpb.Struct, a slog.
 		}
 		cur = next
 	}
-	fmt.Println("groups", cur)
 	if sv := slogValue2StructValue(a.Value); sv != nil {
 		if a.Value.Kind() == slog.KindGroup && a.Key == "" {
 			// Groups with empty keys are inlined into their parents.

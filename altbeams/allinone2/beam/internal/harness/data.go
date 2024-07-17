@@ -1,5 +1,7 @@
 package harness
 
+import "log/slog"
+
 // Port represents the connection port of external operations.
 type Port struct {
 	URL string
@@ -23,8 +25,17 @@ type Elements struct {
 
 // DataContext holds connectors to various data connections, incl. state and side input.
 type DataContext struct {
-	Data   *ScopedDataManager
-	State  *ScopedStateManager
+	Data  *ScopedDataManager
+	State *ScopedStateManager
+
+	logger *slog.Logger
 	bdID   bundleDescriptorID
 	instID instructionID
+}
+
+// LoggerForTransform produces a logger for transform with transformID.
+// The ID must be sourced from a ProcessBundleDescriptor so messages
+// can be matched up with their respective transform.
+func (dc *DataContext) LoggerForTransform(transformID string) *slog.Logger {
+	return dc.logger.With(withTransformID(transformID))
 }

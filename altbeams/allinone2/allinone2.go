@@ -53,20 +53,21 @@ type MyIncDoFn struct {
 
 func (fn *MyIncDoFn) ProcessBundle(ctx context.Context, dfc *beam.DFC[int]) error {
 	// Do some startbundle work.
-	fmt.Printf("%v started\n", fn.Name)
+	logger := dfc.Logger().With("name", fn.Name)
+	logger.Info("MyIncDoFn started")
 	processed := 0
 
 	dfc.Process(func(ec beam.ElmC, elm int) error {
 		processed++
 		elm += 1
-		fmt.Printf("%v %v\n", fn.Name, elm)
+		logger.Info("MyIncDoFn finished", "elm", elm)
 		fn.Output.Emit(ec, elm)
 		return nil
 	})
 
 	fn.OnBundleFinish.Do(dfc, func() error {
 		// Do some finish bundle work.
-		fmt.Printf("%v finished - %v processsed\n", fn.Name, processed)
+		logger.Info("MyIncDoFn finished", "processed", processed)
 		return nil
 	})
 	return nil
@@ -82,13 +83,14 @@ type SourceFn struct {
 
 func (fn *SourceFn) ProcessBundle(ctx context.Context, dfc *beam.DFC[[]byte]) error {
 	// Do some startbundle work.
-	fmt.Printf("%v started\n", fn.Name)
+	logger := dfc.Logger().With("name", fn.Name)
+	logger.Info("SourceFn started")
 	processed := 0
 
 	dfc.Process(func(ec beam.ElmC, _ []byte) error {
 		for i := 0; i < fn.Count; i++ {
 			processed++
-			fmt.Printf("%v %v\n", fn.Name, i)
+			logger.Info("emitting", "elm", i)
 			fn.Output.Emit(ec, i)
 		}
 		return nil
@@ -96,7 +98,7 @@ func (fn *SourceFn) ProcessBundle(ctx context.Context, dfc *beam.DFC[[]byte]) er
 
 	fn.OnBundleFinish.Do(dfc, func() error {
 		// Do some finish bundle work.
-		fmt.Printf("%v finished - %v processsed\n", fn.Name, processed)
+		logger.Info("SourceFn finished", "processed", processed)
 		return nil
 	})
 	return nil
@@ -111,17 +113,18 @@ type DiscardFn[E any] struct {
 
 func (fn *DiscardFn[E]) ProcessBundle(ctx context.Context, dfc *beam.DFC[E]) error {
 	// Do some startbundle work.
-	fmt.Printf("%v started\n", fn.Name)
+	logger := dfc.Logger().With("name", fn.Name)
+	logger.Info("DiscardFn started")
 
 	dfc.Process(func(ec beam.ElmC, elm E) error {
 		fn.Processed.Inc(dfc, 1)
-		fmt.Printf("%v %v\n", fn.Name, elm)
+		logger.Info("element received", "elm", elm)
 		return nil
 	})
 
 	fn.OnBundleFinish.Do(dfc, func() error {
 		// Do some finish bundle work.
-		fmt.Printf("%v finished\n", fn.Name)
+		logger.Info("DiscardFn finished", "name", fn.Name)
 		return nil
 	})
 

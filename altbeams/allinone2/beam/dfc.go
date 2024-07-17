@@ -3,6 +3,7 @@ package beam
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/lostluck/experimental/altbeams/allinone2/beam/coders"
@@ -24,6 +25,7 @@ type DFC[E Element] struct {
 	finishBundle func() error
 
 	metrics *metricsStore
+	logger  *slog.Logger
 }
 
 func (c *DFC[E]) transformID() string {
@@ -109,7 +111,7 @@ func (c *DFC[E]) ToElmC(eventTime time.Time) ElmC {
 // processor allows a uniform type for different generic types.
 type processor interface {
 	transformID() string
-	update(edgeID edgeIndex, transform string, dofn any, procs []processor, mets *metricsStore)
+	update(edgeID edgeIndex, transform string, dofn any, procs []processor, mets *metricsStore, logger *slog.Logger)
 
 	// discard signals that input this processor receives can be discarded.
 	discard()
@@ -137,7 +139,7 @@ func (c *DFC[E]) produceDoFnEdge(transform string, id edgeIndex, dofn any, ins, 
 	return &edgeDoFn[E]{transform: transform, index: id, parallelIn: c.id, dofn: c.dofn, ins: ins, outs: outs, opts: opts}
 }
 
-func (c *DFC[E]) update(edgeID edgeIndex, transform string, dofn any, procs []processor, mets *metricsStore) {
+func (c *DFC[E]) update(edgeID edgeIndex, transform string, dofn any, procs []processor, mets *metricsStore, logger *slog.Logger) {
 	if c.dofn != nil {
 		panic(fmt.Sprintf("double updated: dfc %v already has %T, but got %T", c.id, c.dofn, dofn))
 	}
@@ -146,6 +148,7 @@ func (c *DFC[E]) update(edgeID edgeIndex, transform string, dofn any, procs []pr
 	c.dofn = dofn.(Transform[E])
 	c.downstream = procs
 	c.metrics = mets
+	c.logger = logger
 }
 
 func (c *DFC[E]) discard() {
@@ -326,4 +329,9 @@ func (c *DFC[E]) finish() error {
 	c.perElm = nil
 	c.finishBundle = nil
 	return nil
+}
+
+// Logger returns the *slog.Logger for the current bundle and transform.
+func (c *DFC[E]) Logger() *slog.Logger {
+	return c.logger
 }

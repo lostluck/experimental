@@ -33,6 +33,7 @@ func Main(ctx context.Context, controlEndpoint string, opts Options, exec ExecFu
 	// Connect to FnAPI logging server. Receive and execute work.
 	var logClient fnpb.BeamFnLogging_LoggingClient
 
+	var logChan chan *fnpb.LogEntry
 	if opts.LoggingEndpoint != "" {
 		conn, err := Dial(ctx, opts.LoggingEndpoint, 60*time.Second)
 		if err != nil {
@@ -54,6 +55,28 @@ func Main(ctx context.Context, controlEndpoint string, opts Options, exec ExecFu
 			return errors.Wrap(err, "failed to send a dummy message")
 		}
 		defer logClient.CloseSend()
+		logChan = make(chan *fnpb.LogEntry, 100)
+		go func() {
+			list := &fnpb.LogEntry_List{}
+			for {
+				// Block until there's at least one message.
+				list.LogEntries = append(list.LogEntries, <-logChan)
+				// Then pull in  other extant messages in the batch as well.
+				n := len(logChan)
+				for range n {
+					list.LogEntries = append(list.LogEntries, <-logChan)
+				}
+
+				if err := logClient.Send(list); err != nil {
+					slog.Error("error sending log messages", "error", err) // Default logger errors.
+				}
+				list.LogEntries = list.LogEntries[:0]
+				// If the list gets too long, clear it entirely.
+				if cap(list.LogEntries) > 10 {
+					list.LogEntries = nil
+				}
+			}
+		}()
 	}
 
 	// Connect to FnAPI control server. Receive and execute work.
@@ -119,7 +142,7 @@ func Main(ctx context.Context, controlEndpoint string, opts Options, exec ExecFu
 
 		// Launch a goroutine to handle the control message.
 		fn := func(ctx context.Context, req *fnpb.InstructionRequest) {
-			resp := handleInstruction(ctx, req, ctrl)
+			resp := handleInstruction(ctx, req, ctrl, logChan)
 
 			if resp != nil && atomic.LoadInt32(&shutdown) == 0 {
 				respc <- resp
@@ -166,7 +189,7 @@ var (
 	cachedLabels = map[string]*pipepb.MonitoringInfo{}
 )
 
-func handleInstruction(ctx context.Context, req *fnpb.InstructionRequest, ctrl *Control) *fnpb.InstructionResponse {
+func handleInstruction(ctx context.Context, req *fnpb.InstructionRequest, ctrl *Control, logChan chan *fnpb.LogEntry) *fnpb.InstructionResponse {
 	instID := instructionID(req.GetInstructionId())
 	//ctx = metrics.SetBundleID(ctx, string(instID))
 
@@ -195,7 +218,10 @@ func handleInstruction(ctx context.Context, req *fnpb.InstructionRequest, ctrl *
 		data := NewScopedDataManager(ctrl.dataMan, instID)
 		state := NewScopedStateManager(ctrl.stateMan, instID)
 
-		pbr, err := ctrl.exec(ctx, ctrl, DataContext{Data: data, State: state, bdID: bdID, instID: instID})
+		logger := slog.New(newLoggingHandler(logChan, &handlerOptions{
+			InstID: instID,
+		}))
+		pbr, err := ctrl.exec(ctx, ctrl, DataContext{Data: data, State: state, bdID: bdID, instID: instID, logger: logger})
 		if err != nil {
 			return fail(ctx, instID, "process bundle failed %v", err)
 		}
