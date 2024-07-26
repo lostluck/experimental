@@ -19,8 +19,13 @@ import (
 )
 
 type dofnWrap struct {
-	TypeName string
-	DoFn     any
+	TypeName    string
+	SDFTypeName string // for SDFs and other uses
+	DoFn        any
+
+	// The following fields must not be encoded, and instead
+	// only be used for execution time feature passing.
+	restrictionCoder string
 }
 
 func jsonDoFnMarshallers() json.Options {
@@ -59,6 +64,13 @@ func jsonDoFnUnmarshallers(typeReg map[string]reflect.Type, name string) json.Op
 								return err
 							}
 							val.TypeName = tok2.String()
+							continue
+						case "SDFTypeName":
+							tok2, err := dec.ReadToken()
+							if err != nil {
+								return err
+							}
+							val.SDFTypeName = tok2.String()
 							continue
 						case "DoFn":
 							dofnRT, ok := typeReg[val.TypeName]
@@ -436,14 +448,39 @@ func unmarshalToGraph(typeReg map[string]reflect.Type, pbd *fnpb.ProcessBundleDe
 		case "beam:transform:pardo:v1",
 			"beam:transform:combine_per_key_precombine:v1",
 			"beam:transform:combine_per_key_merge_accumulators:v1",
-			"beam:transform:combine_per_key_extract_outputs:v1":
+			"beam:transform:combine_per_key_extract_outputs:v1",
+			"beam:transform:sdf_pair_with_restriction:v1",
+			"beam:transform:sdf_split_and_size_restrictions:v1",
+			"beam:transform:sdf_process_sized_element_and_restrictions:v1":
 
 			var dofnType reflect.Type
 			var proc processor
 			var wrap dofnWrap
+			var userDoFn any
 			switch spec.GetUrn() {
 			case "beam:transform:pardo:v1":
 				decodeDoFn(spec.GetPayload(), &wrap, typeReg, name)
+			case "beam:transform:sdf_pair_with_restriction:v1":
+				decodeDoFn(spec.GetPayload(), &wrap, typeReg, name)
+				// Extract interesting transform here, like the SDF handler.
+				sdfH := reflect.New(typeReg[wrap.SDFTypeName]).Interface().(sdfHandler)
+
+				// Make it so the wrapper has a method to extract the user sdfHandler type.
+				// Do the magic assertion so we can get the type correct implementation.
+				wrap.DoFn = sdfH.pairWithRestriction()
+			case "beam:transform:sdf_split_and_size_restrictions:v1":
+				decodeDoFn(spec.GetPayload(), &wrap, typeReg, name)
+				// Extract interesting transform here.
+				sdfH := reflect.New(typeReg[wrap.SDFTypeName]).Interface().(sdfHandler)
+				// Do the magic assertion so we can get the type correct implementation.
+				wrap.DoFn = sdfH.splitAndSizeRestriction()
+			case "beam:transform:sdf_process_sized_element_and_restrictions:v1":
+				decodeDoFn(spec.GetPayload(), &wrap, typeReg, name)
+				// Extract interesting transform here.
+				sdfH := reflect.New(typeReg[wrap.SDFTypeName]).Interface().(sdfHandler)
+				// Do the magic assertion so we can get the type correct implementation.
+				userDoFn = wrap.DoFn
+				wrap.DoFn = sdfH.processSizedElementAndRestriction(wrap.DoFn)
 			case "beam:transform:combine_per_key_precombine:v1":
 				decodeCombineFn(spec.GetPayload(), &wrap, typeReg, name)
 				cmb := wrap.DoFn.(combiner)
@@ -462,9 +499,16 @@ func unmarshalToGraph(typeReg map[string]reflect.Type, pbd *fnpb.ProcessBundleDe
 			if !ok {
 				panic(fmt.Sprintf("type in transform %v doesn't have a ProcessBundle method: %v", name, dofnPtrRT))
 			}
+			// Extract the DFC type, and produce an instance of it for our use.
 			dfcRT := pbm.Type.In(2).Elem()
 			dofnType = dofnPtrRT.Elem()
 			proc = reflect.New(dfcRT).Interface().(processor)
+
+			// Special handling for SDF Process component processSizedElementAndRestrictoon
+			if userDoFn != nil {
+				// We need the actual user DoFn for the correct outputs here, so we substitute at this point.
+				dofnType = reflect.TypeOf(userDoFn).Elem()
+			}
 
 			edgeID := g.curEdgeIndex()
 			ins := routeInputs(pt, edgeID)
@@ -479,7 +523,7 @@ func unmarshalToGraph(typeReg map[string]reflect.Type, pbd *fnpb.ProcessBundleDe
 			}
 			outs := routeOutputs(pt, edgeID)
 			for local, global := range pt.GetOutputs() {
-				// Always extract agaist the DoFn, incase
+				// Always extract against the DoFn, incase
 				// we need to rename an output.
 				// But we don't need to always override a node.
 				emt, ok := getEmitIfaceByName(dofnType, local, outs)
@@ -506,7 +550,7 @@ func unmarshalToGraph(typeReg map[string]reflect.Type, pbd *fnpb.ProcessBundleDe
 
 placeholderLoop:
 	for _, edgeID := range placeholders {
-		// Placeholders almost exclusively are "single type" nodes
+		// Placeholders are almost exclusively "single type" nodes
 		e := g.edges[edgeID].(*edgePlaceholder)
 		// Check the inputs and outputs for actual node types.
 		for _, nodeID := range e.inputs() {
@@ -564,7 +608,10 @@ func decodePort(data []byte) (harness.Port, string, error) {
 	}, port.CoderId, nil
 }
 
-var efaceRT = reflect.TypeOf((*emitIface)(nil)).Elem()
+var (
+	efaceRT               = reflect.TypeOf((*emitIface)(nil)).Elem()
+	procSizedElmAndRestRT = reflect.TypeOf((*procSizedElmAndRestIface)(nil)).Elem()
+)
 
 // getEmitIfaceByName extracts an emitter from the DoFn so we can get the exact type
 // for downstream node construction.
@@ -605,6 +652,9 @@ func getEmitIfaceByName(doFnT reflect.Type, field string, outs map[string]nodeIn
 			rename = sf.Name
 		}
 	}
+	if rt == nil {
+		panic(doFnT.Name())
+	}
 	// Ensure downstream uses of the fieldname are updated.
 	outs[rename] = outs[field]
 	delete(outs, field)
@@ -620,6 +670,23 @@ func decodeDoFn(payload []byte, wrap *dofnWrap, typeReg map[string]reflect.Type,
 
 	if dofnSpec.GetUrn() != "beam:go:transform:dofn:v2" {
 		panic(fmt.Sprintf("unknown pardo urn in transform %q: urn %q\n", name, dofnSpec.GetUrn()))
+	}
+
+	if dofnPayload.GetRequestsFinalization() {
+		panic(fmt.Sprintf("Bundle Finalization isn't yet supported, required by DoFn: %q", name))
+	}
+
+	if len(dofnPayload.GetStateSpecs())+len(dofnPayload.GetTimerFamilySpecs()) > 0 {
+		panic(fmt.Sprintf("State and Timers aren't yet supported, required by DoFn: %q", name))
+	}
+
+	if dofnPayload.GetOnWindowExpirationTimerFamilySpec() != "" {
+		panic(fmt.Sprintf("OnWindowExpiration isn't yet supported, required by DoFn: %q", name))
+	}
+
+	if dofnPayload.GetRestrictionCoderId() != "" {
+		fmt.Println("restrictionCoder received", dofnPayload.RestrictionCoderId)
+		wrap.restrictionCoder = dofnPayload.GetRestrictionCoderId()
 	}
 
 	if err := json.Unmarshal(dofnSpec.GetPayload(), &wrap, json.DefaultOptionsV2(), jsonDoFnUnmarshallers(typeReg, name)); err != nil {

@@ -21,14 +21,14 @@ func ParDo[E Element, DF Transform[E]](s *Scope, input Output[E], dofn DF, opts 
 	opt.Join(opts...)
 
 	edgeID := s.g.curEdgeIndex()
-	ins, outs, sides := s.g.deferDoFn(dofn, input.globalIndex, edgeID)
+	ins, outs, sides, extras := s.g.deferDoFn(dofn, input.globalIndex, edgeID)
 
-	s.g.edges = append(s.g.edges, &edgeDoFn[E]{index: edgeID, dofn: dofn, ins: ins, outs: outs, sides: sides, parallelIn: input.globalIndex, opts: opt})
+	s.g.edges = append(s.g.edges, &edgeDoFn[E]{index: edgeID, dofn: dofn, ins: ins, outs: outs, sides: sides, parallelIn: input.globalIndex, opts: opt, sdf: extras.SDF()})
 
 	return dofn
 }
 
-func (g *graph) deferDoFn(dofn any, input nodeIndex, global edgeIndex) (ins, outs map[string]nodeIndex, sides map[string]string) {
+func (g *graph) deferDoFn(dofn any, input nodeIndex, global edgeIndex) (ins, outs map[string]nodeIndex, sides map[string]string, extras *dofnExtras) {
 	if g.consumers == nil {
 		g.consumers = map[nodeIndex][]edgeIndex{}
 	}
@@ -65,23 +65,41 @@ func (g *graph) deferDoFn(dofn any, input nodeIndex, global edgeIndex) (ins, out
 			}
 		case reflect.Struct:
 			fv = fv.Addr()
-			if emt, ok := fv.Interface().(emitIface); ok {
-				g.initEmitter(emt, global, input, sf.Name, outs)
+			switch feature := fv.Interface().(type) {
+			case emitIface:
+				g.initEmitter(feature, global, input, sf.Name, outs)
+			case sideIface:
+				sides[sf.Name] = feature.accessPatternUrn()
+				g.initSideInput(feature, global, sf.Name, ins)
+			case sdfHandler:
+				fmt.Printf("initializing sdfHandler %T\n", feature)
+				if extras == nil {
+					extras = &dofnExtras{}
+				}
+				if extras.sdf != nil {
+					panic(fmt.Sprintf("DoFn %v may only have one SDF handler, but has %v and now %v at %v", rt, extras.sdf, feature, fv))
+				}
+				extras.sdf = feature
 			}
-			if si, ok := fv.Interface().(sideIface); ok {
-				sides[sf.Name] = si.accessPatternUrn()
-				// fmt.Println("initialising side intput: ", si, global, sf.Name, ins)
-				g.initSideInput(si, global, sf.Name, ins)
-			}
-			// TODO side inputs
 		case reflect.Chan:
-			panic("field %v is a channel")
+			panic(fmt.Sprintf("field %v is a channel", fv))
 		default:
 			// Don't do anything with pointers, or other types.
 
 		}
 	}
-	return ins, outs, sides
+	return ins, outs, sides, extras
+}
+
+type dofnExtras struct {
+	sdf sdfHandler
+}
+
+func (x *dofnExtras) SDF() sdfHandler {
+	if x == nil {
+		return nil
+	}
+	return x.sdf
 }
 
 func (g *graph) initEmitter(emt emitIface, global edgeIndex, input nodeIndex, name string, outs map[string]nodeIndex) {
@@ -108,6 +126,7 @@ type edgeDoFn[E Element] struct {
 	ins, outs  map[string]nodeIndex // local field names to global collection ids.
 	sides      map[string]string    // local id to access pattern URN
 	parallelIn nodeIndex
+	sdf        sdfHandler
 
 	opts beamopts.Struct
 }
@@ -149,10 +168,19 @@ func (e *edgeDoFn[E]) toProtoParts(params translateParams) (spec *pipepb.Functio
 		TypeName: typeName,
 		DoFn:     dofn,
 	}
+
+	if e.sdf != nil {
+		sdfRT := reflect.ValueOf(e.sdf).Type().Elem()
+		fmt.Println("registering sdf type:", sdfRT, sdfRT.Name())
+		wrap.SDFTypeName = sdfRT.Name()
+		params.TypeReg[wrap.SDFTypeName] = sdfRT
+	}
+
 	wrappedPayload, err := json.Marshal(&wrap, json.DefaultOptionsV2(), jsonDoFnMarshallers())
 	if err != nil {
 		panic(err)
 	}
+	fmt.Println("wrapped payload: ", string(wrappedPayload))
 
 	var sis map[string]*pipepb.SideInput
 	if len(e.sides) > 0 {
@@ -172,13 +200,20 @@ func (e *edgeDoFn[E]) toProtoParts(params translateParams) (spec *pipepb.Functio
 		}
 	}
 
-	payload, _ := proto.Marshal(&pipepb.ParDoPayload{
+	payloadProto := &pipepb.ParDoPayload{
 		DoFn: &pipepb.FunctionSpec{
 			Urn:     "beam:go:transform:dofn:v2",
 			Payload: wrappedPayload,
 		},
 		SideInputs: sis,
-	})
+	}
+
+	if e.sdf != nil {
+		payloadProto.RestrictionCoderId = e.addCoder(params.InternedCoders, params.Comps.GetCoders())
+		fmt.Println("added restrictionCoder", payloadProto.RestrictionCoderId)
+	}
+
+	payload, _ := proto.Marshal(payloadProto)
 
 	spec = &pipepb.FunctionSpec{
 		Urn:     "beam:transform:pardo:v1",
@@ -207,6 +242,13 @@ func (e *edgeDoFn[E]) options() beamopts.Struct {
 
 func (e *edgeDoFn[E]) transformID() string {
 	return e.transform
+}
+
+func (n *edgeDoFn[E]) addCoder(intern map[string]string, coders map[string]*pipepb.Coder) string {
+	if n.sdf != nil {
+		return n.sdf.addRestrictionCoder(intern, coders)
+	}
+	return ""
 }
 
 var _ bundleProcer = (*edgeDoFn[int])(nil)

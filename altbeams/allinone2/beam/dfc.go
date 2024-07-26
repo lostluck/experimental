@@ -21,8 +21,9 @@ type DFC[E Element] struct {
 	dofn       Transform[E]
 	downstream []processor
 
-	perElm       Process[E]
-	finishBundle func() error
+	perElm                     Process[E] // Handles normal per element processing for ProcessBundle
+	makeTracker, perElmAndRest any        // Handles SDF tracker creation and the user iteration.
+	finishBundle               func() error
 
 	metrics *metricsStore
 	logger  *slog.Logger

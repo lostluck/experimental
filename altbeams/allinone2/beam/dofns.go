@@ -5,6 +5,7 @@ import (
 	"sync"
 
 	"github.com/lostluck/experimental/altbeams/allinone2/beam/coders"
+	pipepb "github.com/lostluck/experimental/altbeams/allinone2/beam/internal/model/pipeline_v1"
 	"pgregory.net/rand"
 )
 
@@ -251,36 +252,71 @@ type ProcessRestriction[E any, R Restriction[P], P any] func(ElmC, E, R, TryClai
 //
 // Due to the handling required, call the BoundedSDF [Process] method, instead
 // of the one on DFC.
-type BoundedSDF[E any, T Tracker[R, P], R Restriction[P], P any] struct{}
+type BoundedSDF[FAC RestrictionFactory[E, R, P], E any, T Tracker[R, P], R Restriction[P], P, WES any] struct{}
 
 // Process is called during ProcessBundle set up to define the processing happening per element.
-func (sdf *BoundedSDF[E, T, R, P]) Process(dfc *DFC[E],
+func (sdf BoundedSDF[FAC, E, T, R, P, WES]) Process(dfc *DFC[E],
 	makeTracker func(R) T,
 	proc ProcessRestriction[E, R, P]) error {
-	// TODO: Do special handling, likely in upstream handling for
-	// extracting the Restriction, watermark estimator, and size.
-	// And of course, hooking in the split handling externally to this goroutine.
-	return dfc.Process(func(ec ElmC, e E) error {
-		// Do the necessary restriction extraction.
-		var r R
-		t := wrapWithLockTracker(makeTracker(r))
-		return proc(ec, e, t.GetRestriction(), func(perPos func(P) (P, error)) error {
-			p := r.Start()
-			// We don't need to claim the initial position, hence the tail
-			// break condition instead of waiting for the end.
-			for {
-				newPos, err := perPos(p)
-				if err != nil {
-					return err
-				}
-				p = newPos
-				if !t.TryClaim(p) {
-					break
-				}
-			}
-			return t.GetError()
-		})
-	})
+
+	dfc.makeTracker = makeTracker
+	dfc.perElmAndRest = proc
+	return nil
+}
+
+// AddRestrictionCoder provides the id of the coder for the restriction type.
+func (sdf BoundedSDF[FAC, E, T, R, P, WES]) addRestrictionCoder(intern map[string]string, coders map[string]*pipepb.Coder) string {
+	// The WatermarkEstimator state is propagated with the Restrictions.
+	return addCoder[KV[R, WES]](intern, coders)
+}
+
+func (sdf BoundedSDF[FAC, E, T, R, P, WES]) pairWithRestriction() any {
+	return &pairWithRestriction[FAC, E, R, P, WES]{}
+}
+
+func (sdf BoundedSDF[FAC, E, T, R, P, WES]) splitAndSizeRestriction() any {
+	return &splitAndSizeRestrictions[FAC, E, R, P, WES]{}
+}
+
+func (sdf BoundedSDF[FAC, E, T, R, P, WES]) processSizedElementAndRestriction(userDoFn any) any {
+	return &processSizedElementAndRestriction[FAC, E, T, R, P, WES]{
+		Transform: userDoFn.(Transform[E]),
+	}
+}
+
+type sdfHandler interface {
+	addRestrictionCoder(intern map[string]string, coders map[string]*pipepb.Coder) string
+	pairWithRestriction() any
+	splitAndSizeRestriction() any
+	processSizedElementAndRestriction(userDoFn any) any
+}
+
+var (
+	_ sdfHandler = BoundedSDF[RestrictionFactory[int, Restriction[int], int], int, Tracker[Restriction[int], int], Restriction[int], int, int]{}
+	_ sdfHandler = &hiddenSplittableDoFn[Transform[int], RestrictionFactory[int, Restriction[int], int], int, Tracker[Restriction[int], int], Restriction[int], int, int]{}
+)
+
+type hiddenSplittableDoFn[DF Transform[E], FAC RestrictionFactory[E, R, P], E any, T Tracker[R, P], R Restriction[P], P, WES any] struct {
+	Transform DF
+}
+
+// AddRestrictionCoder provides the id of the coder for the restriction type.
+func (sdf *hiddenSplittableDoFn[DF, FAC, E, T, R, P, WES]) addRestrictionCoder(intern map[string]string, coders map[string]*pipepb.Coder) string {
+	return addCoder[R](intern, coders)
+}
+
+func (sdf *hiddenSplittableDoFn[DF, FAC, E, T, R, P, WES]) pairWithRestriction() any {
+	return &pairWithRestriction[FAC, E, R, P, WES]{}
+}
+
+func (sdf *hiddenSplittableDoFn[DF, FAC, E, T, R, P, WES]) splitAndSizeRestriction() any {
+	return &splitAndSizeRestrictions[FAC, E, R, P, WES]{}
+}
+
+func (sdf *hiddenSplittableDoFn[DF, FAC, E, T, R, P, WES]) processSizedElementAndRestriction(userDoFn any) any {
+	return &processSizedElementAndRestriction[FAC, E, T, R, P, WES]{
+		Transform: userDoFn.(Transform[E]),
+	}
 }
 
 // Marker methods for BoundedSDF for type extraction? Also for handling splits?

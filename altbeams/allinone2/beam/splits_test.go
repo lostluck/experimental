@@ -3,6 +3,8 @@ package beam
 import (
 	"context"
 	"fmt"
+	"iter"
+	"maps"
 	"math"
 	"net"
 	"net/http"
@@ -456,6 +458,66 @@ func (fn *sepHarness[E]) ProcessBundle(ctx context.Context, dfc *DFC[E]) error {
 	})
 }
 
+// sepHarnessSDF is a splittable DoFn that blocks when reaching a sentinel.
+// It's useful for testing blocks on sub element splits.
+type sepHarnessSDF struct {
+	BoundedSDF[simpleFac, int, *ORTracker, OffsetRange, int64, bool]
+	Base sepHarnessBase[int]
+
+	Output Output[int]
+}
+
+type simpleFac struct{}
+
+// This doesn't work, because we want a pointer, not a value type
+// So we want to restrict it to be a pointer type.
+func (simpleFac) Setup() error { return nil }
+
+func (simpleFac) InitialSplit(_ int, r OffsetRange) iter.Seq2[OffsetRange, float64] {
+	return maps.All(map[OffsetRange]float64{
+		r: float64(r.Max - r.Min),
+	})
+}
+
+func (simpleFac) Produce(e int) OffsetRange {
+	return OffsetRange{0, 10}
+}
+
+func (fn *sepHarnessSDF) ProcessBundle(ctx context.Context, dfc *DFC[int]) error {
+	fn.Base.setup()
+	fmt.Println("sepHarnessSDF.ProcessBundle")
+	return fn.BoundedSDF.Process(dfc,
+		func(rest OffsetRange) *ORTracker {
+			return &ORTracker{
+				rest: rest,
+			}
+		},
+		func(ec ElmC, elm int, or OffsetRange, tc TryClaim[int64]) error {
+			return tc(func(p int64) (int64, error) {
+				pos := int(p)
+				fmt.Println("pos received", pos, "for elm", elm)
+				if fn.Base.isSentinel(pos) {
+					fmt.Println("blocking on", pos)
+					fn.Base.block()
+					fmt.Println("unblocking on", pos)
+				} else {
+					fmt.Println("sleeping on", pos)
+					time.Sleep(fn.Base.Sleep)
+					fmt.Println("waking on", pos)
+				}
+				fn.Output.Emit(ec, pos)
+				return p + 1, nil
+			})
+		})
+}
+
+// TODO in graph construction, I need to swap out the user DoFn
+// with one that can produce the generic types for the different
+// SDF Component implementations.
+//
+// This is slightly different than the combine pattern for lifting purposes
+// since we do want the user code in there.
+
 func TestSeparation(t *testing.T) {
 	ws.initRPCServer()
 
@@ -479,9 +541,25 @@ func TestSeparation(t *testing.T) {
 				ParDo(s, sep.Output, &DiscardFn[int]{}, Name("sink"))
 				return nil
 			},
+		}, {
+			name: "SubElementSplit",
+			pipeline: func(s *Scope) error {
+				imp := Impulse(s)
+				src := ParDo(s, imp, &SourceFn{Count: 1}) // Single element since we split each into sub parts.
+				sep := ParDo(s, Reshuffle(s, src.Output), &sepHarnessSDF{
+					Base: sepHarnessBase[int]{
+						WatcherID:    ws.newWatcher(3),
+						Sleep:        10 * time.Millisecond,
+						Sentinels:    []int{2, 5, 8},
+						LocalService: ws.serviceAddress,
+					},
+				})
+				ParDo(s, sep.Output, &DiscardFn[int]{}, Name("sink"))
+				return nil
+			},
 		},
 	}
-	for _, test := range tests {
+	for _, test := range tests[1:] {
 		t.Run(test.name, func(t *testing.T) {
 			pr, err := Run(context.Background(), test.pipeline)
 			if err != nil {

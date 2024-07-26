@@ -178,7 +178,16 @@ func (g *graph) build(ctx context.Context, dataCon harness.DataContext) ([]proce
 			dofn := e.actualTransform()
 			uniqueName := e.options().Name
 
-			rv := reflect.ValueOf(dofn)
+			// We split out the "raw" dofn from the
+			// one the user wrote that we need to initialize
+			// with the execution harness.
+			userDoFn := dofn
+			// If this is specifically an SDF, extract the user transform for initialization.
+			if sdf, ok := dofn.(procSizedElmAndRestIface); ok {
+				userDoFn = sdf.getUserTransform()
+			}
+
+			rv := reflect.ValueOf(userDoFn)
 			if rv.Kind() == reflect.Pointer {
 				rv = rv.Elem()
 			}

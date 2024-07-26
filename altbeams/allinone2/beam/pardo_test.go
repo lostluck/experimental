@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"iter"
+	"maps"
 	"math"
 	"testing"
 
@@ -279,7 +281,7 @@ var (
 // with the input integer N as key.
 // and the output being all integers i: 0 <= i < N-1
 type countingSplitterFn struct {
-	beam.BoundedSDF[int, *ORTracker, OffsetRange, int64]
+	beam.BoundedSDF[simpleFac, int, *ORTracker, OffsetRange, int64, bool]
 
 	Output beam.Output[beam.KV[int, int64]]
 }
@@ -293,6 +295,22 @@ func (fn *countingSplitterFn) ProcessBundle(_ context.Context, dfc *beam.DFC[int
 				return pos + 1, nil
 			})
 		})
+}
+
+type simpleFac struct{}
+
+// This doesn't work, because we want a pointer, not a value type
+// So we want to restrict it to be a pointer type.
+func (simpleFac) Setup() error { return nil }
+
+func (simpleFac) InitialSplit(_ int, r OffsetRange) iter.Seq2[OffsetRange, float64] {
+	return maps.All(map[OffsetRange]float64{
+		r: float64(r.Max - r.Min),
+	})
+}
+
+func (simpleFac) Produce(e int) OffsetRange {
+	return OffsetRange{0, int64(e)}
 }
 
 func TestSplittableDoFn(t *testing.T) {

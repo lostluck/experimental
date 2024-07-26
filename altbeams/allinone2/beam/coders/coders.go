@@ -32,6 +32,8 @@ func MakeCoder[E any]() Coder[E] {
 // makeCoder works aorund generic coding.
 func makeCoder(rt reflect.Type) any {
 	switch rt.Kind() {
+	case reflect.Bool:
+		return boolCoder{}
 	case reflect.Int:
 		return varintCoder[int]{}
 	case reflect.Int8:
@@ -75,13 +77,15 @@ func makeRowCoder[E any](rt reflect.Type) any {
 			continue
 		}
 		switch sf.Type.Kind() {
-		case reflect.Int, reflect.Int32:
+		case reflect.Int, reflect.Int16, reflect.Int32, reflect.Int64:
 			c.fieldEncoders = append(c.fieldEncoders, func(enc *Encoder, rv reflect.Value) {
 				enc.Varint(uint64(rv.Int()))
 			})
 			c.fieldDecoders = append(c.fieldDecoders, func(dec *Decoder, rv reflect.Value) {
 				rv.SetInt(int64(dec.Varint()))
 			})
+		default:
+			panic("row field type unknown:" + sf.Type.Kind().String())
 		}
 	}
 	return c
@@ -95,6 +99,7 @@ type rowStructCoder[T any] struct {
 func (c *rowStructCoder[T]) Encode(enc *Encoder, v T) {
 	rv := reflect.ValueOf(v)
 	enc.Varint(uint64(rv.NumField()))
+	fmt.Printf("XXX %T %+v - numfields %v - len enc %v len dec %v\n", c, v, rv.NumField(), len(c.fieldEncoders), len(c.fieldDecoders))
 	for i := 0; i < rv.NumField(); i++ {
 		c.fieldEncoders[i](enc, rv.Field(i))
 	}
@@ -157,4 +162,14 @@ func (doubleCoder) Encode(enc *Encoder, v float64) {
 
 func (doubleCoder) Decode(dec *Decoder) float64 {
 	return dec.Double()
+}
+
+type boolCoder struct{}
+
+func (boolCoder) Encode(enc *Encoder, v bool) {
+	enc.Bool(v)
+}
+
+func (boolCoder) Decode(dec *Decoder) bool {
+	return dec.Bool()
 }
