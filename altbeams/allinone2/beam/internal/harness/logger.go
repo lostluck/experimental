@@ -55,7 +55,8 @@ type handlerOptions struct {
 	// Levels with lower levels are discarded.
 	// If nil, the Handler uses [slog.LevelInfo].
 	Level       slog.Leveler
-	InstID      instructionID
+	// TODO make this like the slog.Leveler so we can change it in re-used bundle plans.
+	InstID      instructionID 
 	TransformId string // edge id.
 }
 

@@ -17,7 +17,6 @@ import (
 	"golang.org/x/sync/singleflight"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 type ExecFunc func(context.Context, *Control, DataContext) (*fnpb.ProcessBundleResponse, error)
@@ -44,15 +43,6 @@ func Main(ctx context.Context, controlEndpoint string, opts Options, exec ExecFu
 		logClient, err = lc.Logging(ctx)
 		if err != nil {
 			return errors.Wrap(err, "failed to create logging client")
-		}
-		if err := logClient.Send(&fnpb.LogEntry_List{
-			LogEntries: []*fnpb.LogEntry{{
-				Severity:  fnpb.LogEntry_Severity_CRITICAL,
-				Timestamp: timestamppb.Now(),
-				Message:   "LOGGING CONNECTED",
-			}},
-		}); err != nil {
-			return errors.Wrap(err, "failed to send a dummy message")
 		}
 		defer logClient.CloseSend()
 		logChan = make(chan *fnpb.LogEntry, 100)
