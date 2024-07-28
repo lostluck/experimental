@@ -37,6 +37,8 @@ type Element interface {
 // KV represents key vlaue pairs.
 // These are useful to Beam pipelines, including allowing to GroupByKey, and stateful transforms.
 type KV[K, V Element] struct {
+	// TODO consider making these methods instead
+	// and decode them on demand?
 	Key   K
 	Value V
 }
@@ -238,7 +240,6 @@ func Run(ctx context.Context, expand func(*Scope) error, opts ...Options) (Pipel
 
 	// Workers don't escape this if block.
 	if wf.Worker {
-		fmt.Println("starting worker", wf.ID)
 		// TODO move this into harness directly
 		ctx = extworker.WriteWorkerID(ctx, wf.ID)
 		err := harness.Main(ctx, wf.ControlEndpoint, harness.Options{
@@ -309,7 +310,7 @@ func Run(ctx context.Context, expand func(*Scope) error, opts ...Options) (Pipel
 
 	r, err := handle.Metrics(ctx)
 	if err != nil {
-		return Pipeline{}, err
+		return Pipeline{}, fmt.Errorf("couldn't extract metrics for: %w", err)
 	}
 
 	p := Pipeline{
