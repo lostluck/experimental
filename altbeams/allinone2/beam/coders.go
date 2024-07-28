@@ -16,7 +16,7 @@ func coderFromProto[E any](cs map[string]*pipepb.Coder, cid string) coders.Coder
 			ccid := c.GetComponentCoderIds()[0]
 			return &lpCoder[E]{Coder: coderFromProto[E](cs, ccid)}
 		case "beam:coder:windowed_value:v1":
-			// Doesn't happen often, but generally for
+			// Doesn't happen often, but generally from sources and sinks.
 			ccid := c.GetComponentCoderIds()[0]
 			return coderFromProto[E](cs, ccid)
 		case "beam:coder:kv:v1",
