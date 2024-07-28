@@ -171,7 +171,7 @@ type Restriction[P any] interface {
 // Tracker implementations are not serialized.
 type Tracker[R Restriction[P], P any] interface {
 	// Size returns a an estimate of the amount of work in this restrction.
-	// A zero size restriction
+	// A zero size restriction isn't permitted.
 	Size(R) float64
 	// TryClaim attempts to claim the given position within the restriction.
 	// Claiming a position at or beyond the end of the restriction signals that the
@@ -190,12 +190,12 @@ type Tracker[R Restriction[P], P any] interface {
 
 // lockingTracker wraps a Tracker in a mutex to synchronize access.
 type lockingTracker[T Tracker[R, P], R Restriction[P], P any] struct {
-	mu      sync.Mutex
+	mu      *sync.Mutex
 	wrapped T
 }
 
-func wrapWithLockTracker[T Tracker[R, P], R Restriction[P], P any](t T) *lockingTracker[T, R, P] {
-	return &lockingTracker[T, R, P]{wrapped: t}
+func wrapWithLockTracker[T Tracker[R, P], R Restriction[P], P any](t T, mu *sync.Mutex) *lockingTracker[T, R, P] {
+	return &lockingTracker[T, R, P]{mu: mu, wrapped: t}
 }
 
 func (t *lockingTracker[T, R, P]) Size(rest R) float64 {
@@ -278,9 +278,12 @@ func (sdf BoundedSDF[FAC, E, T, R, P, WES]) splitAndSizeRestriction() any {
 	return &splitAndSizeRestrictions[FAC, E, R, P, WES]{}
 }
 
-func (sdf BoundedSDF[FAC, E, T, R, P, WES]) processSizedElementAndRestriction(userDoFn any) any {
+func (sdf BoundedSDF[FAC, E, T, R, P, WES]) processSizedElementAndRestriction(userDoFn any, coders map[string]*pipepb.Coder, coderID, tid, inputID string) any {
 	return &processSizedElementAndRestriction[FAC, E, T, R, P, WES]{
-		Transform: userDoFn.(Transform[E]),
+		Transform:        userDoFn.(Transform[E]),
+		fullElementCoder: coderFromProto[KV[KV[E, KV[R, WES]], float64]](coders, coderID),
+		tid:              tid,
+		inputID:          inputID,
 	}
 }
 
@@ -288,36 +291,12 @@ type sdfHandler interface {
 	addRestrictionCoder(intern map[string]string, coders map[string]*pipepb.Coder) string
 	pairWithRestriction() any
 	splitAndSizeRestriction() any
-	processSizedElementAndRestriction(userDoFn any) any
+	processSizedElementAndRestriction(userDoFn any, coders map[string]*pipepb.Coder, restrictionCoderID, tid, inputID string) any
 }
 
 var (
 	_ sdfHandler = BoundedSDF[RestrictionFactory[int, Restriction[int], int], int, Tracker[Restriction[int], int], Restriction[int], int, int]{}
-	_ sdfHandler = &hiddenSplittableDoFn[Transform[int], RestrictionFactory[int, Restriction[int], int], int, Tracker[Restriction[int], int], Restriction[int], int, int]{}
 )
-
-type hiddenSplittableDoFn[DF Transform[E], FAC RestrictionFactory[E, R, P], E any, T Tracker[R, P], R Restriction[P], P, WES any] struct {
-	Transform DF
-}
-
-// AddRestrictionCoder provides the id of the coder for the restriction type.
-func (sdf *hiddenSplittableDoFn[DF, FAC, E, T, R, P, WES]) addRestrictionCoder(intern map[string]string, coders map[string]*pipepb.Coder) string {
-	return addCoder[R](intern, coders)
-}
-
-func (sdf *hiddenSplittableDoFn[DF, FAC, E, T, R, P, WES]) pairWithRestriction() any {
-	return &pairWithRestriction[FAC, E, R, P, WES]{}
-}
-
-func (sdf *hiddenSplittableDoFn[DF, FAC, E, T, R, P, WES]) splitAndSizeRestriction() any {
-	return &splitAndSizeRestrictions[FAC, E, R, P, WES]{}
-}
-
-func (sdf *hiddenSplittableDoFn[DF, FAC, E, T, R, P, WES]) processSizedElementAndRestriction(userDoFn any) any {
-	return &processSizedElementAndRestriction[FAC, E, T, R, P, WES]{
-		Transform: userDoFn.(Transform[E]),
-	}
-}
 
 // Marker methods for BoundedSDF for type extraction? Also for handling splits?
 

@@ -224,7 +224,7 @@ func (c *DFC[E]) split(desired *fnpb.ProcessBundleSplitRequest_DesiredSplit) *fn
 			desired.GetFractionOfRemainder(),
 			splitCallback != nil)
 		if err != nil {
-			// TODO log error
+			slog.Error("splitHelper", "error", err)
 			return split // return original split. No changes here.
 		}
 		// A fraction less than 0 means this is a channel split. We're done!
@@ -247,6 +247,7 @@ func (c *DFC[E]) split(desired *fnpb.ProcessBundleSplitRequest_DesiredSplit) *fn
 		firstResidual = suggestedSplit + 1
 		lastPrimary = suggestedSplit - 1
 		if sr.PS != nil && len(sr.PS) > 0 && sr.RS != nil && len(sr.RS) > 0 {
+			splitSuccess = true
 			pRoots = make([]*fnpb.BundleApplication, len(sr.PS))
 			for i, p := range sr.PS {
 				pRoots[i] = &fnpb.BundleApplication{
@@ -270,6 +271,7 @@ func (c *DFC[E]) split(desired *fnpb.ProcessBundleSplitRequest_DesiredSplit) *fn
 
 		return firstResidual
 	})
+
 	// Split didn't succeed, return a neutral response since split failures are not Bundle failures.
 	if !splitSuccess {
 		return &fnpb.ProcessBundleSplitResponse{}
@@ -282,6 +284,8 @@ func (c *DFC[E]) split(desired *fnpb.ProcessBundleSplitRequest_DesiredSplit) *fn
 				FirstResidualElement: firstResidual,
 			},
 		},
+		PrimaryRoots:  pRoots,
+		ResidualRoots: rRoots,
 	}
 }
 

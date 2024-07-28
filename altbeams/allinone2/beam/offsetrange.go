@@ -28,7 +28,7 @@ func (r OffsetRange) Bounded() bool {
 
 // ORTracker is a tracker for an offset range restriction.
 type ORTracker struct {
-	rest      OffsetRange
+	Rest      OffsetRange
 	claimed   int64 // Tracks the last claimed position.
 	stopped   bool  // Tracks whether TryClaim has indicated to stop processing elements.
 	attempted int64 // Tracks the last attempted position to claim.
@@ -48,9 +48,9 @@ func (tracker *ORTracker) TryClaim(pos int64) bool {
 	}
 
 	tracker.attempted = pos
-	if pos < tracker.rest.Min {
+	if pos < tracker.Rest.Min {
 		tracker.stopped = true
-		tracker.err = fmt.Errorf("ORTracker: position claimed is out of bounds of the restriction: pos %v, rest.Min %v", pos, tracker.rest.Min)
+		tracker.err = fmt.Errorf("ORTracker: position claimed is out of bounds of the restriction: pos %v, rest.Min %v", pos, tracker.Rest.Min)
 		return false
 	}
 	if pos <= tracker.claimed {
@@ -60,7 +60,7 @@ func (tracker *ORTracker) TryClaim(pos int64) bool {
 	}
 
 	tracker.claimed = pos
-	if pos >= tracker.rest.Max {
+	if pos >= tracker.Rest.Max {
 		tracker.stopped = true
 		return false
 	}
@@ -74,14 +74,14 @@ func (tracker *ORTracker) GetError() error {
 
 // GetRestriction returns the restriction.
 func (tracker *ORTracker) GetRestriction() OffsetRange {
-	return tracker.rest
+	return tracker.Rest
 }
 
 // TrySplit splits at the nearest integer greater than the given fraction of the remainder. If the
 // fraction given is outside of the [0, 1] range, it is clamped to 0 or 1.
 func (tracker *ORTracker) TrySplit(fraction float64) (primary, residual OffsetRange, err error) {
 	if tracker.stopped || tracker.IsDone() {
-		return tracker.rest, OffsetRange{}, nil
+		return tracker.Rest, OffsetRange{}, nil
 	}
 	if fraction < 0 {
 		fraction = 0
@@ -92,25 +92,25 @@ func (tracker *ORTracker) TrySplit(fraction float64) (primary, residual OffsetRa
 	// Use Ceil to always round up from float split point.
 	// Use Max to make sure the split point is greater than the current claimed work since
 	// claimed work belongs to the primary.
-	splitPt := tracker.claimed + int64(math.Max(math.Ceil(fraction*float64(tracker.rest.Min-tracker.claimed)), 1))
-	if splitPt >= tracker.rest.Max {
-		return tracker.rest, OffsetRange{}, nil
+	splitPt := tracker.claimed + int64(math.Max(math.Ceil(fraction*float64(tracker.Rest.Min-tracker.claimed)), 1))
+	if splitPt >= tracker.Rest.Max {
+		return tracker.Rest, OffsetRange{}, nil
 	}
-	residual = OffsetRange{splitPt, tracker.rest.Max}
-	tracker.rest.Max = splitPt
-	return tracker.rest, residual, nil
+	residual = OffsetRange{splitPt, tracker.Rest.Max}
+	tracker.Rest.Max = splitPt
+	return tracker.Rest, residual, nil
 }
 
 // GetProgress reports progress based on the claimed size and unclaimed sizes of the restriction.
 func (tracker *ORTracker) GetProgress() (done, remaining float64) {
-	done = float64((tracker.claimed + 1) - tracker.rest.Min)
-	remaining = float64(tracker.rest.Max - (tracker.claimed + 1))
+	done = float64((tracker.claimed + 1) - tracker.Rest.Min)
+	remaining = float64(tracker.Rest.Max - (tracker.claimed + 1))
 	return
 }
 
 // IsDone returns true if the most recent claimed element is at or past the end of the restriction
 func (tracker *ORTracker) IsDone() bool {
-	return tracker.err == nil && (tracker.claimed+1 >= tracker.rest.Max || tracker.rest.Min >= tracker.rest.Max)
+	return tracker.err == nil && (tracker.claimed+1 >= tracker.Rest.Max || tracker.Rest.Min >= tracker.Rest.Max)
 }
 
 var (

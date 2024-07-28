@@ -470,17 +470,16 @@ func unmarshalToGraph(typeReg map[string]reflect.Type, pbd *fnpb.ProcessBundleDe
 				wrap.DoFn = sdfH.pairWithRestriction()
 			case "beam:transform:sdf_split_and_size_restrictions:v1":
 				decodeDoFn(spec.GetPayload(), &wrap, typeReg, name)
-				// Extract interesting transform here.
 				sdfH := reflect.New(typeReg[wrap.SDFTypeName]).Interface().(sdfHandler)
-				// Do the magic assertion so we can get the type correct implementation.
 				wrap.DoFn = sdfH.splitAndSizeRestriction()
 			case "beam:transform:sdf_process_sized_element_and_restrictions:v1":
 				decodeDoFn(spec.GetPayload(), &wrap, typeReg, name)
-				// Extract interesting transform here.
 				sdfH := reflect.New(typeReg[wrap.SDFTypeName]).Interface().(sdfHandler)
-				// Do the magic assertion so we can get the type correct implementation.
 				userDoFn = wrap.DoFn
-				wrap.DoFn = sdfH.processSizedElementAndRestriction(wrap.DoFn)
+				// Get the input coder for split encoding.
+				onlyInputID := maps.Values(pt.GetInputs())[0]
+				coderID := pbd.GetPcollections()[onlyInputID].GetCoderId()
+				wrap.DoFn = sdfH.processSizedElementAndRestriction(wrap.DoFn, pbd.GetCoders(), coderID, name, coderID)
 			case "beam:transform:combine_per_key_precombine:v1":
 				decodeCombineFn(spec.GetPayload(), &wrap, typeReg, name)
 				cmb := wrap.DoFn.(combiner)
@@ -685,7 +684,6 @@ func decodeDoFn(payload []byte, wrap *dofnWrap, typeReg map[string]reflect.Type,
 	}
 
 	if dofnPayload.GetRestrictionCoderId() != "" {
-		fmt.Println("restrictionCoder received", dofnPayload.RestrictionCoderId)
 		wrap.restrictionCoder = dofnPayload.GetRestrictionCoderId()
 	}
 

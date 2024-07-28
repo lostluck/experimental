@@ -391,9 +391,6 @@ func handleInstruction(ctx context.Context, req *fnpb.InstructionRequest, ctrl *
 
 	case req.GetProcessBundleSplit() != nil:
 		msg := req.GetProcessBundleSplit()
-
-		// // TODO(lostluck): 2023/03/29 fix debug level logging to be flagged.
-		// // log.Debugf(ctx, "PB Split: %v", msg)
 		ref := instructionID(msg.GetInstructionId())
 		splitter, ok := ctrl.active[ref]
 		if !ok {

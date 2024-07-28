@@ -171,7 +171,6 @@ func (e *edgeDoFn[E]) toProtoParts(params translateParams) (spec *pipepb.Functio
 
 	if e.sdf != nil {
 		sdfRT := reflect.ValueOf(e.sdf).Type().Elem()
-		fmt.Println("registering sdf type:", sdfRT, sdfRT.Name())
 		wrap.SDFTypeName = sdfRT.Name()
 		params.TypeReg[wrap.SDFTypeName] = sdfRT
 	}
@@ -180,7 +179,6 @@ func (e *edgeDoFn[E]) toProtoParts(params translateParams) (spec *pipepb.Functio
 	if err != nil {
 		panic(err)
 	}
-	fmt.Println("wrapped payload: ", string(wrappedPayload))
 
 	var sis map[string]*pipepb.SideInput
 	if len(e.sides) > 0 {

@@ -4,8 +4,11 @@ import (
 	"context"
 	"fmt"
 	"iter"
+	"log/slog"
 	"math"
+	"sync"
 
+	"github.com/lostluck/experimental/altbeams/allinone2/beam/coders"
 	"golang.org/x/exp/slices"
 )
 
@@ -217,8 +220,17 @@ func (fn *splitAndSizeRestrictions[FAC, O, R, P, WES]) ProcessBundle(ctx context
 
 type processSizedElementAndRestriction[FAC RestrictionFactory[O, R, P], O Element, T Tracker[R, P], R Restriction[P], P, WES any] struct {
 	Transform[O]
-	// Pre-extracted state goes here.
-	// Appropriate handling WRT splits goes here.
+	// initialized at construction.
+	// This needs to be the full WindowedValue that we use as input, not just the restriction.
+	fullElementCoder coders.Coder[KV[KV[O, KV[R, WES]], float64]]
+	tid, inputID     string
+
+	// Locking tracker for asynchronous split management.
+	// Holds the current tracker.
+	mu      sync.Mutex
+	tracker *lockingTracker[T, R, P]
+	curEc   ElmC
+	curElm  KV[KV[O, KV[R, WES]], float64]
 }
 
 func (fn *processSizedElementAndRestriction[FAC, O, T, R, P, WES]) ProcessBundle(ctx context.Context, dfc *DFC[KV[KV[O, KV[R, WES]], float64]]) error {
@@ -250,9 +262,24 @@ func (fn *processSizedElementAndRestriction[FAC, O, T, R, P, WES]) ProcessBundle
 	return dfc.Process(func(ec ElmC, fullElm KV[KV[O, KV[R, WES]], float64]) error {
 		// Extract the restriction and create the tracker.
 		r := fullElm.Key.Value.Key
-		t := wrapWithLockTracker(makeTracker(r))
 
-		return perElmAndRest(ec, fullElm.Key.Key, t.GetRestriction(),
+		// Manage per element state so it can be accessed in
+		// the split thread.
+		fn.mu.Lock()
+		fn.curElm = fullElm
+		fn.curEc = ec
+		fn.tracker = wrapWithLockTracker(makeTracker(r), &fn.mu)
+		fn.mu.Unlock()
+
+		defer func() {
+			fn.mu.Lock()
+			defer fn.mu.Unlock()
+			fn.tracker = nil
+			fn.curElm = KV[KV[O, KV[R, WES]], float64]{}
+			fn.curEc = ElmC{}
+		}()
+
+		return perElmAndRest(ec, fullElm.Key.Key, fn.tracker.GetRestriction(),
 			/*TryClaim*/ func(perPos func(P) (P, error)) error {
 				p := r.Start()
 				// We don't need to claim the initial position, hence the tail
@@ -263,14 +290,11 @@ func (fn *processSizedElementAndRestriction[FAC, O, T, R, P, WES]) ProcessBundle
 						return err
 					}
 					p = newPos
-					//
-					// Out of band split processing here?
-					//
-					if !t.TryClaim(p) {
+					if !fn.tracker.TryClaim(p) {
 						break
 					}
 				}
-				return t.GetError()
+				return fn.tracker.GetError()
 			})
 	})
 }
@@ -279,8 +303,60 @@ func (fn *processSizedElementAndRestriction[FAC, O, T, R, P, WES]) getUserTransf
 	return fn.Transform
 }
 
+func (fn *processSizedElementAndRestriction[FAC, O, T, R, P, WES]) splitElementSource() (float64, elmSplitCallback) {
+	// At worse the progess here is a little behind.
+	// It shouldn't really change subsequent split decisions.
+	// The important thing is that we prevent SDK processing
+	// while we're actually committing to the split.
+	done, remaining := fn.tracker.GetProgress()
+	prog := done / (done + remaining)
+
+	return prog, func(fraction float64) elementSplitResult {
+		// Lock to prevent new claims and similar befor the split is complete
+		fn.mu.Lock()
+		// Get a local instance of what we're working with
+		// After the split, we don't care if the element makes additional progress
+		// on the remaining restriction.
+		ec := fn.curEc
+		elm := fn.curElm
+		wrapped := fn.tracker.wrapped
+
+		prim, resi, err := wrapped.TrySplit(fraction)
+		fn.mu.Unlock()
+		if err != nil {
+			// TODO what do we do here?
+			slog.Error("sub element split error", "error", err)
+		}
+		primBuffer := coders.NewEncoder()
+		resiBuffer := coders.NewEncoder()
+
+		// This needs to be the fullly qualified WindowedValueElement with the new restriction and size.
+		// TODO get the real window/pane here. Better event time plumbing.
+		coders.EncodeWindowedValueHeader(primBuffer, ec.EventTime(), []coders.GWC{{}}, coders.PaneInfo{})
+		coders.EncodeWindowedValueHeader(resiBuffer, ec.EventTime(), []coders.GWC{{}}, coders.PaneInfo{})
+
+		primSize := wrapped.Size(prim)
+		resiSize := wrapped.Size(resi)
+		// KV[KV[O, KV[R, WES]], float64]
+		// TODO, manually split out encoding to the component parts
+		// WVH header, element *then restriction and watermark estimator state* to avoid duplicate encoding work.
+		fn.fullElementCoder.Encode(primBuffer, Pair(Pair(elm.Key.Key, Pair(prim, elm.Key.Value.Value)), primSize))
+		fn.fullElementCoder.Encode(resiBuffer, Pair(Pair(elm.Key.Key, Pair(resi, elm.Key.Value.Value)), resiSize))
+		return elementSplitResult{
+			PS:   [][]byte{primBuffer.Data()},
+			RS:   [][]byte{resiBuffer.Data()},
+			TId:  fn.tid,
+			InId: fn.inputID,
+			// TODO watermark estimator state.
+		}
+	}
+}
+
+var _ procSizedElmAndRestIface = &processSizedElementAndRestriction[RestrictionFactory[int, Restriction[int], int], int, Tracker[Restriction[int], int], Restriction[int], int, int]{}
+
 type procSizedElmAndRestIface interface {
 	getUserTransform() any
+	splitElementSource() (prog float64, splitElement elmSplitCallback)
 }
 
 // TODO Truncate Restricton.

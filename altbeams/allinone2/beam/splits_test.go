@@ -485,25 +485,19 @@ func (simpleFac) Produce(e int) OffsetRange {
 
 func (fn *sepHarnessSDF) ProcessBundle(ctx context.Context, dfc *DFC[int]) error {
 	fn.Base.setup()
-	fmt.Println("sepHarnessSDF.ProcessBundle")
 	return fn.BoundedSDF.Process(dfc,
 		func(rest OffsetRange) *ORTracker {
 			return &ORTracker{
-				rest: rest,
+				Rest: rest,
 			}
 		},
 		func(ec ElmC, elm int, or OffsetRange, tc TryClaim[int64]) error {
 			return tc(func(p int64) (int64, error) {
 				pos := int(p)
-				fmt.Println("pos received", pos, "for elm", elm)
 				if fn.Base.isSentinel(pos) {
-					fmt.Println("blocking on", pos)
 					fn.Base.block()
-					fmt.Println("unblocking on", pos)
 				} else {
-					fmt.Println("sleeping on", pos)
 					time.Sleep(fn.Base.Sleep)
-					fmt.Println("waking on", pos)
 				}
 				fn.Output.Emit(ec, pos)
 				return p + 1, nil
@@ -559,7 +553,7 @@ func TestSeparation(t *testing.T) {
 			},
 		},
 	}
-	for _, test := range tests[1:] {
+	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			pr, err := Run(context.Background(), test.pipeline)
 			if err != nil {
