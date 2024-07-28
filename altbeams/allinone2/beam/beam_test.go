@@ -2,14 +2,23 @@ package beam
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"math"
+	"os"
 	"testing"
 	"time"
 
 	"github.com/lostluck/experimental/altbeams/allinone2/beam/internal/beamopts"
 	"golang.org/x/exp/constraints"
 )
+
+func TestMain(m *testing.M) {
+	// Not ideal but a reasonable holdout.
+	initEnvFlags(flag.CommandLine)
+	flag.Parse()
+	os.Exit(m.Run())
+}
 
 type SourceFn struct {
 	Count  int
