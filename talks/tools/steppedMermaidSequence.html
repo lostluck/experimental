@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<body>
+    <p>Render Sequence Diagram Step By Step, from start to Current.</p>
+    <p>Use <code>%% step %%</code> to demark a step.</p>
+    <p>Use<code>%% end %%</code> to insert additional "end" instructions, when stepping through nested blocks. </p>
+    <p>One end will be added per <code>%% end %%</code>, to close open blocks in that step. </p>
+    <p>Only intended for Sequence Diagrams, probably won't work for others.</p>
+    <!-- 
+       Inspired by and borrowed original steppedMermaid js from https://observablehq.com/@tomlarkworthy/animated-sequence-diagrams.
+       And some code from the answer of https://stackoverflow.com/questions/65212332/how-to-render-a-mermaid-flowchart-dynamically as well.
+       And of course, https://mermaid.js.org/config/usage.html.
+    -->
+    <div class="input">
+        <textarea style="width:500px; height:400px">
+            sequenceDiagram
+    autonumber
+    participant X as Job Executor
+    Note over X: Pre-process pipeline<br/>graph into stages
+
+    %% step %%
+    create participant S as Stages
+    X->>S: create
+
+    %% step %%
+    create participant W as SDK Worker
+    X->>W: create
+    create participant EM as ElementManager 
+    X->>EM: Configure Stages in ElementManager
+
+    %% step %%
+    activate EM
+    X->>+EM: Request Bundles
+
+    %% step %%
+    loop For each bundle from the ElementManager
+        EM->>X: Return a Bundle for a Stage
+        deactivate EM
+
+        %% end %%
+        %% step %%
+
+        X->>S: Execute Bundle
+        activate S
+
+        %% end %%
+        %% step %%
+
+        S->>+W: ProcessBundleRequest
+        S-->W: Stream Data and State for Bundle
+        W->>-S: ProcessBundleResponse
+
+        %% end %%
+        %% step %%
+
+        alt Bundle success
+            S->>EM: Persist Bundle Results
+        else Bundle failure
+            S->>EM: Report Bundle Failure
+        end
+
+        %% end %%
+        %% step %%
+
+        S->>X: Return Bundle status
+        deactivate S
+        alt Bundle success
+            Note right of X: Continue Processing.
+        else Bundle failure
+            Note right of X: Fail job
+        end
+    end
+
+    %% step %%
+
+    destroy S
+    destroy EM
+    Note over X: Terminate Job
+  </textarea>
+        <br>
+        <div>Step:</div>
+        <input type="number" id="step" min="0" value="0">
+        <button id="next">Next</button>
+        <button id="prev">Previous</button>
+        <button id="reset">Reset</button>
+    </div>
+    <div>
+        <p>output:</p>
+        <pre class="mermaid"></pre>
+        <br>
+        <pre class="processed"></pre>
+    </div>
+
+    </pre>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+
+        function steppedMermaid(index, markup) {
+            const rawSplit = markup.split(/\n\s*%% *step *%% *\n/);
+            const steps = rawSplit.slice(0, index + 1);
+            const n = steps.length - 1;
+
+            var ends = steps[n].match('%% end %%');
+            if (ends != null) {
+                ends.forEach(element => {
+                    steps[n] += '\nend\n';
+                });
+            }
+            if (n > 0) steps[n] = `rect rgb(0, 255, 200, 0.5)\n${steps[n]}\nend\n`;
+            return {out:`${steps.join('\n')}`, maxSteps: rawSplit ? rawSplit.length: 1};
+        }
+        document.querySelector("#reset").addEventListener("click", (e) => {
+            document.querySelector("#step").value = 0;
+            var target = document.querySelectorAll('.mermaid')[0];
+            target.innerHTML = "";
+            const output = document.querySelector(".processed");
+            output.innerHTML = "";
+        });
+        document.querySelector("#next").addEventListener("click", (e) => {
+            const output = document.querySelector(".processed");
+            if (output.firstChild !== null) {
+                output.innerHTML = "";
+            }
+            const code = document.querySelector(" textarea").value.trim();
+
+            const stepIndex = document.querySelector("#step").valueAsNumber;
+            const out = steppedMermaid(stepIndex, code);
+
+            const nextVal = Math.min(stepIndex+1, out.maxSteps)
+
+            document.querySelector("#step").value = nextVal;
+            output.innerHTML = out.out;
+            var target = document.querySelectorAll('.mermaid')[0];
+            target.innerHTML = out.out;
+            target.removeAttribute('data-processed') // To allow re-rendering.
+
+            mermaid.run({ nodes: document.querySelectorAll('.mermaid'), });
+        })
+        document.querySelector("#prev").addEventListener("click", (e) => {
+            document.querySelector("#step").value = Math.max(0, document.querySelector("#step").valueAsNumber - 2);
+            document.querySelector("#next").click()
+        });
+
+        mermaid.initialize({ startOnLoad: false });
+    </script>
+</body>
+
+</html>
