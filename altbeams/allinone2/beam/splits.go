@@ -191,6 +191,33 @@ func (fn *pairWithRestriction[FAC, O, R, P, WES]) ProcessBundle(ctx context.Cont
 	})
 }
 
+// TODO: Unsolved Problems
+// * Metrics in Initial and Dynamic Splits (and Checkpoint, and Watermark Estimator)
+// * Configuring the RestrictionFactory.
+//
+// The root issue with these is that they happen externally
+// to the DoFn the user wrote.
+//
+// Most likely we just pass in the DFC or analog, via an interface
+// or concrete struct wrapper of the interface.
+//
+// Not ideally, but we want a public interface for it, for documentation.
+// and the concrete wrapper for a DFC that also implements the interface.
+// That avoids the ability for users to misuse the DFC, with simple
+// type assertion.
+//
+// The tracker factory function doesn't need it, since it can
+// be a closure around the DFC to build it.
+// The other tracker methods do however need it, if only for
+// metrics purposes.
+//
+// I think what I want here is some way of passing transform scoped
+// configuration to the Setup call.
+// Eg. Have "doFn options" that are passed through pipeline options,
+// Or perhaps the annotations.
+// and only made accessible through the 
+// And then restriction
+
 // Restriction Factory must have a valid zero value. It will not be serialized?
 // HMMM. Might need to support receiving the user DoFn as configuration.
 type RestrictionFactory[O Element, R Restriction[P], P any] interface {
