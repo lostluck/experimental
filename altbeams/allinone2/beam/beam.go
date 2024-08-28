@@ -302,7 +302,7 @@ func Run(ctx context.Context, expand func(*Scope) error, opts ...Options) (Pipel
 			},
 		}
 	}
-	env.Capabilities = nil // TODO
+	env.Capabilities = []string{"beam:protocol:monitoring_info_short_ids:v1"} // TODO
 	pipe.Components.Environments["go"] = env
 
 	handle, err := universal.Execute(ctx, pipe, opt)
