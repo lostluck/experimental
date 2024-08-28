@@ -13,6 +13,7 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
+	"strings"
 )
 
 // TODO: Allow configuration of port/ return of auto selected ports.
@@ -44,6 +45,11 @@ const (
 func constructDownloadPath(rootTag, version string) string {
 	arch := runtime.GOARCH
 	opsys := runtime.GOOS
+
+	// strip RC versions if necessary.
+	if b, _, found := strings.Cut(version, "-RC"); found {
+		version = b
+	}
 
 	filename := fmt.Sprintf("apache_beam-%s-prism-%s-%s.zip", version, opsys, arch)
 
@@ -81,27 +87,36 @@ func downloadToCache(url, local string) error {
 func unzipCachedFile(zipfile, outputDir string) (string, error) {
 	zr, err := zip.OpenReader(zipfile)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("unzipCachedFile: couldn't open file: %w", err)
 	}
 	defer zr.Close()
 
 	br, err := zr.File[0].Open()
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("unzipCachedFile: couldn't inner file: %w", err)
 	}
 	defer br.Close()
 
 	output := path.Join(outputDir, zr.File[0].Name)
 
+	if _, err := os.Stat(output); err == nil {
+		// Binary already exists, lets assume it's the right one.
+		return output, nil
+	}
+
 	out, err := os.Create(output)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("unzipCachedFile: couldn't create executable: %w", err)
 	}
 	defer out.Close()
-	out.Chmod(0777) // Make file executable.
 
 	if _, err := io.Copy(out, br); err != nil {
-		return "", err
+		return "", fmt.Errorf("unzipCachedFile: couldn't copy file to final destination: %w", err)
+	}
+
+	// Make file executable.
+	if err := out.Chmod(0777); err != nil {
+		return "", fmt.Errorf("unzipCachedFile: couldn't make output file executable: %w", err)
 	}
 	return output, nil
 }
@@ -142,7 +157,7 @@ func Start(ctx context.Context, opts Options) (func(), error) {
 		bin = localPath
 	}
 
-	cmd := exec.Command(bin, "--idle_shutdown_timeout", "10s")
+	cmd := exec.Command(bin, "--idle_shutdown_timeout=10s")
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("couldn't start command %q: %w", bin, err)
 	}

@@ -256,7 +256,7 @@ func Run(ctx context.Context, expand func(*Scope) error, opts ...Options) (Pipel
 	// TODO how to better override default location for development.
 	if ef.Endpoint == "" {
 		cancelFn, err := prism.Start(ctx, prism.Options{
-			Location: "/home/lostluck/git/beam/sdks/go/cmd/prism/prism",
+			//	Location: "/home/lostluck/git/beam/sdks/go/cmd/prism/prism",
 			// TODO pick a port and pass it down.
 		})
 		if err != nil {
