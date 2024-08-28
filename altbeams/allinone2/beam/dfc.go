@@ -27,6 +27,7 @@ type DFC[E Element] struct {
 
 	metrics *metricsStore
 	logger  *slog.Logger
+	ctx     context.Context
 }
 
 func (c *DFC[E]) transformID() string {
@@ -177,12 +178,13 @@ func (c *DFC[E]) multiplex(numOut int) []processor {
 }
 
 func (c *DFC[E]) start(ctx context.Context) error {
+	c.ctx = ctx
 	// Defend against multiple initializations due to SDK side flattens.
 	if c.perElm != nil {
 		return nil
 	}
 	c.metrics.setState(0, c.edgeID)
-	if err := c.dofn.ProcessBundle(ctx, c); err != nil {
+	if err := c.dofn.ProcessBundle(c); err != nil {
 		return nil
 	}
 	for _, proc := range c.downstream {
@@ -339,4 +341,9 @@ func (c *DFC[E]) finish() error {
 // Logger returns the *slog.Logger for the current bundle and transform.
 func (c *DFC[E]) Logger() *slog.Logger {
 	return c.logger
+}
+
+// Context returns the context for this bundle.
+func (c *DFC[E]) Context() context.Context {
+	return c.ctx
 }

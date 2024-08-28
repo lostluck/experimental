@@ -77,7 +77,7 @@ type Process[E Element] func(ElmC, E) error
 
 // Transform is the only interface that needs to be implemented by most DoFns.
 type Transform[E Element] interface {
-	ProcessBundle(ctx context.Context, dfc *DFC[E]) error
+	ProcessBundle(dfc *DFC[E]) error
 }
 
 type Iter[V Element] struct {
@@ -250,6 +250,8 @@ func Run(ctx context.Context, expand func(*Scope) error, opts ...Options) (Pipel
 		}, executeSubgraph(typeReg))
 		return Pipeline{}, err
 	}
+	// ef.Endpoint = "localhost:8073"
+	// ef.EnvironmentType = "LOOPBACK"
 	// If we don't have a remote endpoint, start a local prism process.
 	// TODO how to better override default location for development.
 	if ef.Endpoint == "" {

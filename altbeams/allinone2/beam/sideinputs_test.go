@@ -49,7 +49,7 @@ type OnlySideIter[E Element] struct {
 	Out Output[E]
 }
 
-func (fn *OnlySideIter[E]) ProcessBundle(ctx context.Context, dfc *DFC[[]byte]) error {
+func (fn *OnlySideIter[E]) ProcessBundle(dfc *DFC[[]byte]) error {
 	return dfc.Process(func(ec ElmC, elm []byte) error {
 		fn.Side.All(ec)(func(elm E) bool {
 			fn.Out.Emit(ec, elm)
@@ -65,7 +65,7 @@ type OnlySideMap[K, V Element] struct {
 	Out Output[KV[K, V]]
 }
 
-func (fn *OnlySideMap[K, V]) ProcessBundle(ctx context.Context, dfc *DFC[[]byte]) error {
+func (fn *OnlySideMap[K, V]) ProcessBundle(dfc *DFC[[]byte]) error {
 	return dfc.Process(func(ec ElmC, elm []byte) error {
 		fn.Side.Keys(ec)(func(key K) bool {
 			fn.Side.Get(ec, key)(func(val V) bool {

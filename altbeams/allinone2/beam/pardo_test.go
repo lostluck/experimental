@@ -174,7 +174,7 @@ type countingSplitterFn struct {
 	Output beam.Output[beam.KV[int, int64]]
 }
 
-func (fn *countingSplitterFn) ProcessBundle(_ context.Context, dfc *beam.DFC[int]) error {
+func (fn *countingSplitterFn) ProcessBundle(dfc *beam.DFC[int]) error {
 	return fn.BoundedSDF.Process(dfc,
 		func(rest beam.OffsetRange) *beam.ORTracker {
 			return &beam.ORTracker{

@@ -1,8 +1,6 @@
 package beam
 
 import (
-	"context"
-
 	"github.com/lostluck/experimental/altbeams/allinone2/beam/coders"
 	"github.com/lostluck/experimental/altbeams/allinone2/beam/internal/harness"
 )
@@ -85,9 +83,9 @@ type datasource[E Element] struct {
 	dc *dataChannelIndex
 }
 
-func (fn *datasource[E]) ProcessBundle(ctx context.Context, dfc *DFC[[]byte]) error {
+func (fn *datasource[E]) ProcessBundle(dfc *DFC[[]byte]) error {
 	// Connect to Data service
-	elmsChan, err := fn.DC.Data.OpenElementChan(ctx, fn.SID, nil)
+	elmsChan, err := fn.DC.Data.OpenElementChan(dfc.ctx, fn.SID, nil)
 	if err != nil {
 		return err
 	}
@@ -190,8 +188,8 @@ type datasink[E Element] struct {
 	OnBundleFinish
 }
 
-func (fn *datasink[E]) ProcessBundle(ctx context.Context, dfc *DFC[E]) error {
-	wc, err := fn.DC.Data.OpenWrite(ctx, fn.SID)
+func (fn *datasink[E]) ProcessBundle(dfc *DFC[E]) error {
+	wc, err := fn.DC.Data.OpenWrite(dfc.ctx, fn.SID)
 	if err != nil {
 		return err
 	}

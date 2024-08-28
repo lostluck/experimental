@@ -1,7 +1,6 @@
 package beam
 
 import (
-	"context"
 	"fmt"
 	"reflect"
 
@@ -168,7 +167,7 @@ type liftedAddingCombine[K Keys, I, A Element] struct {
 	ObserveWindow
 }
 
-func (fn *liftedAddingCombine[K, I, A]) ProcessBundle(ctx context.Context, dfc *DFC[KV[K, I]]) error {
+func (fn *liftedAddingCombine[K, I, A]) ProcessBundle(dfc *DFC[KV[K, I]]) error {
 	// TODO, add KeyObserver so combines can access the key if needed.
 	// TODO, add a MetricsObserver
 	// TODO, add a context observer to get a "real" context from this.
@@ -237,7 +236,7 @@ type liftedMergedCombine[K Keys, A Element] struct {
 	ObserveWindow
 }
 
-func (fn *liftedMergedCombine[K, A]) ProcessBundle(ctx context.Context, dfc *DFC[KV[K, A]]) error {
+func (fn *liftedMergedCombine[K, A]) ProcessBundle(dfc *DFC[KV[K, A]]) error {
 	// TODO, add KeyObserver so combines can access the key if needed.
 	// TODO, add a MetricsObserver
 	// TODO, add a context observer to get a "real" context from this.
@@ -297,7 +296,7 @@ type mergingKeyedCombine[K Keys, A Element] struct {
 	Output Output[KV[K, A]]
 }
 
-func (fn *mergingKeyedCombine[K, A]) ProcessBundle(ctx context.Context, dfc *DFC[KV[K, Iter[A]]]) error {
+func (fn *mergingKeyedCombine[K, A]) ProcessBundle(dfc *DFC[KV[K, Iter[A]]]) error {
 	createA := func() A {
 		var a A
 		return a
@@ -327,7 +326,7 @@ type outputExtractingKeyedCombine[K Keys, A, O Element] struct {
 	OnBundleFinish
 }
 
-func (fn *outputExtractingKeyedCombine[K, A, O]) ProcessBundle(ctx context.Context, dfc *DFC[KV[K, A]]) error {
+func (fn *outputExtractingKeyedCombine[K, A, O]) ProcessBundle(dfc *DFC[KV[K, A]]) error {
 	oe, ok := fn.Merger.(OutputExtractor[A, O])
 	if !ok {
 		return fmt.Errorf("combiner %T doesn't support the AddInput method type", fn.Merger)
@@ -343,7 +342,7 @@ type identityFn[E Element] struct {
 	Output Output[E]
 }
 
-func (fn *identityFn[E]) ProcessBundle(ctx context.Context, dfc *DFC[E]) error {
+func (fn *identityFn[E]) ProcessBundle(dfc *DFC[E]) error {
 	dfc.Process(func(ec ElmC, elm E) error {
 		fn.Output.Emit(ec, elm)
 		return nil

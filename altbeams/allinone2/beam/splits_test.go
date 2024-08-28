@@ -444,7 +444,7 @@ type sepHarness[E comparable] struct {
 	Output Output[E]
 }
 
-func (fn *sepHarness[E]) ProcessBundle(ctx context.Context, dfc *DFC[E]) error {
+func (fn *sepHarness[E]) ProcessBundle(dfc *DFC[E]) error {
 	fn.Base.setup()
 
 	return dfc.Process(func(ec ElmC, elm E) error {
@@ -483,7 +483,7 @@ func (simpleFac) Produce(e int) OffsetRange {
 	return OffsetRange{0, 10}
 }
 
-func (fn *sepHarnessSDF) ProcessBundle(ctx context.Context, dfc *DFC[int]) error {
+func (fn *sepHarnessSDF) ProcessBundle(dfc *DFC[int]) error {
 	fn.Base.setup()
 	return fn.BoundedSDF.Process(dfc,
 		func(rest OffsetRange) *ORTracker {

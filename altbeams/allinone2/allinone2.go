@@ -24,7 +24,7 @@ type MyDoFn struct {
 	beam.OnBundleFinish
 }
 
-func (fn *MyDoFn) ProcessBundle(ctx context.Context, dfc *beam.DFC[string]) error {
+func (fn *MyDoFn) ProcessBundle(dfc *beam.DFC[string]) error {
 	// Do some startbundle work.
 	fmt.Printf("%v started\n", fn.Name)
 	processed := 0
@@ -51,7 +51,7 @@ type MyIncDoFn struct {
 	beam.OnBundleFinish
 }
 
-func (fn *MyIncDoFn) ProcessBundle(ctx context.Context, dfc *beam.DFC[int]) error {
+func (fn *MyIncDoFn) ProcessBundle(dfc *beam.DFC[int]) error {
 	// Do some startbundle work.
 	logger := dfc.Logger().With("name", fn.Name)
 	logger.Info("MyIncDoFn started")
@@ -81,7 +81,7 @@ type SourceFn struct {
 	beam.OnBundleFinish
 }
 
-func (fn *SourceFn) ProcessBundle(ctx context.Context, dfc *beam.DFC[[]byte]) error {
+func (fn *SourceFn) ProcessBundle(dfc *beam.DFC[[]byte]) error {
 	// Do some startbundle work.
 	logger := dfc.Logger().With("name", fn.Name)
 	logger.Info("SourceFn started")
@@ -111,7 +111,7 @@ type DiscardFn[E any] struct {
 	Processed beam.Counter
 }
 
-func (fn *DiscardFn[E]) ProcessBundle(ctx context.Context, dfc *beam.DFC[E]) error {
+func (fn *DiscardFn[E]) ProcessBundle(dfc *beam.DFC[E]) error {
 	// Do some startbundle work.
 	logger := dfc.Logger().With("name", fn.Name)
 	logger.Info("DiscardFn started")

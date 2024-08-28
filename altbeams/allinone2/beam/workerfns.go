@@ -1,9 +1,5 @@
 package beam
 
-import (
-	"context"
-)
-
 // workerfns.go is where SDK side transforms and their abstract graph representations live.
 // They provide common utility that pipeline execution needs to correctly implement the beam model.
 // Note that they are largely implemented in the same manner as user DoFns.
@@ -19,7 +15,7 @@ type multiplex[E Element] struct {
 	Outs []Output[E]
 }
 
-func (fn *multiplex[E]) ProcessBundle(ctx context.Context, dfc *DFC[E]) error {
+func (fn *multiplex[E]) ProcessBundle(dfc *DFC[E]) error {
 	dfc.Process(func(ec ElmC, elm E) error {
 		for _, out := range fn.Outs {
 			out.Emit(ec, elm)
@@ -34,7 +30,7 @@ func (fn *multiplex[E]) ProcessBundle(ctx context.Context, dfc *DFC[E]) error {
 // a consumer is valid on each element.
 type discard[E Element] struct{}
 
-func (fn *discard[E]) ProcessBundle(ctx context.Context, dfc *DFC[E]) error {
+func (fn *discard[E]) ProcessBundle(dfc *DFC[E]) error {
 	dfc.Process(func(ec ElmC, elm E) error {
 		return nil
 	})

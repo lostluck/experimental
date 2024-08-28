@@ -25,7 +25,7 @@ type SourceFn struct {
 	Output Output[int]
 }
 
-func (fn *SourceFn) ProcessBundle(ctx context.Context, dfc *DFC[[]byte]) error {
+func (fn *SourceFn) ProcessBundle(dfc *DFC[[]byte]) error {
 	// Do some startbundle work.
 	processed := 0
 	dfc.Process(func(ec ElmC, _ []byte) error {
@@ -44,7 +44,7 @@ type DiscardFn[E Element] struct {
 	Processed, Finished Counter
 }
 
-func (fn *DiscardFn[E]) ProcessBundle(ctx context.Context, dfc *DFC[E]) error {
+func (fn *DiscardFn[E]) ProcessBundle(dfc *DFC[E]) error {
 	dfc.Process(func(ec ElmC, elm E) error {
 		fn.Processed.Inc(dfc, 1)
 		return nil
@@ -62,7 +62,7 @@ type IdenFn[E Element] struct {
 	BundleStarts Counter
 }
 
-func (fn *IdenFn[E]) ProcessBundle(ctx context.Context, dfc *DFC[E]) error {
+func (fn *IdenFn[E]) ProcessBundle(dfc *DFC[E]) error {
 	fn.BundleStarts.Inc(dfc, 1)
 	dfc.Process(func(ec ElmC, elm E) error {
 		fn.Output.Emit(ec, elm)
@@ -170,7 +170,7 @@ type ModPartition[V constraints.Integer] struct {
 	Outputs []Output[V] // The count needs to be properly serialized, ultimately.
 }
 
-func (fn *ModPartition[V]) ProcessBundle(ctx context.Context, dfc *DFC[V]) error {
+func (fn *ModPartition[V]) ProcessBundle(dfc *DFC[V]) error {
 	mod := V(len(fn.Outputs))
 	dfc.Process(func(ec ElmC, elm V) error {
 		rem := elm % mod
@@ -257,7 +257,7 @@ type KeyMod[V constraints.Integer] struct {
 	Output Output[KV[V, V]]
 }
 
-func (fn *KeyMod[V]) ProcessBundle(ctx context.Context, dfc *DFC[V]) error {
+func (fn *KeyMod[V]) ProcessBundle(dfc *DFC[V]) error {
 	dfc.Process(func(ec ElmC, elm V) error {
 		mod := elm % fn.Mod
 		fn.Output.Emit(ec, KV[V, V]{
@@ -273,7 +273,7 @@ type SumByKey[K Keys, V constraints.Integer | constraints.Float] struct {
 	Output Output[KV[K, V]]
 }
 
-func (fn *SumByKey[K, V]) ProcessBundle(ctx context.Context, dfc *DFC[KV[K, Iter[V]]]) error {
+func (fn *SumByKey[K, V]) ProcessBundle(dfc *DFC[KV[K, Iter[V]]]) error {
 	dfc.Process(func(ec ElmC, elm KV[K, Iter[V]]) error {
 		var sum V
 		elm.Value.All()(func(elm V) bool {
@@ -299,7 +299,7 @@ var (
 	EOGW            = MaxET.Add(-time.Hour * 24)
 )
 
-func (fn *GroupKeyModSum[V]) ProcessBundle(ctx context.Context, dfc *DFC[V]) error {
+func (fn *GroupKeyModSum[V]) ProcessBundle(dfc *DFC[V]) error {
 	grouped := map[V]V{}
 	dfc.Process(func(ec ElmC, elm V) error {
 		mod := elm % fn.Mod

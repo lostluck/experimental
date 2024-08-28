@@ -1,7 +1,6 @@
 package beam
 
 import (
-	"context"
 	"fmt"
 	"iter"
 	"log/slog"
@@ -172,7 +171,7 @@ type pairWithRestriction[FAC RestrictionFactory[O, R, P], O Element, R Restricti
 	Output  Output[KV[O, KV[R, WES]]]
 }
 
-func (fn *pairWithRestriction[FAC, O, R, P, WES]) ProcessBundle(ctx context.Context, dfc *DFC[O]) error {
+func (fn *pairWithRestriction[FAC, O, R, P, WES]) ProcessBundle(dfc *DFC[O]) error {
 	if err := fn.Factory.Setup(); err != nil {
 		return err
 	}
@@ -215,7 +214,7 @@ func (fn *pairWithRestriction[FAC, O, R, P, WES]) ProcessBundle(ctx context.Cont
 // configuration to the Setup call.
 // Eg. Have "doFn options" that are passed through pipeline options,
 // Or perhaps the annotations.
-// and only made accessible through the 
+// and only made accessible through the
 // And then restriction
 
 // Restriction Factory must have a valid zero value. It will not be serialized?
@@ -235,7 +234,7 @@ type splitAndSizeRestrictions[FAC RestrictionFactory[O, R, P], O Element, R Rest
 	Output  Output[KV[KV[O, KV[R, WES]], float64]]
 }
 
-func (fn *splitAndSizeRestrictions[FAC, O, R, P, WES]) ProcessBundle(ctx context.Context, dfc *DFC[KV[O, KV[R, WES]]]) error {
+func (fn *splitAndSizeRestrictions[FAC, O, R, P, WES]) ProcessBundle(dfc *DFC[KV[O, KV[R, WES]]]) error {
 	fn.Factory.Setup()
 	return dfc.Process(func(ec ElmC, elm KV[O, KV[R, WES]]) error {
 		for subR, size := range fn.Factory.InitialSplit(elm.Key, elm.Value.Key) {
@@ -260,7 +259,7 @@ type processSizedElementAndRestriction[FAC RestrictionFactory[O, R, P], O Elemen
 	curElm  KV[KV[O, KV[R, WES]], float64]
 }
 
-func (fn *processSizedElementAndRestriction[FAC, O, T, R, P, WES]) ProcessBundle(ctx context.Context, dfc *DFC[KV[KV[O, KV[R, WES]], float64]]) error {
+func (fn *processSizedElementAndRestriction[FAC, O, T, R, P, WES]) ProcessBundle(dfc *DFC[KV[KV[O, KV[R, WES]], float64]]) error {
 
 	// Create a "fake" DFC to pass to the user ProcessBundle.
 	// Like normal processing, we use this to extract configuration from the user
@@ -269,10 +268,11 @@ func (fn *processSizedElementAndRestriction[FAC, O, T, R, P, WES]) ProcessBundle
 		id: dfc.id, logger: dfc.logger, edgeID: dfc.edgeID,
 		transform: dfc.transform, downstream: dfc.downstream,
 		metrics: dfc.metrics,
+		ctx:     dfc.ctx,
 	}
 
 	// User transform is initialized like usual here.
-	if err := fn.Transform.ProcessBundle(ctx, userDfc); err != nil {
+	if err := fn.Transform.ProcessBundle(userDfc); err != nil {
 		return err
 	}
 	if userDfc.perElm != nil {

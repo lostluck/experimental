@@ -1,7 +1,6 @@
 package beam
 
 import (
-	"context"
 	"fmt"
 
 	pipepb "github.com/lostluck/experimental/altbeams/allinone2/beam/internal/model/pipeline_v1"
@@ -98,7 +97,7 @@ type flatten[E Element] struct {
 	Output Output[E]
 }
 
-func (fn *flatten[E]) ProcessBundle(ctx context.Context, dfc *DFC[E]) error {
+func (fn *flatten[E]) ProcessBundle(dfc *DFC[E]) error {
 	dfc.Process(func(ec ElmC, elm E) error {
 		fn.Output.Emit(ec, elm)
 		return nil
