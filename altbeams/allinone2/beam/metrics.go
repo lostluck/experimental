@@ -160,7 +160,7 @@ type dataChannelIndex struct {
 // the caller should abort further element processing, and finish the bundle.
 // Returns true if the new value of index is greater than or equal to the split
 // index, and false otherwise.
-func (c *dataChannelIndex) IncrementAndCheckSplit(dfc metricSource) bool {
+func (c *dataChannelIndex) IncrementAndCheckSplit(dfc Metrics) bool {
 	if c.metricIndex == 0 {
 		ms := dfc.metricsStore()
 		c.metricIndex = len(ms.metrics)
@@ -192,12 +192,21 @@ type metricNamer interface {
 	setName(name string)
 }
 
-type metricSource interface {
+// Metrics implementations enable users to update beam metrics for a job,
+// to be aggregated by the runner.
+//
+// Metrics are recorded as a tuple of the transform and the metric in question,
+// so the same metric name used in different transforms are considered distinct.
+//
+// The 'DFC' type implements Metrics and can be used for standard DoFns.
+// Other contexts where user metrics are appropriate may also have a paremeter that
+// implement Metrics.
+type Metrics interface {
 	transformID() string
 	metricsStore() *metricsStore
 }
 
-func (c *Counter) Inc(dfc metricSource, diff int64) {
+func (c *Counter) Inc(dfc Metrics, diff int64) {
 	// TODO determine if there's a way to get this to be inlined.
 	ms := dfc.metricsStore()
 	if c.index == 0 {
