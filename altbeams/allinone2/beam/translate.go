@@ -499,7 +499,7 @@ func unmarshalToGraph(typeReg map[string]reflect.Type, pbd *fnpb.ProcessBundleDe
 				panic(fmt.Sprintf("type in transform %v doesn't have a ProcessBundle method: %v", name, dofnPtrRT))
 			}
 			// Extract the DFC type, and produce an instance of it for our use.
-			dfcRT := pbm.Type.In(2).Elem()
+			dfcRT := pbm.Type.In(1).Elem()
 			dofnType = dofnPtrRT.Elem()
 			proc = reflect.New(dfcRT).Interface().(processor)
 
