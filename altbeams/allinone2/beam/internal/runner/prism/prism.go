@@ -36,7 +36,7 @@ var (
 )
 
 const (
-	beamVersion  = "v2.57.0"
+	beamVersion  = "v2.59.0-RC1"
 	tagRoot      = "https://github.com/apache/beam/releases/tag"
 	downloadRoot = "https://github.com/apache/beam/releases/download"
 )
