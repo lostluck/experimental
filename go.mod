@@ -7,13 +7,13 @@ require (
 	github.com/go-json-experiment/json v0.0.0-20231102232822-2e55bd4e08b0
 	github.com/google/go-cmp v0.6.0
 	github.com/google/uuid v1.6.0
-	github.com/jba/slog v0.2.0 
+	github.com/jba/slog v0.2.0
 	github.com/pkg/errors v0.9.1
 	golang.org/x/exp v0.0.0-20240103183307-be819d1f06fc
 	golang.org/x/sync v0.7.0
 	google.golang.org/grpc v1.64.1
 	google.golang.org/protobuf v1.34.1
-	gopkg.in/yaml.v3 v3.0.1 
+	gopkg.in/yaml.v3 v3.0.1
 	pgregory.net/rand v1.0.2
 )
 
@@ -26,7 +26,7 @@ require (
 	cloud.google.com/go/storage v1.39.1 // indirect
 	github.com/Microsoft/go-winio v0.6.1 // indirect
 	github.com/distribution/reference v0.5.0 // indirect
-	github.com/docker/docker v25.0.5+incompatible // indirect
+	github.com/docker/docker v25.0.6+incompatible // indirect
 	github.com/docker/go-connections v0.5.0 // indirect
 	github.com/docker/go-units v0.5.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
