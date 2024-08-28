@@ -161,9 +161,7 @@ func Start(ctx context.Context, opts Options) (func(), error) {
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("couldn't start command %q: %w", bin, err)
 	}
-	fmt.Println("started prism")
 	return func() {
 		cmd.Process.Kill()
-		fmt.Println("killed prism")
 	}, nil
 }

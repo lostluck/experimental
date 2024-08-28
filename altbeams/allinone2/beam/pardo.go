@@ -72,7 +72,6 @@ func (g *graph) deferDoFn(dofn any, input nodeIndex, global edgeIndex) (ins, out
 				sides[sf.Name] = feature.accessPatternUrn()
 				g.initSideInput(feature, global, sf.Name, ins)
 			case sdfHandler:
-				fmt.Printf("initializing sdfHandler %T\n", feature)
 				if extras == nil {
 					extras = &dofnExtras{}
 				}
@@ -208,7 +207,6 @@ func (e *edgeDoFn[E]) toProtoParts(params translateParams) (spec *pipepb.Functio
 
 	if e.sdf != nil {
 		payloadProto.RestrictionCoderId = e.addCoder(params.InternedCoders, params.Comps.GetCoders())
-		fmt.Println("added restrictionCoder", payloadProto.RestrictionCoderId)
 	}
 
 	payload, _ := proto.Marshal(payloadProto)

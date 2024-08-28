@@ -228,8 +228,6 @@ func Run(ctx context.Context, expand func(*Scope) error, opts ...Options) (Pipel
 	typeReg := map[string]reflect.Type{}
 	pipe := g.marshal(typeReg)
 
-	fmt.Println("beam.Run: flags:", os.Args)
-
 	ef := new(envFlags)
 	wf := new(workerFlags)
 	if !flag.Parsed() {
@@ -255,17 +253,13 @@ func Run(ctx context.Context, expand func(*Scope) error, opts ...Options) (Pipel
 	// If we don't have a remote endpoint, start a local prism process.
 	// TODO how to better override default location for development.
 	if ef.Endpoint == "" {
-		cancelFn, err := prism.Start(ctx, prism.Options{
+		_, err := prism.Start(ctx, prism.Options{
 			//	Location: "/home/lostluck/git/beam/sdks/go/cmd/prism/prism",
 			// TODO pick a port and pass it down.
 		})
 		if err != nil {
 			return Pipeline{}, err
 		}
-		// TODO: ensure external processes started are shutdown blocking
-		// Otherwise we leave dangling processes around.
-		// TODO determine the right way to handle testing.
-		defer cancelFn()
 		ef.Endpoint = "localhost:8073"
 		// If unset, use loopback mode when using default prism.
 		if ef.EnvironmentType == "" {
