@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"iter"
 
 	"github.com/lostluck/experimental/altbeams/allinone2/beam/coders"
 	"github.com/lostluck/experimental/altbeams/allinone2/beam/internal/harness"
@@ -59,7 +60,7 @@ func (si *SideInputIter[E]) initialize(ctx context.Context, dataCon harness.Data
 
 var _ sideIface = &SideInputIter[int]{}
 
-func (si *SideInputIter[E]) All(ec ElmC) func(perElm func(elm E) bool) {
+func (si *SideInputIter[E]) All(ec ElmC) iter.Seq[E] {
 	enc := coders.NewEncoder()
 	w := ec.windows[0]
 	w.Encode(enc)
@@ -67,7 +68,7 @@ func (si *SideInputIter[E]) All(ec ElmC) func(perElm func(elm E) bool) {
 	return iterClosure[E](r)
 }
 
-func iterClosure[E Element](r harness.NextBuffer) func(perElm func(elm E) bool) {
+func iterClosure[E Element](r harness.NextBuffer) iter.Seq[E] {
 	c := MakeCoder[E]()
 	return func(perElm func(elm E) bool) {
 
@@ -159,7 +160,7 @@ func (si *SideInputMap[K, V]) initialize(ctx context.Context, dataCon harness.Da
 var _ sideIface = &SideInputMap[int, int]{}
 
 // Get looks up an iterator of values associated with the key.
-func (si *SideInputMap[K, V]) Get(ec ElmC, k K) func(perElm func(elm V) bool) {
+func (si *SideInputMap[K, V]) Get(ec ElmC, k K) iter.Seq[V] {
 	w := ec.windows[0]
 	encW := coders.NewEncoder()
 	w.Encode(encW)
@@ -173,7 +174,7 @@ func (si *SideInputMap[K, V]) Get(ec ElmC, k K) func(perElm func(elm V) bool) {
 }
 
 // Get looks up an iterator of values associated with the key.
-func (si *SideInputMap[K, V]) Keys(ec ElmC) func(perElm func(elm K) bool) {
+func (si *SideInputMap[K, V]) Keys(ec ElmC) iter.Seq[K] {
 	w := ec.windows[0]
 	encW := coders.NewEncoder()
 	w.Encode(encW)
