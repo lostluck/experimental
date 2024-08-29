@@ -236,7 +236,7 @@ func (g *graph) build(ctx context.Context, dataCon harness.DataContext) ([]proce
 			for i := 0; i < rv.NumField(); i++ {
 				fv := rv.Field(i)
 				if mn, ok := fv.Addr().Interface().(metricNamer); ok {
-					mn.setName(rt.Field(i).Name)
+					mn.setName("user", rt.Field(i).Name)
 				}
 			}
 			// If this is the parallel input, the dofn needs to be set on the incoming DFC.

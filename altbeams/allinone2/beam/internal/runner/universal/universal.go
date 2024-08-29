@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/lostluck/experimental/altbeams/allinone2/beam/coders"
 	"github.com/lostluck/experimental/altbeams/allinone2/beam/internal/beamopts"
 	"github.com/lostluck/experimental/altbeams/allinone2/beam/internal/harness"
 	jobpb "github.com/lostluck/experimental/altbeams/allinone2/beam/internal/model/jobmanagement_v1"
@@ -240,6 +241,33 @@ func (r *Results) UserCounters() map[string]int64 {
 		key := fmt.Sprintf("%s.%s", un, mon.Labels["NAME"])
 		v, _ := protowire.ConsumeVarint(mon.GetPayload())
 		cs[key] = int64(v)
+	}
+	return cs
+}
+
+func (r *Results) UserDistributions() map[string]struct{ Count, Sum, Min, Max int64 } {
+	cs := map[string]struct{ Count, Sum, Min, Max int64 }{}
+	for _, mon := range r.res.GetCommitted() {
+		if mon.Urn != "beam:metric:user:distribution_int64:v1" {
+			continue
+		}
+		if mon.Type != "beam:metrics:distribution_int64:v1" {
+			continue
+		}
+		un := r.pipe.GetComponents().GetTransforms()[mon.Labels["PTRANSFORM"]].GetUniqueName()
+
+		key := fmt.Sprintf("%s.%s", un, mon.Labels["NAME"])
+		dec := coders.NewDecoder(mon.GetPayload())
+		count := int64(dec.Varint())
+		sum := int64(dec.Varint())
+		min := int64(dec.Varint())
+		max := int64(dec.Varint())
+		cs[key] = struct{ Count, Sum, Min, Max int64 }{
+			Count: count,
+			Sum:   sum,
+			Min:   min,
+			Max:   max,
+		}
 	}
 	return cs
 }

@@ -17,7 +17,7 @@ func TestSideInputIter(t *testing.T) {
 		onlySide := ParDo(s, imp, &OnlySideIter[int]{Side: AsSideIter(src.Output)})
 		namedDiscard(s, onlySide.Out, "sink")
 		return nil
-	})
+	}, pipeName(t))
 	if err != nil {
 		t.Error(err)
 	}
@@ -34,7 +34,7 @@ func TestSideInputMap(t *testing.T) {
 		onlySide := ParDo(s, imp, &OnlySideMap[int, int]{Side: AsSideMap(kvsrc.Output)})
 		namedDiscard(s, onlySide.Out, "sink")
 		return nil
-	})
+	}, pipeName(t))
 	if err != nil {
 		t.Error(err)
 	}

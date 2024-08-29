@@ -1,6 +1,9 @@
 package beam
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 func FuzzSamplerState(f *testing.F) {
 	f.Add(uint8(0), uint16(0), uint16(0))
@@ -29,4 +32,40 @@ func FuzzSamplerState(f *testing.F) {
 			t.Errorf("incorrect state transition: got %v, want %v", got, want)
 		}
 	})
+}
+
+type DistFn struct {
+	Dist DistributionInt64
+}
+
+func (fn *DistFn) ProcessBundle(dfc *DFC[int]) error {
+	return dfc.Process(func(ec ElmC, i int) error {
+		fn.Dist.Update(dfc, int64(i))
+		return nil
+	})
+}
+
+func TestDistributionInt64(t *testing.T) {
+	pipe, err := Run(context.TODO(), func(s *Scope) error {
+		imp := Impulse(s)
+		src := ParDo(s, imp, &SourceFn{Count: 10})
+		ParDo(s, src.Output, &DistFn{}, Name("sink"))
+		return nil
+	}, pipeName(t))
+	if err != nil {
+		t.Error(err)
+	}
+	dist := pipe.Distributions["sink.Dist"]
+	if got, want := dist.Count, int64(10); got != want {
+		t.Errorf("incorrect state transition: got %v, want %v", got, want)
+	}
+	if got, want := dist.Sum, int64(45); got != want {
+		t.Errorf("incorrect state transition: got %v, want %v", got, want)
+	}
+	if got, want := dist.Min, int64(0); got != want {
+		t.Errorf("incorrect state transition: got %v, want %v", got, want)
+	}
+	if got, want := dist.Max, int64(9); got != want {
+		t.Errorf("incorrect state transition: got %v, want %v", got, want)
+	}
 }

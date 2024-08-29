@@ -151,7 +151,10 @@ func (s *Scope) String() string {
 // Pipeline is a handle to a running or terminated pipeline for
 // programmatic access to the given runner.
 type Pipeline struct {
-	Counters map[string]int64
+
+	// TODO make these methods instead & support cancellation.
+	Counters      map[string]int64
+	Distributions map[string]struct{ Count, Sum, Min, Max int64 }
 }
 
 // Composite transforms allow structural re-use of sub pipelines.
@@ -310,7 +313,8 @@ func Run(ctx context.Context, expand func(*Scope) error, opts ...Options) (Pipel
 	}
 
 	p := Pipeline{
-		Counters: r.UserCounters(),
+		Counters:      r.UserCounters(),
+		Distributions: r.UserDistributions(),
 	}
 	return p, nil
 }

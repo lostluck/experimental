@@ -108,7 +108,7 @@ type DiscardFn[E any] struct {
 	Name string
 	beam.OnBundleFinish
 
-	Processed beam.Counter
+	Processed beam.CounterInt64
 }
 
 func (fn *DiscardFn[E]) ProcessBundle(dfc *beam.DFC[E]) error {

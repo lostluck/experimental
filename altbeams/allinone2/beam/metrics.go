@@ -3,6 +3,7 @@ package beam
 import (
 	"context"
 	"fmt"
+	"math"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -39,7 +40,7 @@ type metricLabels struct {
 func (ms *metricsStore) initMetric(transform, name string, v any) int {
 	id := len(ms.metrics)
 	ms.metrics = append(ms.metrics, v)
-	ms.metricNames[id] = metricLabels{Ptransform: transform, Name: name}
+	ms.metricNames[id] = metricLabels{Ptransform: transform, Namespace: "user", Name: name}
 	return id
 }
 
@@ -65,6 +66,18 @@ func (ms *metricsStore) MonitoringInfos(g *graph) []*pipepb.MonitoringInfo {
 			mon.Urn = "beam:metric:user:sum_int64:v1"
 			mon.Type = "beam:metrics:sum_int64:v1"
 			mon.Payload = encVarInt(m.sum.Load())
+		case *int64Dist:
+			mon.Urn = "beam:metric:user:distribution_int64:v1"
+			mon.Type = "beam:metrics:distribution_int64:v1"
+
+			enc := coders.NewEncoder()
+			m.mu.Lock()
+			enc.Varint(uint64(m.count))
+			enc.Varint(uint64(m.sum))
+			enc.Varint(uint64(m.min))
+			enc.Varint(uint64(m.max))
+			m.mu.Unlock()
+			mon.Payload = enc.Data()
 		case *dataChannelIndex:
 			mon.Urn = "beam:metric:data_channel:read_index:v1"
 			mon.Type = "beam:metrics:sum_int64:v1"
@@ -148,6 +161,20 @@ func (m *int64Sum) add(d int64) {
 	m.sum.Add(d)
 }
 
+type int64Dist struct {
+	mu                   sync.Mutex
+	sum, count, min, max int64
+}
+
+func (m *int64Dist) update(val int64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.count++
+	m.sum += val
+	m.min = min(m.min, val)
+	m.max = max(m.max, val)
+}
+
 type dataChannelIndex struct {
 	transform   string
 	metricIndex int
@@ -178,18 +205,13 @@ type metricscommon struct {
 	namespace, name string
 }
 
-type Counter struct {
-	beamMixin
-
-	metricscommon
-}
-
-func (mc *metricscommon) setName(name string) {
+func (mc *metricscommon) setName(namepsace, name string) {
+	mc.namespace = namepsace
 	mc.name = name
 }
 
 type metricNamer interface {
-	setName(name string)
+	setName(namespace, name string)
 }
 
 // Metrics implementations enable users to update beam metrics for a job,
@@ -206,13 +228,34 @@ type Metrics interface {
 	metricsStore() *metricsStore
 }
 
-func (c *Counter) Inc(dfc Metrics, diff int64) {
+// CounterInt64 represents a int64 counter metric.
+type CounterInt64 struct {
+	beamMixin
+
+	metricscommon
+}
+
+func (c *CounterInt64) Inc(dfc Metrics, diff int64) {
 	// TODO determine if there's a way to get this to be inlined.
 	ms := dfc.metricsStore()
 	if c.index == 0 {
 		c.index = ms.initMetric(dfc.transformID(), c.name, &int64Sum{})
 	}
 	ms.metrics[c.index].(*int64Sum).add(diff)
+}
+
+type DistributionInt64 struct {
+	beamMixin
+
+	metricscommon
+}
+
+func (c *DistributionInt64) Update(dfc Metrics, val int64) {
+	ms := dfc.metricsStore()
+	if c.index == 0 {
+		c.index = ms.initMetric(dfc.transformID(), c.name, &int64Dist{min: math.MaxInt64, max: math.MinInt64})
+	}
+	ms.metrics[c.index].(*int64Dist).update(val)
 }
 
 type pcollectionMetrics struct {
