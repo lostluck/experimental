@@ -65,8 +65,6 @@ func Execute(ctx context.Context, p *pipepb.Pipeline, opts beamopts.Struct) (*Pi
 		return nil, fmt.Errorf("preparing job name %v: %w", prepReq.JobName, err)
 	}
 
-	//log.Infof(ctx, "Prepared job with id: %v and staging token: %v", prepID, st)
-
 	// (2) Stage artifacts.
 	ctx = writeWorkerID(ctx, prepResp.GetPreparationId())
 	artcc, err := harness.Dial(ctx,
@@ -79,21 +77,16 @@ func Execute(ctx context.Context, p *pipepb.Pipeline, opts beamopts.Struct) (*Pi
 		return nil, fmt.Errorf("staging artifacts: %w", err)
 	}
 
-	// slog.InfoContext(ctx, "Staged binary artifact", "token", prepResp.GetStagingSessionToken())
-
 	// (3) Submit job
 	runReq := &jobpb.RunJobRequest{
 		PreparationId:  prepResp.GetPreparationId(),
 		RetrievalToken: prepResp.GetStagingSessionToken(),
 	}
 
-	// slog.InfoContext(ctx, "Submitting job", "name", prepReq.GetJobName())
 	runResp, err := client.Run(ctx, runReq)
 	if err != nil {
 		return nil, fmt.Errorf("failed to submit job: %w", err)
 	}
-
-	// slog.InfoContext(ctx, "Submitted Job", "id", runResp.GetJobId())
 
 	handle := &Pipeline{
 		pipe:   p,
@@ -102,14 +95,24 @@ func Execute(ctx context.Context, p *pipepb.Pipeline, opts beamopts.Struct) (*Pi
 		close: func() {
 			cc.Close()
 		},
+		// TODO make logger configurable.
+		logger: slog.New(disabledHandler{}),
 	}
 
 	return handle, handle.Wait(ctx)
 }
 
+type disabledHandler struct {
+	slog.Handler
+}
+
+func (disabledHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	return false
+}
+
 // waitForCompletion monitors the given job until completion. It logs any messages
 // and state changes received.
-func waitForCompletion(ctx context.Context, client jobpb.JobServiceClient, jobID string) error {
+func waitForCompletion(ctx context.Context, logger *slog.Logger, client jobpb.JobServiceClient, jobID string) error {
 	stream, err := client.GetMessageStream(ctx, &jobpb.JobMessagesRequest{JobId: jobID})
 	if err != nil {
 		return errors.Wrap(err, "failed to get job stream")
@@ -152,7 +155,7 @@ func waitForCompletion(ctx context.Context, client jobpb.JobServiceClient, jobID
 			resp := msg.GetMessageResponse()
 
 			text := fmt.Sprintf("%v (%v): %v", resp.GetTime(), resp.GetMessageId(), resp.GetMessageText())
-			slog.Log(ctx, messageSeverity(resp.GetImportance()), text)
+			logger.Log(ctx, messageSeverity(resp.GetImportance()), text)
 
 			if resp.GetImportance() >= jobpb.JobMessage_JOB_MESSAGE_ERROR {
 				errReceived = true
@@ -189,12 +192,13 @@ type Pipeline struct {
 
 	jobID  string
 	client jobpb.JobServiceClient
+	logger *slog.Logger
 
 	close func()
 }
 
 func (p *Pipeline) Wait(ctx context.Context) error {
-	return waitForCompletion(ctx, p.client, p.jobID)
+	return waitForCompletion(ctx, p.logger, p.client, p.jobID)
 }
 
 func (p *Pipeline) Cancel(ctx context.Context) (jobpb.JobState_Enum, error) {
