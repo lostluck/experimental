@@ -26,6 +26,9 @@ func MakeCoder[E any]() Coder[E] {
 	if rt.Kind() == reflect.Struct {
 		return makeRowCoder[E](rt).(Coder[E])
 	}
+	// if rt.Kind() == reflect.Slice {
+	// 	return makeSliceCoder[E](rt).(Coder[E])
+	// }
 	return makeCoder(reflect.TypeOf(e)).(Coder[E])
 }
 
@@ -56,6 +59,8 @@ func makeCoder(rt reflect.Type) any {
 		return varintCoder[uint64]{}
 	case reflect.Float64:
 		return doubleCoder{}
+	case reflect.String:
+		return stringCoder{}
 	case reflect.Slice:
 		switch rt.Elem().Kind() {
 		case reflect.Uint8:
@@ -123,6 +128,12 @@ func (c *rowStructCoder[T]) Decode(dec *Decoder) T {
 	return rv.Interface().(T)
 }
 
+func makeSliceCoder[E any](rt reflect.Type) any {
+	panic("makeSliceCoder is unimplemented")
+}
+
+type sliceCoder[T any] struct{}
+
 type varintCoder[T constraints.Integer] struct{}
 
 func (varintCoder[T]) Encode(enc *Encoder, v T) {
@@ -151,6 +162,16 @@ func (bytesCoder) Encode(enc *Encoder, v []byte) {
 
 func (bytesCoder) Decode(dec *Decoder) []byte {
 	return dec.Bytes()
+}
+
+type stringCoder struct{}
+
+func (stringCoder) Encode(enc *Encoder, v string) {
+	enc.StringUtf8(v)
+}
+
+func (stringCoder) Decode(dec *Decoder) string {
+	return dec.StringUtf8()
 }
 
 type doubleCoder struct{}
