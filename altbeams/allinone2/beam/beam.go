@@ -248,11 +248,12 @@ func Run(ctx context.Context, expand func(*Scope) error, opts ...Options) (Pipel
 			// Pull from environment variables.
 			// StatusEndpoint: *TODO,
 			// RunnerCapabilities:  TODO,
-		}, executeSubgraph(typeReg))
+		}, executeSubgraph(typeReg, g.edgeMeta))
 		return Pipeline{}, err
 	}
 	// ef.Endpoint = "localhost:8073"
-	// ef.EnvironmentType = "LOOPBACK"
+	// ef.EnvironmentType = "DOCKER"
+
 	// If we don't have a remote endpoint, start a local prism process.
 	// TODO how to better override default location for development.
 	if ef.Endpoint == "" {
@@ -279,7 +280,7 @@ func Run(ctx context.Context, expand func(*Scope) error, opts ...Options) (Pipel
 	}
 	opt.Join(opts...)
 
-	env, err := extractEnv(ctx, ef, typeReg)
+	env, err := extractEnv(ctx, ef, typeReg, g.edgeMeta)
 	if err != nil {
 		return Pipeline{}, fmt.Errorf("error configuring pipeline environment: %w", err)
 	}
@@ -321,7 +322,7 @@ func Run(ctx context.Context, expand func(*Scope) error, opts ...Options) (Pipel
 
 // ExtractEnv takes the current environment configuration and pipeline pre-build
 // and produces the environment proto for the runner.
-func extractEnv(ctx context.Context, ef *envFlags, typeReg map[string]reflect.Type) (*pipepb.Environment, error) {
+func extractEnv(ctx context.Context, ef *envFlags, typeReg map[string]reflect.Type, edgeMeta map[string]any) (*pipepb.Environment, error) {
 	var env *pipepb.Environment
 	switch strings.ToLower(ef.EnvironmentType) {
 	case "process":
@@ -357,7 +358,7 @@ func extractEnv(ctx context.Context, ef *envFlags, typeReg map[string]reflect.Ty
 			Payload: serializedPayload,
 		}
 	case "loopback":
-		srv, err := extworker.StartLoopback(ctx, 0, executeSubgraph(typeReg))
+		srv, err := extworker.StartLoopback(ctx, 0, executeSubgraph(typeReg, edgeMeta))
 		if err != nil {
 			return nil, err
 		}
@@ -384,7 +385,7 @@ func extractEnv(ctx context.Context, ef *envFlags, typeReg map[string]reflect.Ty
 	return env, nil
 }
 
-func executeSubgraph(typeReg map[string]reflect.Type) harness.ExecFunc {
+func executeSubgraph(typeReg map[string]reflect.Type, edgeMeta map[string]any) harness.ExecFunc {
 	var shortID atomic.Uint32
 	return func(ctx context.Context, ctrl *harness.Control, dataCon harness.DataContext) (*fnpb.ProcessBundleResponse, error) {
 		// 1. Provide translation function (unmarshalToGraph + types closure) to harness.
@@ -397,6 +398,7 @@ func executeSubgraph(typeReg map[string]reflect.Type) harness.ExecFunc {
 			return nil, err
 		}
 		newG := g.(*graph)
+		newG.edgeMeta = edgeMeta
 
 		// 2. Build a new runnable instance, get execution roots and metrics.
 		roots, mets := newG.build(ctx, dataCon)

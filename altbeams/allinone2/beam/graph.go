@@ -40,8 +40,9 @@ func (i edgeIndex) String() string {
 // structure is then used to build DFCs and their resident transforms for
 // processing data in a bundle.
 type graph struct {
-	nodes []node      // PCollections
-	edges []multiEdge // Transforms
+	nodes    []node         // PCollections
+	edges    []multiEdge    // Transforms
+	edgeMeta map[string]any // Bonus information in the graph for certain transforms.
 
 	consumers map[nodeIndex][]edgeIndex
 
@@ -187,6 +188,11 @@ func (g *graph) build(ctx context.Context, dataCon harness.DataContext) ([]proce
 				userDoFn = sdf.getUserTransform()
 			}
 
+			// Handle convenience wrappers for closures.
+			if lwi, ok := userDoFn.(lightweightIniter); ok {
+				lwi.lightweightInit(g.edgeMeta)
+			}
+
 			rv := reflect.ValueOf(userDoFn)
 			if rv.Kind() == reflect.Pointer {
 				rv = rv.Elem()
@@ -234,6 +240,10 @@ func (g *graph) build(ctx context.Context, dataCon harness.DataContext) ([]proce
 
 			rt := rv.Type()
 			for i := 0; i < rv.NumField(); i++ {
+				// Only deal with exported fields.
+				if !rt.Field(i).IsExported() {
+					continue
+				}
 				fv := rv.Field(i)
 				if mn, ok := fv.Addr().Interface().(metricNamer); ok {
 					mn.setName("user", rt.Field(i).Name)
