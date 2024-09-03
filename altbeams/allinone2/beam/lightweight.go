@@ -1,6 +1,10 @@
 package beam
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/lostluck/experimental/altbeams/allinone2/beam/internal/beamopts"
+)
 
 type mapper[I, O Element] struct {
 	fn  func(I) O
@@ -22,12 +26,12 @@ func (fn *mapper[I, O]) lightweightInit(metadata map[string]any) {
 	fn.fn = metadata[fn.Key].(func(I) O)
 }
 
-func Map[I, O Element](s *Scope, input Output[I], lambda func(I) O) Output[O] {
+func Map[I, O Element](s *Scope, input Output[I], lambda func(I) O, opts ...beamopts.Options) Output[O] {
 	ei := s.g.curEdgeIndex()
+	// Store the transform in the metadata
+	// with an index specific key.
 	key := fmt.Sprintf("map%03d", ei)
-	// I have an index I can associate the function with
-	// But I also need to recover it later.
-	out := ParDo(s, input, &mapper[I, O]{fn: lambda, Key: key})
+	out := ParDo(s, input, &mapper[I, O]{fn: lambda, Key: key}, opts...)
 
 	if s.g.edgeMeta == nil {
 		s.g.edgeMeta = make(map[string]any)
