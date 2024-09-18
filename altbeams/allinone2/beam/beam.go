@@ -10,6 +10,8 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log"
+	"maps"
 	"os"
 	"reflect"
 	"strconv"
@@ -178,22 +180,6 @@ type envFlags struct {
 	EnvironmentConfig string
 }
 
-func initEnvFlags(fs *flag.FlagSet) *envFlags {
-	var ef envFlags
-	fs.StringVar(&ef.Endpoint, "endpoint", "", "Endpoint for a JobManagement service.")
-	fs.StringVar(&ef.EnvironmentType, "environment_type", "",
-		"Environment Type. Possible options are DOCKER, PROCESS, and LOOPBACK.")
-	fs.StringVar(&ef.EnvironmentConfig, "environment_config",
-		"",
-		"Set environment configuration for running the user code.\n"+
-			"For DOCKER: Url for the docker image.\n"+
-			"For PROCESS: json of the form {\"os\": \"<OS>\", "+
-			"\"arch\": \"<ARCHITECTURE>\", \"command\": \"<process to execute>\", "+
-			"\"env\":{\"<Environment variables>\": \"<ENV_VAL>\"} }. "+
-			"All fields in the json are optional except command.")
-	return &ef
-}
-
 type workerFlags struct {
 	Worker          bool   // Whether we're operating as a worker or not.
 	ID              string // The worker identity of this process.
@@ -202,22 +188,183 @@ type workerFlags struct {
 	SemiPersist     string // The Semi persist directory. Deprecated.
 }
 
-func initWorkerFlags(fs *flag.FlagSet) *workerFlags {
-	var wf workerFlags
-	fs.BoolVar(&wf.Worker, "worker", false, "Whether binary is running in worker mode.")
-	fs.StringVar(&wf.ID, "id", "", "Local identifier (required in worker mode).")
-	fs.StringVar(&wf.LoggingEndpoint, "logging_endpoint", "", "Local logging gRPC endpoint (required in worker mode).")
-	fs.StringVar(&wf.ControlEndpoint, "control_endpoint", "", "Local control gRPC endpoint (required in worker mode).")
-	fs.StringVar(&wf.SemiPersist, "semi_persist_dir", "", "Deprecated.")
-	return &wf
+// Configuration represents static configuration for pipelines.
+//
+// The same [Config] may be used for multiple pipeline launches,
+// however, that requires registration of DoFns in advance.
+//
+// Serializable Construction time options may be registered with the [TODO]
+// method, and refered to in calls to [Run] or [Prepare].
+//
+// You may [Prepare] multiple pipelines in advance, in order to
+// ensure their configuration is registered with an ID.
+// However these pipelines will not be built until [Launch] is called with
+// the provided ID.
+//
+// After prepare has been called,
+type Configuration struct {
+	worker      workerFlags
+	environment envFlags
+
+	pipelines map[string]func(*Scope) error
 }
 
-// Run begins executes the pipeline built in the construction function.
-func Run(ctx context.Context, expand func(*Scope) error, opts ...Options) (Pipeline, error) {
+// New produces a new Beam framework configuration to statically
+// configure pipelines for execution.
+func New() *Configuration {
+	return &Configuration{
+		pipelines: map[string]func(*Scope) error{},
+	}
+}
+
+// Load registers a pipeline construction function to be invoked later.
+// The provided PID must be static to over multiple runs of the binary
+//
+// Use Load when there are multiple possible pipelines that may be invoked
+// from this binary.
+//
+// This can be useful for a server binary that is also used as a processing pipeline, or
+// when it's desirable to run tests for pipelines using a container execution mode,
+// instead of loopback mode.
+//
+// Load panics if the expand function is nil, or if the PID is already in use.
+func (cfg *Configuration) Load(pid string, expand func(*Scope) error) {
+	if expand == nil {
+		panic("nil pipeline expansion received")
+	}
+	if _, ok := cfg.pipelines[pid]; ok {
+		panic("reusing existing PID: " + pid)
+	}
+	cfg.pipelines[pid] = expand
+}
+
+// Ready is called once the framework has been configured, and flags
+// have been parsed. Ready serves as an execution split point.
+//
+// When Ready detects the binary is being executed as a worker, Ready will not
+// return, calling [os.Exit] when execution is complete. Otherwise Ready will
+// return and allow the remainder of execution to take place.
+func (cfg *Configuration) Ready(ctx context.Context) Launcher {
+	if !flag.Parsed() {
+		cfg.FromCommandLine()
+		flag.Parse()
+	}
+
+	// Workers don't escape this if block.
+	wf := cfg.worker
+	if wf.Worker {
+
+		// Need to look up the PipelineOptions file from the environment.
+		// Need to read in the file.
+		// Need to parse the JSON in the file.
+
+		statusEndpoint := os.Getenv("STATUS_ENDPOINT")
+		runnerCapabilities := strings.Split(os.Getenv("RUNNER_CAPABILITIES"), " ")
+
+		// Initialization logging
+		//
+		// We use direct output to stderr here, because it is expected that logging
+		// will be captured by the framework -- which may not be functional if
+		// harness.Main returns. We want to be sure any error makes it out.
+		var options string
+		pipelineOptionsFilename := os.Getenv("PIPELINE_OPTIONS_FILE")
+		if pipelineOptionsFilename != "" {
+			contents, err := os.ReadFile(pipelineOptionsFilename)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Failed to read pipeline options file '%v': %v\n", pipelineOptionsFilename, err)
+				os.Exit(1)
+			}
+			// Overwite flag to be consistent with the legacy flag processing.
+			options = string(contents)
+		}
+
+		if options != "" {
+			var rawOptions map[string]any
+			if err := json.Unmarshal([]byte(options), &rawOptions); err != nil {
+				fmt.Fprintf(os.Stderr, "Failed to read pipeline options file '%v': %v\n", pipelineOptionsFilename, err)
+				os.Exit(1)
+			}
+		}
+
+		// TODO: remove this special case once Pipeline Options are functional.
+		var pid string
+		if len(cfg.pipelines) == 1 {
+			for k := range cfg.pipelines {
+				pid = k
+			}
+		}
+
+		// TODO PrepPipe:
+		// 1. Need to get the correct prepared pipeline PID from Pipeline Options
+		// 2. Need to get the type registrations from that pipeline.
+		// 3. Need to have a single function for that probably.
+		expand, ok := cfg.pipelines[pid]
+		if !ok || expand == nil {
+			log.Fatal(fmt.Errorf("no pipeline with id %q registered", pid))
+		}
+
+		var g graph
+		s := &Scope{parent: nil, g: &g}
+		g.root = s
+
+		if err := expand(s); err != nil {
+			log.Fatal(fmt.Errorf("pipeline construction error:%w", err))
+		}
+
+		// At this point the graph is complete, and we need to turn serialize/deserialize it
+		// into executing code.
+		typeReg := map[string]reflect.Type{}
+		// We don't care about the marshalled proto here.
+		_ = g.marshal(typeReg)
+
+		// TODO move this into harness directly?
+		ctx = extworker.WriteWorkerID(ctx, wf.ID)
+		err := harness.Main(ctx, wf.ControlEndpoint, harness.Options{
+			LoggingEndpoint: wf.LoggingEndpoint,
+			// Pull from environment variables.
+			StatusEndpoint:     statusEndpoint,
+			RunnerCapabilities: runnerCapabilities,
+		}, executeSubgraph(typeReg, g.edgeMeta))
+		if err == nil {
+			os.Exit(0)
+		}
+		log.Fatal(err)
+	}
+
+	return Launcher{
+		// Copy things from a config value here to avoid aliasing issues.
+		ef: cfg.environment,
+		wf: cfg.worker,
+
+		pipelines: maps.Clone(cfg.pipelines),
+	}
+}
+
+// Launcher is able to Run pipelines [Load]ed from a [Ready] [Configuration].
+type Launcher struct {
+	pipelines map[string]func(*Scope) error
+
+	ef envFlags
+	wf workerFlags
+}
+
+// Launch begins execution of the pipeline represented by the given PID.
+//
+// Launch returns an error if no pipeline has been registered with that ID.
+func (l Launcher) Launch(ctx context.Context, pid string, opts ...Options) (Pipeline, error) {
+	if l.pipelines == nil {
+		return Pipeline{}, fmt.Errorf("invalid launcher")
+	}
 	// TODO move all cancellation signals to hang on passed in context.
 	ctx, cancelCtxFn := context.WithCancel(ctx)
 	// TODO move this onto the pipeline object for async streaming.
 	defer cancelCtxFn()
+
+	expand, ok := l.pipelines[pid]
+	if !ok || expand == nil {
+		return Pipeline{}, fmt.Errorf("no pipeline with id %q registered", pid)
+	}
+
 	var g graph
 	s := &Scope{parent: nil, g: &g}
 	g.root = s
@@ -231,32 +378,12 @@ func Run(ctx context.Context, expand func(*Scope) error, opts ...Options) (Pipel
 	typeReg := map[string]reflect.Type{}
 	pipe := g.marshal(typeReg)
 
-	ef := new(envFlags)
-	wf := new(workerFlags)
-	if !flag.Parsed() {
-		wf = initWorkerFlags(flag.CommandLine)
-		ef = initEnvFlags(flag.CommandLine)
-		flag.Parse()
-	}
-
-	// Workers don't escape this if block.
-	if wf.Worker {
-		// TODO move this into harness directly
-		ctx = extworker.WriteWorkerID(ctx, wf.ID)
-		err := harness.Main(ctx, wf.ControlEndpoint, harness.Options{
-			LoggingEndpoint: wf.LoggingEndpoint,
-			// Pull from environment variables.
-			// StatusEndpoint: *TODO,
-			// RunnerCapabilities:  TODO,
-		}, executeSubgraph(typeReg, g.edgeMeta))
-		return Pipeline{}, err
-	}
 	// ef.Endpoint = "localhost:8073"
 	// ef.EnvironmentType = "DOCKER"
 
 	// If we don't have a remote endpoint, start a local prism process.
 	// TODO how to better override default location for development.
-	if ef.Endpoint == "" {
+	if l.ef.Endpoint == "" {
 		_, err := prism.Start(ctx, prism.Options{
 			//	Location: "/home/lostluck/git/beam/sdks/go/cmd/prism/prism",
 			// TODO pick a port and pass it down.
@@ -264,23 +391,23 @@ func Run(ctx context.Context, expand func(*Scope) error, opts ...Options) (Pipel
 		if err != nil {
 			return Pipeline{}, err
 		}
-		ef.Endpoint = "localhost:8073"
+		l.ef.Endpoint = "localhost:8073"
 		// If unset, use loopback mode when using default prism.
-		if ef.EnvironmentType == "" {
-			ef.EnvironmentType = "LOOPBACK"
+		if l.ef.EnvironmentType == "" {
+			l.ef.EnvironmentType = "LOOPBACK"
 		}
 	}
-	if ef.EnvironmentType == "" {
-		ef.EnvironmentType = "DOCKER"
+	if l.ef.EnvironmentType == "" {
+		l.ef.EnvironmentType = "DOCKER"
 	}
 	// INVARIANT: ef.EnvironmentType must be set past this point.
 
 	opt := beamopts.Struct{
-		Endpoint: ef.Endpoint,
+		Endpoint: l.ef.Endpoint,
 	}
 	opt.Join(opts...)
 
-	env, err := extractEnv(ctx, ef, typeReg, g.edgeMeta)
+	env, err := extractEnv(ctx, &l.ef, typeReg, g.edgeMeta)
 	if err != nil {
 		return Pipeline{}, fmt.Errorf("error configuring pipeline environment: %w", err)
 	}
@@ -318,6 +445,43 @@ func Run(ctx context.Context, expand func(*Scope) error, opts ...Options) (Pipel
 		Distributions: r.UserDistributions(),
 	}
 	return p, nil
+}
+
+// FromCommandLine registers this Config to be initialized from the command line flags of the binary.
+func (cfg *Configuration) FromCommandLine() {
+	cfg.Flags(flag.CommandLine)
+}
+
+// Flags initializes this Config from the flags of the provided command line set.
+func (cfg *Configuration) Flags(fs *flag.FlagSet) {
+	// Worker flags
+	fs.BoolVar(&cfg.worker.Worker, "worker", false, "Whether binary is running in worker mode.")
+	fs.StringVar(&cfg.worker.ID, "id", "", "Local identifier (required in worker mode).")
+	fs.StringVar(&cfg.worker.LoggingEndpoint, "logging_endpoint", "", "Local logging gRPC endpoint (required in worker mode).")
+	fs.StringVar(&cfg.worker.ControlEndpoint, "control_endpoint", "", "Local control gRPC endpoint (required in worker mode).")
+	fs.StringVar(&cfg.worker.SemiPersist, "semi_persist_dir", "", "Deprecated.")
+
+	// Environment flags
+	fs.StringVar(&cfg.environment.Endpoint, "endpoint", "", "Endpoint for a JobManagement service.")
+	fs.StringVar(&cfg.environment.EnvironmentType, "environment_type", "",
+		"Environment Type. Possible options are DOCKER, PROCESS, and LOOPBACK.")
+	fs.StringVar(&cfg.environment.EnvironmentConfig, "environment_config",
+		"",
+		"Set environment configuration for running the user code.\n"+
+			"For DOCKER: Url for the docker image.\n"+
+			"For PROCESS: json of the form {\"os\": \"<OS>\", "+
+			"\"arch\": \"<ARCHITECTURE>\", \"command\": \"<process to execute>\", "+
+			"\"env\":{\"<Environment variables>\": \"<ENV_VAL>\"} }. "+
+			"All fields in the json are optional except command.")
+}
+
+// Run begins executes the pipeline built in the construction function.
+func Run(ctx context.Context, expand func(*Scope) error, opts ...Options) (Pipeline, error) {
+	cfg := New()
+	pid := "beam:run:default"
+	cfg.Load(pid, expand)
+	launcher := cfg.Ready(ctx)
+	return launcher.Launch(ctx, pid, opts...)
 }
 
 // ExtractEnv takes the current environment configuration and pipeline pre-build

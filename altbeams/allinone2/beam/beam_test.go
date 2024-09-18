@@ -2,10 +2,8 @@ package beam
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"math"
-	"os"
 	"testing"
 	"time"
 
@@ -13,12 +11,7 @@ import (
 	"golang.org/x/exp/constraints"
 )
 
-func TestMain(m *testing.M) {
-	// Not ideal but a reasonable holdout.
-	initEnvFlags(flag.CommandLine)
-	flag.Parse()
-	os.Exit(m.Run())
-}
+// TODO sort out running tests in non-loopback mode.
 
 type SourceFn struct {
 	Count  int
