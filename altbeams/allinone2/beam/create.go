@@ -16,6 +16,8 @@
 package beam
 
 // TODO(lostluck): Turn this into an SDF.
+// TODO(lostluck): Properly deal with serialization instead of leaning on Javascript's coding.
+// Consider compression perhaps?
 type createFn[E Element] struct {
 	Values []E
 
