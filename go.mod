@@ -3,16 +3,15 @@ module github.com/lostluck/experimental
 go 1.23
 
 require (
-	cloud.google.com/go/storage v1.43.0
 	github.com/apache/beam/sdks/v2 v2.58.1
 	github.com/go-json-experiment/json v0.0.0-20240815175050-ebd3a8989ca1
 	github.com/google/go-cmp v0.6.0
 	github.com/google/uuid v1.6.0
 	github.com/jba/slog v0.2.0
 	github.com/pkg/errors v0.9.1
+	gocloud.dev v0.39.0
 	golang.org/x/exp v0.0.0-20240823005443-9b4947da3948
 	golang.org/x/sync v0.8.0
-	google.golang.org/api v0.195.0
 	google.golang.org/grpc v1.66.0
 	google.golang.org/protobuf v1.34.2
 	gopkg.in/yaml.v3 v3.0.1
@@ -26,6 +25,7 @@ require (
 	cloud.google.com/go/compute/metadata v0.5.0 // indirect
 	cloud.google.com/go/iam v1.2.0 // indirect
 	cloud.google.com/go/profiler v0.4.1 // indirect
+	cloud.google.com/go/storage v1.43.0 // indirect
 	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/avast/retry-go/v4 v4.6.0 // indirect
 	github.com/distribution/reference v0.6.0 // indirect
@@ -62,6 +62,8 @@ require (
 	golang.org/x/sys v0.24.0 // indirect
 	golang.org/x/text v0.17.0 // indirect
 	golang.org/x/time v0.6.0 // indirect
+	golang.org/x/xerrors v0.0.0-20240716161551-93cc26a95ae9 // indirect
+	google.golang.org/api v0.195.0 // indirect
 	google.golang.org/genproto v0.0.0-20240827150818-7e3bb234dfed // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20240827150818-7e3bb234dfed // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20240827150818-7e3bb234dfed // indirect
