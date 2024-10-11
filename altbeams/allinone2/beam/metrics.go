@@ -13,6 +13,7 @@ import (
 )
 
 type metricsStore struct {
+	metMu   sync.Mutex // Guards metrics list.
 	metrics []any
 
 	transitions  uint32 // Only accessed by process bundle thread.
@@ -38,6 +39,8 @@ type metricLabels struct {
 }
 
 func (ms *metricsStore) initMetric(transform, name string, v any) int {
+	ms.metMu.Lock()
+	defer ms.metMu.Unlock()
 	id := len(ms.metrics)
 	ms.metrics = append(ms.metrics, v)
 	ms.metricNames[id] = metricLabels{Ptransform: transform, Namespace: "user", Name: name}
@@ -52,6 +55,7 @@ func (ms *metricsStore) MonitoringInfos(g *graph) []*pipepb.MonitoringInfo {
 		enc.Varint(uint64(v))
 		return enc.Data()
 	}
+	ms.metMu.Lock()
 	for i, v := range ms.metrics {
 		labels := ms.metricNames[i]
 		mon := &pipepb.MonitoringInfo{
@@ -118,6 +122,7 @@ func (ms *metricsStore) MonitoringInfos(g *graph) []*pipepb.MonitoringInfo {
 		}
 		mons = append(mons, mon)
 	}
+	ms.metMu.Unlock()
 	ms.sampleMu.Lock()
 	for edgeID, sample := range ms.samples {
 		labels := map[string]string{
@@ -190,9 +195,11 @@ type dataChannelIndex struct {
 func (c *dataChannelIndex) IncrementAndCheckSplit(dfc Metrics) bool {
 	if c.metricIndex == 0 {
 		ms := dfc.metricsStore()
+		ms.metMu.Lock()
 		c.metricIndex = len(ms.metrics)
 		ms.metrics = append(ms.metrics, c)
 		ms.metricNames[c.metricIndex] = metricLabels{Ptransform: c.transform}
+		ms.metMu.Unlock()
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
