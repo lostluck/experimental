@@ -98,8 +98,12 @@ func (c iterCoder[V]) Decode(dec *coders.Decoder) Iter[V] {
 	var cur int32
 	return Iter[V]{
 		source: func() (V, bool) {
+			if cur >= n {
+				var dummy V
+				return dummy, false
+			}
 			cur++
-			return c.VCoder.Decode(dec), cur < n
+			return c.VCoder.Decode(dec), true
 		},
 	}
 }
