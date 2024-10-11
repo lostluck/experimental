@@ -392,7 +392,9 @@ func handleInstruction(ctx context.Context, req *fnpb.InstructionRequest, ctrl *
 	case req.GetProcessBundleSplit() != nil:
 		msg := req.GetProcessBundleSplit()
 		ref := instructionID(msg.GetInstructionId())
+		ctrl.mu.Lock()
 		splitter, ok := ctrl.active[ref]
+		ctrl.mu.Unlock()
 		if !ok {
 			return &fnpb.InstructionResponse{
 				InstructionId: string(instID),
