@@ -18,6 +18,7 @@ package blobio
 import (
 	"fmt"
 	"io"
+	"path/filepath"
 	"strings"
 
 	"github.com/lostluck/experimental/altbeams/allinone2/beam"
@@ -67,7 +68,7 @@ func MatchEmptyDisallow() MatchOptionFn {
 }
 
 type matchFiles struct {
-	Input beam.Output[string]
+	Input beam.Output[beam.KV[string, string]]
 
 	Options []MatchOptionFn
 }
@@ -88,13 +89,13 @@ func (mf *matchFiles) Expand(s *beam.Scope) beam.Output[BlobMetadata] {
 // the matching files. MatchFiles accepts a variadic number of MatchOptionFn that can be used to
 // configure the treatment of empty matches. By default, empty matches are allowed if the pattern
 // contains a wildcard.
-func MatchFiles(s *beam.Scope, glob string, opts ...MatchOptionFn) beam.Output[BlobMetadata] {
+func MatchFiles(s *beam.Scope, bucket, glob string, opts ...MatchOptionFn) beam.Output[BlobMetadata] {
 	scheme := glob
 	// TODO allow overriding URLMux here.
 	blob.DefaultURLMux().ValidBucketScheme(scheme)
 
 	return beam.Expand(s, "blobio.MatchFiles", &matchFiles{
-		Input:   beam.Create(s, glob),
+		Input:   beam.Create(s, beam.Pair(bucket, glob)),
 		Options: opts,
 	})
 }
@@ -103,7 +104,7 @@ func MatchFiles(s *beam.Scope, glob string, opts ...MatchOptionFn) beam.Output[B
 // returns a beam.Output[BlobMetadata] of the matching files. MatchAll accepts a variadic number of
 // MatchOptionFn that can be used to configure the treatment of empty matches. By default, empty
 // matches are allowed if the pattern contains a wildcard.
-func MatchAll(s *beam.Scope, col beam.Output[string], opts ...MatchOptionFn) beam.Output[BlobMetadata] {
+func MatchAll(s *beam.Scope, col beam.Output[beam.KV[string, string]], opts ...MatchOptionFn) beam.Output[BlobMetadata] {
 	return beam.Expand(s, "blobio.MatchAll", &matchFiles{
 		Input:   col,
 		Options: opts,
@@ -122,18 +123,18 @@ func newMatchFn(option *matchOption) *matchFn {
 	}
 }
 
-func (fn *matchFn) ProcessBundle(dfc *beam.DFC[string]) error {
+func (fn *matchFn) ProcessBundle(dfc *beam.DFC[beam.KV[string, string]]) error {
 	ctx := dfc.Context()
 
 	// TODO: Allow user overriding of the URL mux.
 	urlMux := blob.DefaultURLMux()
 
-	return dfc.Process(func(ec beam.ElmC, glob string) error {
-		if strings.TrimSpace(glob) == "" {
+	return dfc.Process(func(ec beam.ElmC, glob beam.KV[string, string]) error {
+		if strings.TrimSpace(glob.Value) == "" {
 			return nil
 		}
 		// TODO: parse the glob to the bucket prefix.
-		bucketRoot := glob
+		bucketRoot := glob.Key
 
 		bucket, err := urlMux.OpenBucket(ctx, bucketRoot)
 		if err != nil {
@@ -151,6 +152,10 @@ func (fn *matchFn) ProcessBundle(dfc *beam.DFC[string]) error {
 			if err != nil {
 				return err
 			}
+			ok, err := filepath.Match(glob.Value, lo.Key)
+			if !ok {
+				continue
+			}
 			count++
 			fn.Blobs.Emit(ec, BlobMetadata{
 				Bucket:       bucketRoot,
@@ -160,8 +165,8 @@ func (fn *matchFn) ProcessBundle(dfc *beam.DFC[string]) error {
 			})
 		}
 
-		if count == 0 && !allowEmptyMatch(glob, fn.EmptyTreatment) {
-			return fmt.Errorf("no files matching pattern %q", glob)
+		if count == 0 && !allowEmptyMatch(glob.Value, fn.EmptyTreatment) {
+			return fmt.Errorf("no files matching pattern %v/%q", glob.Key, glob.Value)
 		}
 		return nil
 	})
