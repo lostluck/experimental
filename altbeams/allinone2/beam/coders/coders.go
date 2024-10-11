@@ -3,6 +3,7 @@ package coders
 import (
 	"fmt"
 	"reflect"
+	"time"
 
 	"golang.org/x/exp/constraints"
 )
@@ -32,7 +33,7 @@ func MakeCoder[E any]() Coder[E] {
 	return makeCoder(reflect.TypeOf(e)).(Coder[E])
 }
 
-// makeCoder works aorund generic coding.
+// makeCoder works around generic coding.
 func makeCoder(rt reflect.Type) any {
 	switch rt.Kind() {
 	case reflect.Bool:
@@ -73,21 +74,63 @@ func makeCoder(rt reflect.Type) any {
 }
 
 func makeRowCoder[E any](rt reflect.Type) any {
-	c := &rowStructCoder[E]{}
+	return buildRowCoder(&rowStructCoder[E]{}, rt)
+}
+
+var (
+	rtTimeTime = reflect.TypeFor[time.Time]()
+)
+
+// buildRowCoder abstracts between the generic top level,
+// and the interface/reflect based nested levels for Row coders.
+func buildRowCoder[C rowStructCoderBuilder](c C, rt reflect.Type) C {
+	switch rt {
+	case rtTimeTime:
+		c.appendEncoder(func(enc *Encoder, rv reflect.Value) {
+			//fmt.Printf("rt %v %T\n", rt, c)
+			t := rv.Interface().(time.Time)
+			mar, _ := t.MarshalText()
+			enc.Bytes(mar)
+		})
+		c.appendDecoder(func(dec *Decoder, rv reflect.Value) {
+			t := time.Time{}
+			t.UnmarshalText(dec.Bytes())
+			rv.Set(reflect.ValueOf(t))
+		})
+		return c
+	}
 	// TODO: move this to be generated from the Schema + the user type.
 	// Also need to deal with length prefixing. Ugh.
 	for i := 0; i < rt.NumField(); i++ {
 		sf := rt.Field(i)
 		if !sf.IsExported() {
+			// Put in dummy handlers for unexported fields.
+			c.appendEncoder(func(enc *Encoder, rv reflect.Value) {})
+			c.appendDecoder(func(dec *Decoder, rv reflect.Value) {})
 			continue
 		}
 		switch sf.Type.Kind() {
 		case reflect.Int, reflect.Int16, reflect.Int32, reflect.Int64:
-			c.fieldEncoders = append(c.fieldEncoders, func(enc *Encoder, rv reflect.Value) {
+			c.appendEncoder(func(enc *Encoder, rv reflect.Value) {
 				enc.Varint(uint64(rv.Int()))
 			})
-			c.fieldDecoders = append(c.fieldDecoders, func(dec *Decoder, rv reflect.Value) {
+			c.appendDecoder(func(dec *Decoder, rv reflect.Value) {
 				rv.SetInt(int64(dec.Varint()))
+			})
+		case reflect.String:
+			c.appendEncoder(func(enc *Encoder, rv reflect.Value) {
+				enc.StringUtf8(rv.String())
+			})
+			c.appendDecoder(func(dec *Decoder, rv reflect.Value) {
+				rv.SetString(dec.StringUtf8())
+			})
+		case reflect.Struct:
+			nrc := buildRowCoder(&rowStructCoderNested{rt: sf.Type}, sf.Type)
+			c.appendEncoder(func(enc *Encoder, rv reflect.Value) {
+				nrc.Encode(enc, rv)
+			})
+			c.appendDecoder(func(dec *Decoder, rv reflect.Value) {
+				rv.Set(nrc.Decode(dec))
 			})
 		default:
 			panic("row field type unknown:" + sf.Type.Kind().String() + " for type " + rt.Name())
@@ -96,12 +139,26 @@ func makeRowCoder[E any](rt reflect.Type) any {
 	return c
 }
 
+type rowStructCoderBuilder interface {
+	appendEncoder(func(enc *Encoder, rv reflect.Value))
+	appendDecoder(func(dec *Decoder, rv reflect.Value))
+}
+
 type rowStructCoder[T any] struct {
 	fieldEncoders []func(enc *Encoder, rv reflect.Value)
 	fieldDecoders []func(dec *Decoder, rv reflect.Value)
 }
 
+func (c *rowStructCoder[T]) appendEncoder(encFn func(enc *Encoder, rv reflect.Value)) {
+	c.fieldEncoders = append(c.fieldEncoders, encFn)
+}
+
+func (c *rowStructCoder[T]) appendDecoder(decFn func(dec *Decoder, rv reflect.Value)) {
+	c.fieldDecoders = append(c.fieldDecoders, decFn)
+}
+
 func (c *rowStructCoder[T]) Encode(enc *Encoder, v T) {
+	//	fmt.Printf("rowStructCoder[T].Encode %T %+v %v\n", c, v, len(c.fieldEncoders))
 	rv := reflect.ValueOf(v)
 	enc.Varint(uint64(rv.NumField()))
 	for i := 0; i < rv.NumField(); i++ {
@@ -126,6 +183,62 @@ func (c *rowStructCoder[T]) Decode(dec *Decoder) T {
 		c.fieldDecoders[i](dec, rv.Field(i))
 	}
 	return rv.Interface().(T)
+}
+
+// Is this the way to do nested types?
+type rowStructCoderNested struct {
+	rt            reflect.Type
+	fieldEncoders []func(enc *Encoder, rv reflect.Value)
+	fieldDecoders []func(dec *Decoder, rv reflect.Value)
+}
+
+func (c *rowStructCoderNested) appendEncoder(encFn func(enc *Encoder, rv reflect.Value)) {
+	c.fieldEncoders = append(c.fieldEncoders, encFn)
+}
+
+func (c *rowStructCoderNested) appendDecoder(decFn func(dec *Decoder, rv reflect.Value)) {
+	c.fieldDecoders = append(c.fieldDecoders, decFn)
+}
+
+func (c *rowStructCoderNested) Encode(enc *Encoder, rv reflect.Value) {
+	//	fmt.Println("rowStructCoderNested.Encode", c.rt, rv, len(c.fieldEncoders))
+	enc.Varint(uint64(rv.NumField()))
+	// This is the worst formulation.
+	// We need to be able to override types, but substitute them with arbitrary encoding structures.
+	switch rv.Type() {
+	case rtTimeTime:
+		c.fieldEncoders[0](enc, rv)
+		return
+	}
+	for i := 0; i < rv.NumField(); i++ {
+		c.fieldEncoders[i](enc, rv.Field(i))
+	}
+}
+
+func (c *rowStructCoderNested) Decode(dec *Decoder) reflect.Value {
+	// fmt.Println("rowStructCoderNested.Decode", c.rt, len(c.fieldDecoders))
+	rv := reflect.New(c.rt).Elem()
+	i := 0
+	defer func() {
+		if e := recover(); e != nil {
+			panic(fmt.Sprintf("field %v:\n%v", i, e))
+		}
+	}()
+	n := dec.Varint()
+	// This is the worst formulation.
+	// We need to be able to override types, but substitute them with arbitrary encoding structures.
+	switch rv.Type() {
+	case rtTimeTime:
+		c.fieldDecoders[0](dec, rv)
+		return rv
+	}
+	if int(n) != rv.NumField() {
+		panic(fmt.Sprintf("row value got %v fields want %v fields for a %v", n, rv.NumField(), rv.Type()))
+	}
+	for ; i < rv.NumField(); i++ {
+		c.fieldDecoders[i](dec, rv.Field(i))
+	}
+	return rv
 }
 
 func makeSliceCoder[E any](rt reflect.Type) any {

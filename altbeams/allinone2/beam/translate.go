@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"time"
 
 	"github.com/go-json-experiment/json"
 	"github.com/go-json-experiment/json/jsontext"
@@ -284,11 +285,44 @@ func (Iter[V]) addCoder(intern map[string]string, coders map[string]*pipepb.Code
 }
 
 func addRowCoder(rt reflect.Type, intern map[string]string, coders map[string]*pipepb.Coder) string {
+	defer func() {
+		if e := recover(); e != nil {
+			panic(fmt.Sprintf("type %v, error: %v", rt, e))
+		}
+	}()
 	urn := "beam:coder:row:v1"
 
+	schm := schemaType(rt)
+
+	// Now we need to build the row coder.
+
+	buf, err := proto.Marshal(schm)
+	if err != nil {
+		panic(err)
+	}
+
+	return putCoder(coders, urn, buf, nil)
+}
+
+var (
+	rtTimeTime = reflect.TypeFor[time.Time]()
+)
+
+func schemaType(rt reflect.Type) *pipepb.Schema {
 	schm := &pipepb.Schema{
 		Id:     uuid.NewString(),
 		Fields: []*pipepb.Field{},
+	}
+
+	// TODO Improve Special type Handling.
+	switch rt {
+	case rtTimeTime:
+		schm.Fields = append(schm.Fields, &pipepb.Field{
+			Id:   int32(0),
+			Name: "time",
+			Type: schemaFieldType(reflect.TypeFor[string]()),
+		})
+		return schm
 	}
 
 	noneExported := true
@@ -307,15 +341,7 @@ func addRowCoder(rt reflect.Type, intern map[string]string, coders map[string]*p
 	if noneExported && rt.NumField() == 0 {
 		panic(fmt.Sprintf("%v doesn't export any fields", rt))
 	}
-
-	// Now we need to build the row coder.
-
-	buf, err := proto.Marshal(schm)
-	if err != nil {
-		panic(err)
-	}
-
-	return putCoder(coders, urn, buf, nil)
+	return schm
 }
 
 func schemaFieldType(ft reflect.Type) *pipepb.FieldType {
@@ -336,6 +362,16 @@ func schemaFieldType(ft reflect.Type) *pipepb.FieldType {
 	case reflect.Float64:
 		sft.TypeInfo = &pipepb.FieldType_AtomicType{
 			AtomicType: pipepb.AtomicType_DOUBLE,
+		}
+	case reflect.String:
+		sft.TypeInfo = &pipepb.FieldType_AtomicType{
+			AtomicType: pipepb.AtomicType_STRING,
+		}
+	case reflect.Struct:
+		sft.TypeInfo = &pipepb.FieldType_RowType{
+			RowType: &pipepb.RowType{
+				Schema: schemaType(ft),
+			},
 		}
 	default:
 		panic("can't handle this field type yet: " + ft.String())
@@ -422,9 +458,9 @@ func unmarshalToGraph(typeReg map[string]reflect.Type, pbd *fnpb.ProcessBundleDe
 		placeholders = append(placeholders, edgeID)
 	}
 
-	for name, pt := range pbd.GetTransforms() {
+	for tid, pt := range pbd.GetTransforms() {
 		if len(pt.GetSubtransforms()) > 0 { // I don't think we need to worry about these though...
-			panic(fmt.Sprintf("can't handle composites yet:, contained by %v", name))
+			panic(fmt.Sprintf("can't handle composites yet:, contained by %v", tid))
 		}
 		spec := pt.GetSpec()
 
@@ -438,11 +474,11 @@ func unmarshalToGraph(typeReg map[string]reflect.Type, pbd *fnpb.ProcessBundleDe
 				})
 			}
 		case "beam:runner:source:v1":
-			addPlaceholder(pt, name, "source")
+			addPlaceholder(pt, tid, "source")
 		case "beam:runner:sink:v1":
-			addPlaceholder(pt, name, "sink")
+			addPlaceholder(pt, tid, "sink")
 		case "beam:transform:flatten:v1":
-			addPlaceholder(pt, name, "flatten")
+			addPlaceholder(pt, tid, "flatten")
 		case "beam:transform:group_by_key:v1":
 			panic("Worker side GBKs unimplemented. Runner error.")
 		case "beam:transform:pardo:v1",
@@ -453,15 +489,13 @@ func unmarshalToGraph(typeReg map[string]reflect.Type, pbd *fnpb.ProcessBundleDe
 			"beam:transform:sdf_split_and_size_restrictions:v1",
 			"beam:transform:sdf_process_sized_element_and_restrictions:v1":
 
-			var dofnType reflect.Type
-			var proc processor
 			var wrap dofnWrap
 			var userDoFn any
 			switch spec.GetUrn() {
 			case "beam:transform:pardo:v1":
-				decodeDoFn(spec.GetPayload(), &wrap, typeReg, name)
+				decodeDoFn(spec.GetPayload(), &wrap, typeReg, tid)
 			case "beam:transform:sdf_pair_with_restriction:v1":
-				decodeDoFn(spec.GetPayload(), &wrap, typeReg, name)
+				decodeDoFn(spec.GetPayload(), &wrap, typeReg, tid)
 				// Extract interesting transform here, like the SDF handler.
 				sdfH := reflect.New(typeReg[wrap.SDFTypeName]).Interface().(sdfHandler)
 
@@ -469,39 +503,39 @@ func unmarshalToGraph(typeReg map[string]reflect.Type, pbd *fnpb.ProcessBundleDe
 				// Do the magic assertion so we can get the type correct implementation.
 				wrap.DoFn = sdfH.pairWithRestriction()
 			case "beam:transform:sdf_split_and_size_restrictions:v1":
-				decodeDoFn(spec.GetPayload(), &wrap, typeReg, name)
+				decodeDoFn(spec.GetPayload(), &wrap, typeReg, tid)
 				sdfH := reflect.New(typeReg[wrap.SDFTypeName]).Interface().(sdfHandler)
 				wrap.DoFn = sdfH.splitAndSizeRestriction()
 			case "beam:transform:sdf_process_sized_element_and_restrictions:v1":
-				decodeDoFn(spec.GetPayload(), &wrap, typeReg, name)
+				decodeDoFn(spec.GetPayload(), &wrap, typeReg, tid)
 				sdfH := reflect.New(typeReg[wrap.SDFTypeName]).Interface().(sdfHandler)
 				userDoFn = wrap.DoFn
 				// Get the input coder for split encoding.
 				onlyInputID := maps.Values(pt.GetInputs())[0]
 				coderID := pbd.GetPcollections()[onlyInputID].GetCoderId()
-				wrap.DoFn = sdfH.processSizedElementAndRestriction(wrap.DoFn, pbd.GetCoders(), coderID, name, coderID)
+				wrap.DoFn = sdfH.processSizedElementAndRestriction(wrap.DoFn, pbd.GetCoders(), coderID, tid, coderID)
 			case "beam:transform:combine_per_key_precombine:v1":
-				decodeCombineFn(spec.GetPayload(), &wrap, typeReg, name)
+				decodeCombineFn(spec.GetPayload(), &wrap, typeReg, tid)
 				cmb := wrap.DoFn.(combiner)
 				wrap.DoFn = cmb.precombine()
 			case "beam:transform:combine_per_key_merge_accumulators:v1":
-				decodeCombineFn(spec.GetPayload(), &wrap, typeReg, name)
+				decodeCombineFn(spec.GetPayload(), &wrap, typeReg, tid)
 				cmb := wrap.DoFn.(combiner)
 				wrap.DoFn = cmb.mergeacuumulators()
 			case "beam:transform:combine_per_key_extract_outputs:v1":
-				decodeCombineFn(spec.GetPayload(), &wrap, typeReg, name)
+				decodeCombineFn(spec.GetPayload(), &wrap, typeReg, tid)
 				cmb := wrap.DoFn.(combiner)
 				wrap.DoFn = cmb.extactoutput()
 			}
 			dofnPtrRT := reflect.TypeOf(wrap.DoFn)
 			pbm, ok := dofnPtrRT.MethodByName("ProcessBundle")
 			if !ok {
-				panic(fmt.Sprintf("type in transform %v doesn't have a ProcessBundle method: %v", name, dofnPtrRT))
+				panic(fmt.Sprintf("type in transform %v doesn't have a ProcessBundle method: %v", tid, dofnPtrRT))
 			}
 			// Extract the DFC type, and produce an instance of it for our use.
 			dfcRT := pbm.Type.In(1).Elem()
-			dofnType = dofnPtrRT.Elem()
-			proc = reflect.New(dfcRT).Interface().(processor)
+			dofnType := dofnPtrRT.Elem()
+			proc := reflect.New(dfcRT).Interface().(processor)
 
 			// Special handling for SDF Process component processSizedElementAndRestrictoon
 			if userDoFn != nil {
@@ -527,7 +561,7 @@ func unmarshalToGraph(typeReg map[string]reflect.Type, pbd *fnpb.ProcessBundleDe
 				// But we don't need to always override a node.
 				emt, ok := getEmitIfaceByName(dofnType, local, outs)
 				if !ok {
-					panic(fmt.Sprintf("consistency error: transform %v of type %v has no output field named %v", name, dofnType, local))
+					panic(fmt.Sprintf("consistency error: transform %v of type %v has no output field named %v", tid, dofnType, local))
 				}
 				id := pcolToIndex[global]
 				if g.nodes[id] == nil {
@@ -538,10 +572,10 @@ func unmarshalToGraph(typeReg map[string]reflect.Type, pbd *fnpb.ProcessBundleDe
 				}
 			}
 			opt := beamopts.Struct{
-				Name: name,
+				Name: tid,
 			}
 
-			g.edges = append(g.edges, proc.produceDoFnEdge(name, edgeID, wrap.DoFn, ins, outs, opt))
+			g.edges = append(g.edges, proc.produceDoFnEdge(tid, edgeID, wrap.DoFn, ins, outs, opt))
 		default:
 			panic(fmt.Sprintf("translate failed: unknown urn: %q", spec.GetUrn()))
 		}
