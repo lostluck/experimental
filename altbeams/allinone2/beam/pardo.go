@@ -153,8 +153,9 @@ func (e *edgeDoFn[E]) toProtoParts(params translateParams) (spec *pipepb.Functio
 		rv = rv.Elem()
 	}
 	// Register types with the lookup table.
-	typeName := rv.Type().Name()
-	params.TypeReg[typeName] = rv.Type()
+	rt := rv.Type()
+	typeName := rt.PkgPath() + "." + rt.Name()
+	params.TypeReg[typeName] = rt
 
 	opts := e.options()
 	if opts.Name == "" {
