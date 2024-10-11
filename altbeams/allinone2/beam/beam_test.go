@@ -102,6 +102,7 @@ func TestSimpleNamed(t *testing.T) {
 	if err != nil {
 		t.Error(err)
 	}
+	t.Log(pr.Counters)
 	if got, want := int(pr.Counters["pants.Processed"]), 10; got != want {
 		t.Fatalf("processed didn't match bench number: got %v want %v", got, want)
 	}
@@ -154,7 +155,7 @@ func BenchmarkPipe(b *testing.B) {
 			b.ReportMetric(float64(d)/float64(div), "ns/elm")
 		}
 	}
-	for _, numDoFns := range []int{0, 1, 2, 3, 5, 10, 100} {
+	for _, numDoFns := range []int{0, 0, 1, 2, 3, 5, 10, 100} {
 		b.Run(fmt.Sprintf("dofns=%d", numDoFns), makeBench(numDoFns))
 	}
 }

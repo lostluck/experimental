@@ -505,13 +505,6 @@ func (fn *sepHarnessSDF) ProcessBundle(dfc *DFC[int]) error {
 		})
 }
 
-// TODO in graph construction, I need to swap out the user DoFn
-// with one that can produce the generic types for the different
-// SDF Component implementations.
-//
-// This is slightly different than the combine pattern for lifting purposes
-// since we do want the user code in there.
-
 func TestSeparation(t *testing.T) {
 	ws.initRPCServer()
 

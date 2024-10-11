@@ -240,7 +240,8 @@ func (t *lockingTracker[T, R, P]) IsDone() bool {
 	return t.wrapped.IsDone()
 }
 
-// TryClaim fis a closure
+// TryClaim processes a DoFn provided closure, passing in a claimed position.
+// The closure returns the next position, or an error.
 type TryClaim[P any] func(func(P) (P, error)) error
 
 // ProcessRestriction defines processing the given element with respect to the provided
