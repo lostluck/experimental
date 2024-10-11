@@ -260,7 +260,6 @@ type processSizedElementAndRestriction[FAC RestrictionFactory[O, R, P], O Elemen
 }
 
 func (fn *processSizedElementAndRestriction[FAC, O, T, R, P, WES]) ProcessBundle(dfc *DFC[KV[KV[O, KV[R, WES]], float64]]) error {
-
 	// Create a "fake" DFC to pass to the user ProcessBundle.
 	// Like normal processing, we use this to extract configuration from the user
 	// that we then manipulate and execute.
@@ -331,6 +330,12 @@ func (fn *processSizedElementAndRestriction[FAC, O, T, R, P, WES]) getUserTransf
 }
 
 func (fn *processSizedElementAndRestriction[FAC, O, T, R, P, WES]) splitElementSource() (float64, elmSplitCallback) {
+	fn.mu.Lock()
+	if fn.tracker == nil {
+		fn.mu.Unlock()
+		return 0.5, nil
+	}
+	fn.mu.Unlock()
 	// At worse the progess here is a little behind.
 	// It shouldn't really change subsequent split decisions.
 	// The important thing is that we prevent SDK processing
