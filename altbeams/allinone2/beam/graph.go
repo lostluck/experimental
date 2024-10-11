@@ -137,7 +137,7 @@ func (g *graph) build(ctx context.Context, dataCon harness.DataContext) ([]proce
 	var c consumer
 	defer func() {
 		if e := recover(); e != nil {
-			panic(fmt.Sprintf("\ncur consumer %#v\nstack %#v\nroots %v\ngraph %#v\noriginal panic: %v", c, stack, roots, g, e))
+			panic(fmt.Sprintf("\ncur consumer.input %#v\ncur consumer.edge %#v\nstack %#v\nroots %#v\ngraph %#v\noriginal panic: %v", c.input, c.edge, stack, roots, g, e))
 		}
 	}()
 	addConsumers := func(proc processor, nodeID nodeIndex) {
@@ -192,7 +192,6 @@ func (g *graph) build(ctx context.Context, dataCon harness.DataContext) ([]proce
 			if lwi, ok := userDoFn.(lightweightIniter); ok {
 				lwi.lightweightInit(g.edgeMeta)
 			}
-
 			rv := reflect.ValueOf(userDoFn)
 			if rv.Kind() == reflect.Pointer {
 				rv = rv.Elem()
