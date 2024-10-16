@@ -28,7 +28,13 @@ type Options struct {
 	StatusEndpoint     string   // Endpoint for worker status reporting.
 }
 
-func Main(ctx context.Context, controlEndpoint string, opts Options, exec ExecFunc) error {
+func Main(ctx context.Context, controlEndpoint string, opts Options, exec ExecFunc) (err error) {
+	defer func() {
+		if e := recover(); e != nil {
+			err = fmt.Errorf("panic reached harness.Main: %v", e)
+			fmt.Println(err)
+		}
+	}()
 	// Connect to FnAPI logging server. Receive and execute work.
 	var logClient fnpb.BeamFnLogging_LoggingClient
 
