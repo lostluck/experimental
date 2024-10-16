@@ -14,6 +14,7 @@ import (
 	"maps"
 	"os"
 	"reflect"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -125,7 +126,7 @@ func start(ctx context.Context, dfc *DFC[[]byte]) error {
 	if err := dfc.perElm(ElmC{elmContext{
 		eventTime: time.Now(),
 	}, dfc.downstream}, []byte{1, 2, 3, 4, 5, 6, 7, 7}); err != nil {
-		panic(fmt.Errorf("doFn id %v failed: %w", dfc.id, err))
+		return fmt.Errorf("doFn id %v failed: %w", dfc.id, err)
 	}
 	return nil
 }
@@ -153,10 +154,24 @@ func (s *Scope) String() string {
 // Pipeline is a handle to a running or terminated pipeline for
 // programmatic access to the given runner.
 type Pipeline struct {
-
+	handle   *universal.Pipeline
+	cancelFn context.CancelCauseFunc
 	// TODO make these methods instead & support cancellation.
 	Counters      map[string]int64
 	Distributions map[string]struct{ Count, Sum, Min, Max int64 }
+}
+
+func (pr *Pipeline) Wait(ctx context.Context) error {
+	err := pr.handle.Wait(ctx)
+	// Regardless of whether there's a pipeline error, get the metrics anyway.
+	r, errMet := pr.handle.Metrics(ctx)
+	if errMet != nil {
+		return fmt.Errorf("couldn't extract metrics for: %w", errMet)
+	}
+	pr.Counters = r.UserCounters()
+	pr.Distributions = r.UserDistributions()
+
+	return err
 }
 
 // Composite transforms allow structural re-use of sub pipelines.
@@ -194,7 +209,7 @@ type workerFlags struct {
 // however, that requires registration of DoFns in advance.
 //
 // Serializable Construction time options may be registered with the [TODO]
-// method, and refered to in calls to [Run] or [Prepare].
+// method, and refered to in calls to [Launch] or [Prepare].
 //
 // You may [Prepare] multiple pipelines in advance, in order to
 // ensure their configuration is registered with an ID.
@@ -253,7 +268,6 @@ func (cfg *Configuration) Ready(ctx context.Context) Launcher {
 	// Workers don't escape this if block.
 	wf := cfg.worker
 	if wf.Worker {
-
 		// Need to look up the PipelineOptions file from the environment.
 		// Need to read in the file.
 		// Need to parse the JSON in the file.
@@ -348,17 +362,14 @@ type Launcher struct {
 	wf workerFlags
 }
 
-// Launch begins execution of the pipeline represented by the given PID.
+// Run begins execution of the pipeline represented by the given PID, and then returns a
+// handle to the pipeline.
 //
-// Launch returns an error if no pipeline has been registered with that ID.
-func (l Launcher) Launch(ctx context.Context, pid string, opts ...Options) (Pipeline, error) {
+// Run returns an error if no pipeline has been registered with that ID.
+func (l Launcher) Run(ctx context.Context, pid string, opts ...Options) (Pipeline, error) {
 	if l.pipelines == nil {
 		return Pipeline{}, fmt.Errorf("invalid launcher")
 	}
-	// TODO move all cancellation signals to hang on passed in context.
-	ctx, cancelCtxFn := context.WithCancel(ctx)
-	// TODO move this onto the pipeline object for async streaming.
-	defer cancelCtxFn()
 
 	expand, ok := l.pipelines[pid]
 	if !ok || expand == nil {
@@ -378,8 +389,7 @@ func (l Launcher) Launch(ctx context.Context, pid string, opts ...Options) (Pipe
 	typeReg := map[string]reflect.Type{}
 	pipe := g.marshal(typeReg)
 
-	// ef.Endpoint = "localhost:8073"
-	// ef.EnvironmentType = "DOCKER"
+	ctx, cancelCtxFn := context.WithCancelCause(ctx)
 
 	// If we don't have a remote endpoint, start a local prism process.
 	// TODO how to better override default location for development.
@@ -389,6 +399,7 @@ func (l Launcher) Launch(ctx context.Context, pid string, opts ...Options) (Pipe
 			// TODO pick a port and pass it down.
 		})
 		if err != nil {
+			cancelCtxFn(err)
 			return Pipeline{}, err
 		}
 		l.ef.Endpoint = "localhost:8073"
@@ -409,6 +420,7 @@ func (l Launcher) Launch(ctx context.Context, pid string, opts ...Options) (Pipe
 
 	env, err := extractEnv(ctx, &l.ef, typeReg, g.edgeMeta)
 	if err != nil {
+		cancelCtxFn(err)
 		return Pipeline{}, fmt.Errorf("error configuring pipeline environment: %w", err)
 	}
 	// Only add deps outside of loopback/external mode.
@@ -416,7 +428,10 @@ func (l Launcher) Launch(ctx context.Context, pid string, opts ...Options) (Pipe
 		serializedBinPayload, err := proto.Marshal(&pipepb.ArtifactFilePayload{
 			Path: os.Args[0], // Recompile or similar.
 		})
+		// TODO allow worker_binary overriding
+		fmt.Println("using", os.Args[0], "as the binary")
 		if err != nil {
+			cancelCtxFn(err)
 			return Pipeline{}, err
 		}
 		env.Dependencies = []*pipepb.ArtifactInformation{
@@ -431,18 +446,12 @@ func (l Launcher) Launch(ctx context.Context, pid string, opts ...Options) (Pipe
 	pipe.Components.Environments["go"] = env
 
 	handle, err := universal.Execute(ctx, pipe, opt)
-	if err != nil {
-		return Pipeline{}, err
-	}
-
-	r, err := handle.Metrics(ctx)
-	if err != nil {
-		return Pipeline{}, fmt.Errorf("couldn't extract metrics for: %w", err)
-	}
-
 	p := Pipeline{
-		Counters:      r.UserCounters(),
-		Distributions: r.UserDistributions(),
+		handle:   handle,
+		cancelFn: cancelCtxFn,
+	}
+	if err != nil {
+		return p, fmt.Errorf("job failed to start: %w", err)
 	}
 	return p, nil
 }
@@ -475,13 +484,27 @@ func (cfg *Configuration) Flags(fs *flag.FlagSet) {
 			"All fields in the json are optional except command.")
 }
 
-// Run begins executes the pipeline built in the construction function.
-func Run(ctx context.Context, expand func(*Scope) error, opts ...Options) (Pipeline, error) {
+// Launch begins to execute the pipeline built in the construction function, returning a pipeline handle.
+//
+// Launch is non-blocking. Call wait in the pipeline handle to wait until the job is finished, or use
+// LaunchAndWait instead.
+func Launch(ctx context.Context, expand func(*Scope) error, opts ...Options) (Pipeline, error) {
 	cfg := New()
 	pid := "beam:run:default"
 	cfg.Load(pid, expand)
 	launcher := cfg.Ready(ctx)
-	return launcher.Launch(ctx, pid, opts...)
+	return launcher.Run(ctx, pid, opts...)
+}
+
+// LaunchAndWait calls [Launch] and then [Pipeline.Wait], blocking until the pipeline terminates.
+func LaunchAndWait(ctx context.Context, expand func(*Scope) error, opts ...Options) (Pipeline, error) {
+	pr, err := Launch(ctx, expand, opts...)
+	if err != nil {
+		return pr, err
+	}
+	// Wait mutates pr.
+	err = pr.Wait(ctx)
+	return pr, err
 }
 
 // ExtractEnv takes the current environment configuration and pipeline pre-build
@@ -491,15 +514,15 @@ func extractEnv(ctx context.Context, ef *envFlags, typeReg map[string]reflect.Ty
 	switch strings.ToLower(ef.EnvironmentType) {
 	case "process":
 		if ef.EnvironmentType == "" {
-			return nil, fmt.Errorf("environment_type PROCESS requires environment_config flag to be set.")
+			return nil, fmt.Errorf("environment_type PROCESS requires environment_config flag to be set")
 		}
 		raw := &pipepb.ProcessPayload{}
 		if err := json.Unmarshal([]byte(ef.EnvironmentConfig), raw); err != nil {
-			return nil, fmt.Errorf("Unable to json unmarshal --environment_config: %w", err)
+			return nil, fmt.Errorf("unable to json unmarshal --environment_config: %w", err)
 		}
 		serializedPayload, err := proto.Marshal(raw)
 		if err != nil {
-			return nil, fmt.Errorf("Unable to marshal ProcessPayload proto: %w", err)
+			return nil, fmt.Errorf("unable to marshal ProcessPayload proto: %w", err)
 		}
 		env = &pipepb.Environment{
 			Urn:          "beam:env:process:v1",
@@ -518,8 +541,9 @@ func extractEnv(ctx context.Context, ef *envFlags, typeReg map[string]reflect.Ty
 			return nil, err
 		}
 		env = &pipepb.Environment{
-			Urn:     "beam:env:docker:v1",
-			Payload: serializedPayload,
+			Urn:          "beam:env:docker:v1",
+			Payload:      serializedPayload,
+			Capabilities: nil,
 		}
 	case "loopback":
 		srv, err := extworker.StartLoopback(ctx, 0, executeSubgraph(typeReg, edgeMeta))
@@ -528,10 +552,8 @@ func extractEnv(ctx context.Context, ef *envFlags, typeReg map[string]reflect.Ty
 		}
 		// Kill the inprocess server once the context is canceled.
 		go func() {
-			select {
-			case <-ctx.Done():
-				srv.Stop(ctx)
-			}
+			<-ctx.Done()
+			srv.Stop(ctx)
 		}()
 		serializedPayload, err := proto.Marshal(&pipepb.ExternalPayload{
 			Endpoint: &pipepb.ApiServiceDescriptor{Url: srv.EnvironmentConfig(ctx)},
@@ -540,8 +562,9 @@ func extractEnv(ctx context.Context, ef *envFlags, typeReg map[string]reflect.Ty
 			return nil, err
 		}
 		env = &pipepb.Environment{
-			Urn:     "beam:env:external:v1",
-			Payload: serializedPayload,
+			Urn:          "beam:env:external:v1",
+			Payload:      serializedPayload,
+			Capabilities: nil,
 		}
 	default:
 		return nil, fmt.Errorf("invalid environment_type: got %v, want PROCESS, DOCKER, or LOOPBACK", ef.EnvironmentType)
@@ -551,7 +574,12 @@ func extractEnv(ctx context.Context, ef *envFlags, typeReg map[string]reflect.Ty
 
 func executeSubgraph(typeReg map[string]reflect.Type, edgeMeta map[string]any) harness.ExecFunc {
 	var shortID atomic.Uint32
-	return func(ctx context.Context, ctrl *harness.Control, dataCon harness.DataContext) (*fnpb.ProcessBundleResponse, error) {
+	return func(ctx context.Context, ctrl *harness.Control, dataCon harness.DataContext) (_ *fnpb.ProcessBundleResponse, err error) {
+		defer func() {
+			if e := recover(); e != nil && err == nil {
+				err = fmt.Errorf("caught dofn panic: %s stacktrace:\n%s", e, debug.Stack())
+			}
+		}()
 		// 1. Provide translation function (unmarshalToGraph + types closure) to harness.
 		//    * Harness then returns a graph, either getting a cached old version, or building a new one from proto.
 		//    * Caches the proto in a weak map somewhere...

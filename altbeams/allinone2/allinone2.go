@@ -134,7 +134,7 @@ func (fn *DiscardFn[E]) ProcessBundle(dfc *beam.DFC[E]) error {
 func main() {
 	ctx := context.Background()
 
-	pr, err := beam.Run(ctx, func(s *beam.Scope) error {
+	pr, err := beam.Launch(ctx, func(s *beam.Scope) error {
 		imp := beam.Impulse(s)
 		src := beam.ParDo(s, imp, &SourceFn{
 			Name:  "Source",

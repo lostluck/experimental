@@ -89,7 +89,7 @@ func Execute(ctx context.Context, p *pipepb.Pipeline, opts beamopts.Struct) (*Pi
 		return nil, fmt.Errorf("failed to submit job: %w", err)
 	}
 
-	handle := &Pipeline{
+	return &Pipeline{
 		pipe:   p,
 		jobID:  runResp.GetJobId(),
 		client: client,
@@ -98,9 +98,8 @@ func Execute(ctx context.Context, p *pipepb.Pipeline, opts beamopts.Struct) (*Pi
 		},
 		// TODO make logger configurable.
 		logger: slog.New(disabledHandler{}),
-	}
+	}, nil
 
-	return handle, handle.Wait(ctx)
 }
 
 type disabledHandler struct {

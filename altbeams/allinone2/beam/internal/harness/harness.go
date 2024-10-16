@@ -140,12 +140,6 @@ func Main(ctx context.Context, controlEndpoint string, opts Options, exec ExecFu
 		}
 
 		if req.GetProcessBundle() != nil {
-			// Add this to the inactive queue before allowing other requests
-			// to be processed. This prevents race conditions with split
-			// or progress requests for this instruction.
-			// ctrl.mu.Lock()
-			// ctrl.inactive.Add(instructionID(req.GetInstructionId()))
-			// ctrl.mu.Unlock()
 			// Only process bundles in a goroutine. We at least need to process instructions for
 			// each plan serially. Perhaps just invoke plan.Execute async?
 			go fn(ctx, req)
@@ -181,7 +175,6 @@ var (
 
 func handleInstruction(ctx context.Context, req *fnpb.InstructionRequest, ctrl *Control, logChan chan *fnpb.LogEntry) *fnpb.InstructionResponse {
 	instID := instructionID(req.GetInstructionId())
-	//ctx = metrics.SetBundleID(ctx, string(instID))
 
 	switch {
 	// case req.GetRegister() != nil:
@@ -371,8 +364,17 @@ func handleInstruction(ctx context.Context, req *fnpb.InstructionRequest, ctrl *
 
 		ref := instructionID(msg.GetInstructionId())
 		ctrl.mu.Lock()
-		mon := ctrl.monitors[ref]
+		mon, ok := ctrl.monitors[ref]
 		ctrl.mu.Unlock()
+		// If the progress monitor doesn't exist yet, return a neutral response.
+		if !ok {
+			return &fnpb.InstructionResponse{
+				InstructionId: string(instID),
+				Response: &fnpb.InstructionResponse_ProcessBundleProgress{
+					ProcessBundleProgress: &fnpb.ProcessBundleProgressResponse{},
+				},
+			}
+		}
 
 		labels, pylds := mon()
 
@@ -395,6 +397,7 @@ func handleInstruction(ctx context.Context, req *fnpb.InstructionRequest, ctrl *
 		ctrl.mu.Lock()
 		splitter, ok := ctrl.active[ref]
 		ctrl.mu.Unlock()
+		// If the splitter doesn't exist yet, return a neutral response.
 		if !ok {
 			return &fnpb.InstructionResponse{
 				InstructionId: string(instID),
@@ -566,7 +569,9 @@ type Control struct {
 // from the runner, reducing duplicate requests.
 func (ctrl *Control) GetOrLookupPlan(dc DataContext, unmarshal func(pbd *fnpb.ProcessBundleDescriptor) any) (any, error) {
 	ctrl.mu.Lock()
-	if p, ok := ctrl.plans[dc.bdID]; ok {
+	if ps := ctrl.plans[dc.bdID]; len(ps) > 1 {
+		p := ps[0]
+		ctrl.plans[dc.bdID] = ps[1:]
 		ctrl.mu.Unlock()
 		return p, nil
 	}
@@ -584,7 +589,7 @@ func (ctrl *Control) GetOrLookupPlan(dc DataContext, unmarshal func(pbd *fnpb.Pr
 			return pbd, nil
 		})
 		if err != nil {
-			return err, nil
+			return nil, fmt.Errorf("failed to look up bundle descriptor[instID %s, descID %s]: %w", dc.instID, dc.bdID, err)
 		}
 		pbd = desc.(*fnpb.ProcessBundleDescriptor)
 	}

@@ -18,7 +18,6 @@ package textio
 
 import (
 	"bufio"
-	"fmt"
 	"io"
 	"iter"
 	"maps"
@@ -293,7 +292,7 @@ func (w *writeFilesFn) ProcessBundle(dfc *beam.DFC[beam.KV[beam.KV[string, strin
 	ctx := dfc.Context()
 	return dfc.Process(func(ec beam.ElmC, e beam.KV[beam.KV[string, string], beam.Iter[string]]) error {
 		k := e.Key
-		fmt.Println(ctx, "textio.Write", "opening", k.Key+"/"+k.Value)
+		dfc.Logger().InfoContext(ctx, "textio.Write", "opening", k.Key+"/"+k.Value)
 		bucket, err := blob.OpenBucket(ctx, k.Key)
 		if err != nil {
 			return err
@@ -305,9 +304,6 @@ func (w *writeFilesFn) ProcessBundle(dfc *beam.DFC[beam.KV[beam.KV[string, strin
 			return err
 		}
 		buf := bufio.NewWriterSize(fd, 1<<20) // use 1MB buffer
-
-		fmt.Println(ctx, "textio.Write", "file", k.Key+"/"+k.Value)
-
 		for line := range e.Value.All() {
 			if _, err := buf.WriteString(line); err != nil {
 				return err

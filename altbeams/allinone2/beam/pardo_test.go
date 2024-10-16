@@ -207,7 +207,7 @@ func (simpleFac) Produce(e int) beam.OffsetRange {
 }
 
 func TestSplittableDoFn(t *testing.T) {
-	pr, err := beam.Run(context.TODO(), func(s *beam.Scope) error {
+	pr, err := beam.LaunchAndWait(context.TODO(), func(s *beam.Scope) error {
 		imp := beam.Impulse(s)
 		src := beam.ParDo(s, imp, &beam.SourceFn{Count: 10})
 		keyedSrc := beam.ParDo(s, src.Output, &countingSplitterFn{})

@@ -185,7 +185,7 @@ func (c *DFC[E]) start(ctx context.Context) error {
 	}
 	c.metrics.setState(0, c.edgeID)
 	if err := c.dofn.ProcessBundle(c); err != nil {
-		return nil
+		return err
 	}
 	for _, proc := range c.downstream {
 		if err := proc.start(ctx); err != nil {

@@ -23,7 +23,7 @@ import (
 )
 
 func TestRead(t *testing.T) {
-	_, err := beam.Run(context.Background(), func(*beam.Scope) error {
+	_, err := beam.LaunchAndWait(context.Background(), func(*beam.Scope) error {
 
 		return nil
 	})

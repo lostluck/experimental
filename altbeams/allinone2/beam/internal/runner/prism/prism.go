@@ -158,6 +158,8 @@ func Start(ctx context.Context, opts Options) (func(), error) {
 	}
 
 	cmd := exec.Command(bin, "--idle_shutdown_timeout=10s")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("couldn't start command %q: %w", bin, err)
 	}

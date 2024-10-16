@@ -27,7 +27,7 @@ func (fn *countFn[E]) ProcessBundle(dfc *beam.DFC[E]) error {
 }
 
 func TestLightweight(t *testing.T) {
-	p, err := beam.Run(context.TODO(), func(s *beam.Scope) error {
+	p, err := beam.LaunchAndWait(context.TODO(), func(s *beam.Scope) error {
 		imp := beam.Impulse(s)
 		wantWord := "squeamish_ossiphrage"
 		out1 := beam.Map(s, imp, func([]byte) string { return wantWord })

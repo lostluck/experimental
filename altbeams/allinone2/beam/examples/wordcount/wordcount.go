@@ -33,6 +33,7 @@ import (
 var (
 	wordRE          = regexp.MustCompile(`[a-zA-Z]+('[a-z])?`)
 	smallWordLength = flag.Int("small_word_length", 9, "length of small words (default: 9)")
+	// TODO: Add helper for parsing paths into buckets and files.
 )
 
 func wordcountPipeline() func(s *beam.Scope) error {
@@ -113,17 +114,10 @@ func CountWords(s *beam.Scope, lines beam.Output[string], smallWordLength int) b
 }
 
 func main() {
-	flag.Parse()
-
-	fmt.Println("starting wordcount")
-	pr, err := beam.Run(context.Background(), wordcountPipeline(), beam.Name("wordcount"))
+	pr, err := beam.LaunchAndWait(context.Background(), wordcountPipeline(), beam.Name("wordcount"))
 	if err != nil {
-		panic(err)
+		fmt.Println("error", err)
 	}
-	// TODO add waiting behavior.
-	// if err := pr.Wait(); err != nil {
-	// 	panic(err)
-	// }
+	// TODO: Improve Metrics experience.
 	fmt.Println(pr.Counters)
-	fmt.Println("ended wordcount")
 }

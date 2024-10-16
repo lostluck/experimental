@@ -97,7 +97,7 @@ func (emt *Output[E]) Emit(ec ElmC, elm E) {
 	dfc := proc.(*DFC[E])
 	dfc.metrics.setState(1, dfc.edgeID) // Set current sampling state.
 	if err := dfc.perElm(ElmC{ec.elmContext, dfc.downstream}, elm); err != nil {
-		panic(fmt.Errorf("doFn id %v failed: %w", dfc.id, err))
+		panic(fmt.Errorf("doFn id %v %T failed: %w", dfc.id, dfc.dofn, err))
 	}
 }
 

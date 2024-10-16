@@ -548,7 +548,7 @@ func TestSeparation(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			pr, err := Run(context.Background(), test.pipeline, pipeName(t))
+			pr, err := LaunchAndWait(context.Background(), test.pipeline, pipeName(t))
 			if err != nil {
 				t.Error(err)
 			}
