@@ -68,12 +68,12 @@ func MatchEmptyDisallow() MatchOptionFn {
 }
 
 type matchFiles struct {
-	Input beam.Output[beam.KV[string, string]]
+	Input beam.PCol[beam.KV[string, string]]
 
 	Options []MatchOptionFn
 }
 
-func (mf *matchFiles) Expand(s *beam.Scope) beam.Output[BlobMetadata] {
+func (mf *matchFiles) Expand(s *beam.Scope) beam.PCol[BlobMetadata] {
 	option := &matchOption{
 		EmptyTreatment: emptyAllowIfWildcard,
 	}
@@ -89,7 +89,7 @@ func (mf *matchFiles) Expand(s *beam.Scope) beam.Output[BlobMetadata] {
 // the matching files. MatchFiles accepts a variadic number of MatchOptionFn that can be used to
 // configure the treatment of empty matches. By default, empty matches are allowed if the pattern
 // contains a wildcard.
-func MatchFiles(s *beam.Scope, bucket, glob string, opts ...MatchOptionFn) beam.Output[BlobMetadata] {
+func MatchFiles(s *beam.Scope, bucket, glob string, opts ...MatchOptionFn) beam.PCol[BlobMetadata] {
 	scheme := glob
 	// TODO allow overriding URLMux here.
 	blob.DefaultURLMux().ValidBucketScheme(scheme)
@@ -104,7 +104,7 @@ func MatchFiles(s *beam.Scope, bucket, glob string, opts ...MatchOptionFn) beam.
 // returns a beam.Output[BlobMetadata] of the matching files. MatchAll accepts a variadic number of
 // MatchOptionFn that can be used to configure the treatment of empty matches. By default, empty
 // matches are allowed if the pattern contains a wildcard.
-func MatchAll(s *beam.Scope, col beam.Output[beam.KV[string, string]], opts ...MatchOptionFn) beam.Output[BlobMetadata] {
+func MatchAll(s *beam.Scope, col beam.PCol[beam.KV[string, string]], opts ...MatchOptionFn) beam.PCol[BlobMetadata] {
 	return beam.Expand(s, "blobio.MatchAll", &matchFiles{
 		Input:   col,
 		Options: opts,
@@ -114,7 +114,7 @@ func MatchAll(s *beam.Scope, col beam.Output[beam.KV[string, string]], opts ...M
 type matchFn struct {
 	EmptyTreatment emptyTreatment
 
-	Blobs beam.Output[BlobMetadata]
+	Blobs beam.PCol[BlobMetadata]
 }
 
 func newMatchFn(option *matchOption) *matchFn {

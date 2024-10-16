@@ -441,7 +441,7 @@ func (fn *sepHarnessBase[E]) delay() bool {
 type sepHarness[E comparable] struct {
 	Base sepHarnessBase[E]
 
-	Output Output[E]
+	Output PCol[E]
 }
 
 func (fn *sepHarness[E]) ProcessBundle(dfc *DFC[E]) error {
@@ -464,7 +464,7 @@ type sepHarnessSDF struct {
 	BoundedSDF[simpleFac, int, *ORTracker, OffsetRange, int64, bool]
 	Base sepHarnessBase[int]
 
-	Output Output[int]
+	Output PCol[int]
 }
 
 type simpleFac struct{}

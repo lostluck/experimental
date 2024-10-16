@@ -15,7 +15,7 @@ import (
 
 type SourceFn struct {
 	Count  int
-	Output Output[int]
+	Output PCol[int]
 }
 
 func (fn *SourceFn) ProcessBundle(dfc *DFC[[]byte]) error {
@@ -50,7 +50,7 @@ func (fn *DiscardFn[E]) ProcessBundle(dfc *DFC[E]) error {
 }
 
 type IdenFn[E Element] struct {
-	Output Output[E]
+	Output PCol[E]
 
 	BundleStarts CounterInt64
 }
@@ -161,7 +161,7 @@ func BenchmarkPipe(b *testing.B) {
 }
 
 type ModPartition[V constraints.Integer] struct {
-	Outputs []Output[V] // The count needs to be properly serialized, ultimately.
+	Outputs []PCol[V] // The count needs to be properly serialized, ultimately.
 }
 
 func (fn *ModPartition[V]) ProcessBundle(dfc *DFC[V]) error {
@@ -177,13 +177,13 @@ func (fn *ModPartition[V]) ProcessBundle(dfc *DFC[V]) error {
 type WideNarrow struct {
 	Wide int
 
-	In Output[int]
+	In PCol[int]
 }
 
-var _ Composite[struct{ Out Output[int] }] = ((*WideNarrow)(nil))
+var _ Composite[struct{ Out PCol[int] }] = ((*WideNarrow)(nil))
 
-func (src *WideNarrow) Expand(s *Scope) (out struct{ Out Output[int] }) {
-	partition := ParDo(s, src.In, &ModPartition[int]{Outputs: make([]Output[int], src.Wide)})
+func (src *WideNarrow) Expand(s *Scope) (out struct{ Out PCol[int] }) {
+	partition := ParDo(s, src.In, &ModPartition[int]{Outputs: make([]PCol[int], src.Wide)})
 	out.Out = Flatten(s, partition.Outputs...)
 	return out
 }
@@ -248,7 +248,7 @@ func BenchmarkPartitionPipe(b *testing.B) {
 type KeyMod[V constraints.Integer] struct {
 	Mod V
 
-	Output Output[KV[V, V]]
+	Output PCol[KV[V, V]]
 }
 
 func (fn *KeyMod[V]) ProcessBundle(dfc *DFC[V]) error {
@@ -264,7 +264,7 @@ func (fn *KeyMod[V]) ProcessBundle(dfc *DFC[V]) error {
 }
 
 type SumByKey[K Keys, V constraints.Integer | constraints.Float] struct {
-	Output Output[KV[K, V]]
+	Output PCol[KV[K, V]]
 }
 
 func (fn *SumByKey[K, V]) ProcessBundle(dfc *DFC[KV[K, Iter[V]]]) error {
@@ -283,7 +283,7 @@ func (fn *SumByKey[K, V]) ProcessBundle(dfc *DFC[KV[K, Iter[V]]]) error {
 type GroupKeyModSum[V constraints.Integer] struct {
 	Mod V
 
-	Output Output[KV[V, V]]
+	Output PCol[KV[V, V]]
 
 	OnBundleFinish
 }

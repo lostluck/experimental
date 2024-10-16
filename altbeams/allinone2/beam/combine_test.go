@@ -50,7 +50,7 @@ func (SumFn[E]) MergeAccumulators(a E, b E) E {
 }
 
 type AddFixedKeyFn[E Element] struct {
-	Output Output[KV[int, E]]
+	Output PCol[KV[int, E]]
 }
 
 func (fn *AddFixedKeyFn[E]) ProcessBundle(dfc *DFC[E]) error {

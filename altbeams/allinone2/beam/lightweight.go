@@ -10,7 +10,7 @@ type mapper[I, O Element] struct {
 	fn  func(I) O
 	Key string
 
-	Output Output[O]
+	Output PCol[O]
 }
 
 func (fn *mapper[I, O]) ProcessBundle(dfc *DFC[I]) error {
@@ -26,7 +26,7 @@ func (fn *mapper[I, O]) lightweightInit(metadata map[string]any) {
 	fn.fn = metadata[fn.Key].(func(I) O)
 }
 
-func Map[I, O Element](s *Scope, input Output[I], lambda func(I) O, opts ...beamopts.Options) Output[O] {
+func Map[I, O Element](s *Scope, input PCol[I], lambda func(I) O, opts ...beamopts.Options) PCol[O] {
 	ei := s.g.curEdgeIndex()
 	// Store the transform in the metadata
 	// with an index specific key.

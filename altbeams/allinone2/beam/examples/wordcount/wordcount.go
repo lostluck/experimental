@@ -59,7 +59,7 @@ type extractFn struct {
 	LineLen    beam.DistributionInt64
 	EmptyLines beam.CounterInt64
 
-	Words beam.Output[string]
+	Words beam.PCol[string]
 }
 
 func (fn *extractFn) ProcessBundle(dfc *beam.DFC[string]) error {
@@ -82,12 +82,12 @@ func (fn *extractFn) ProcessBundle(dfc *beam.DFC[string]) error {
 }
 
 type countWords struct {
-	Lines beam.Output[string]
+	Lines beam.PCol[string]
 
 	SmallWordLength int
 }
 
-func (cw *countWords) Expand(s *beam.Scope) beam.Output[beam.KV[string, int]] {
+func (cw *countWords) Expand(s *beam.Scope) beam.PCol[beam.KV[string, int]] {
 	extract := beam.ParDo(s, cw.Lines, &extractFn{
 		SmallWordLength: cw.SmallWordLength,
 	}, beam.Name("extract"))
@@ -106,7 +106,7 @@ func (sum[A]) MergeAccumulators(a A, b A) A {
 	return a + b
 }
 
-func CountWords(s *beam.Scope, lines beam.Output[string], smallWordLength int) beam.Output[beam.KV[string, int]] {
+func CountWords(s *beam.Scope, lines beam.PCol[string], smallWordLength int) beam.PCol[beam.KV[string, int]] {
 	return beam.Expand(s, "CountWords", &countWords{
 		Lines:           lines,
 		SmallWordLength: smallWordLength,

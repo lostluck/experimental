@@ -168,7 +168,7 @@ func splitHelper(
 
 type pairWithRestriction[FAC RestrictionFactory[O, R, P], O Element, R Restriction[P], P, WES any] struct {
 	Factory FAC
-	Output  Output[KV[O, KV[R, WES]]]
+	Output  PCol[KV[O, KV[R, WES]]]
 }
 
 func (fn *pairWithRestriction[FAC, O, R, P, WES]) ProcessBundle(dfc *DFC[O]) error {
@@ -231,7 +231,7 @@ type RestrictionFactory[O Element, R Restriction[P], P any] interface {
 
 type splitAndSizeRestrictions[FAC RestrictionFactory[O, R, P], O Element, R Restriction[P], P, WES any] struct {
 	Factory FAC
-	Output  Output[KV[KV[O, KV[R, WES]], float64]]
+	Output  PCol[KV[KV[O, KV[R, WES]], float64]]
 }
 
 func (fn *splitAndSizeRestrictions[FAC, O, R, P, WES]) ProcessBundle(dfc *DFC[KV[O, KV[R, WES]]]) error {

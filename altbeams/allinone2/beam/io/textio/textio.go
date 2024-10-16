@@ -64,7 +64,7 @@ func ReadUncompressed() ReadOptionFn {
 // the lines as a PCollection<string>. The newlines are not part of the lines.
 // Read accepts a variadic number of ReadOptionFn that can be used to configure the compression
 // type of the file. By default, the compression type is determined by the file extension.
-func Read(s *beam.Scope, bucket, glob string, opts ...ReadOptionFn) beam.Output[string] {
+func Read(s *beam.Scope, bucket, glob string, opts ...ReadOptionFn) beam.PCol[string] {
 	// s = s.Scope("textio.Read")
 
 	// filesystem.ValidateScheme(glob)
@@ -76,7 +76,7 @@ func Read(s *beam.Scope, bucket, glob string, opts ...ReadOptionFn) beam.Output[
 // PCollection<string>. The newlines are not part of the lines.
 // ReadAll accepts a variadic number of ReadOptionFn that can be used to configure the compression
 // type of the files. By default, the compression type is determined by the file extension.
-func ReadAll(s *beam.Scope, col beam.Output[beam.KV[string, string]], opts ...ReadOptionFn) beam.Output[string] {
+func ReadAll(s *beam.Scope, col beam.PCol[beam.KV[string, string]], opts ...ReadOptionFn) beam.PCol[string] {
 	// s = s.Scope("textio.ReadAll")
 	return read(s, &readFn{}, col, opts...).Lines
 }
@@ -85,7 +85,7 @@ func ReadAll(s *beam.Scope, col beam.Output[beam.KV[string, string]], opts ...Re
 // a PCollection<KV<string, string>> of each filename and line. The newlines are not part of the lines.
 // ReadWithFilename accepts a variadic number of ReadOptionFn that can be used to configure the compression
 // type of the files. By default, the compression type is determined by the file extension.
-func ReadWithFilename(s *beam.Scope, bucket, glob string, opts ...ReadOptionFn) beam.Output[beam.KV[string, string]] {
+func ReadWithFilename(s *beam.Scope, bucket, glob string, opts ...ReadOptionFn) beam.PCol[beam.KV[string, string]] {
 	//s = s.Scope("textio.ReadWithFilename")
 
 	// filesystem.ValidateScheme(glob)
@@ -94,7 +94,7 @@ func ReadWithFilename(s *beam.Scope, bucket, glob string, opts ...ReadOptionFn) 
 
 // read takes a PCollection of globs, finds all matching files, and applies
 // the given DoFn on the files.
-func read[T beam.Transform[blobio.ReadableBlob]](s *beam.Scope, dofn T, col beam.Output[beam.KV[string, string]], opts ...ReadOptionFn) T {
+func read[T beam.Transform[blobio.ReadableBlob]](s *beam.Scope, dofn T, col beam.PCol[beam.KV[string, string]], opts ...ReadOptionFn) T {
 	option := &readOption{}
 	for _, opt := range opts {
 		opt(option)
@@ -112,7 +112,7 @@ type consumer interface {
 
 // emitter emits a string element.
 type emitter struct {
-	Emit beam.Output[string]
+	Emit beam.PCol[string]
 }
 
 func (e *emitter) Consume(_ blobio.ReadableBlob, ec beam.ElmC, value string) {
@@ -122,7 +122,7 @@ func (e *emitter) Consume(_ blobio.ReadableBlob, ec beam.ElmC, value string) {
 // kvEmitter emits a KV<string, string> element.
 type kvEmitter struct {
 	Key  string
-	Emit beam.Output[beam.KV[string, string]]
+	Emit beam.PCol[beam.KV[string, string]]
 }
 
 func (e *kvEmitter) Consume(b blobio.ReadableBlob, ec beam.ElmC, value string) {
@@ -246,7 +246,7 @@ type readBaseFn = beam.BoundedSDF[restFac, blobio.ReadableBlob, *beam.ORTracker,
 type readFn struct {
 	beam.BoundedSDF[restFac, blobio.ReadableBlob, *beam.ORTracker, beam.OffsetRange, int64, bool]
 
-	Lines beam.Output[string]
+	Lines beam.PCol[string]
 }
 
 func (fn *readFn) ProcessBundle(dfc *beam.DFC[blobio.ReadableBlob]) error {
@@ -258,7 +258,7 @@ func (fn *readFn) ProcessBundle(dfc *beam.DFC[blobio.ReadableBlob]) error {
 type readWNameFn struct {
 	beam.BoundedSDF[restFac, blobio.ReadableBlob, *beam.ORTracker, beam.OffsetRange, int64, bool]
 
-	Lines beam.Output[beam.KV[string, string]]
+	Lines beam.PCol[beam.KV[string, string]]
 }
 
 func (fn *readWNameFn) ProcessBundle(dfc *beam.DFC[blobio.ReadableBlob]) error {
@@ -271,7 +271,7 @@ func (fn *readWNameFn) ProcessBundle(dfc *beam.DFC[blobio.ReadableBlob]) error {
 // Intended for very small scale writes, as it doesn't shard large files.
 //
 // Emits written files.
-func WriteSingle(s *beam.Scope, bucket, filename string, col beam.Output[string]) beam.Output[string] {
+func WriteSingle(s *beam.Scope, bucket, filename string, col beam.PCol[string]) beam.PCol[string] {
 	// s = s.Scope("textio.Write")
 
 	// TODO: enable urlmux override.
@@ -285,7 +285,7 @@ func WriteSingle(s *beam.Scope, bucket, filename string, col beam.Output[string]
 }
 
 type writeFilesFn struct {
-	WrittenPaths beam.Output[string]
+	WrittenPaths beam.PCol[string]
 }
 
 func (w *writeFilesFn) ProcessBundle(dfc *beam.DFC[beam.KV[beam.KV[string, string], beam.Iter[string]]]) error {
@@ -326,14 +326,14 @@ func (w *writeFilesFn) ProcessBundle(dfc *beam.DFC[beam.KV[beam.KV[string, strin
 
 // Immediate reads a local file at pipeline construction-time and embeds the
 // data into a I/O-free pipeline source. Should be used for small files only.
-func Immediate(s *beam.Scope, filename string) (beam.Output[string], error) {
+func Immediate(s *beam.Scope, filename string) (beam.PCol[string], error) {
 	// s = s.Scope("textio.Immediate")
 
 	var data []string
 
 	file, err := os.Open(filename)
 	if err != nil {
-		return beam.Output[string]{}, err
+		return beam.PCol[string]{}, err
 	}
 	defer file.Close()
 
@@ -342,7 +342,7 @@ func Immediate(s *beam.Scope, filename string) (beam.Output[string], error) {
 		data = append(data, scanner.Text())
 	}
 	if err := scanner.Err(); err != nil {
-		return beam.Output[string]{}, err
+		return beam.PCol[string]{}, err
 	}
 	return beam.Create(s, data...), nil
 }

@@ -76,12 +76,12 @@ func FullCombine[A, I, O Element, C FullCombiner[A, I, O]](c C) Combiner[A, I, O
 // We can't simply make these methods on Combiner because PerKey needs an additional
 // type for the key. It would be awkward to just have Globally as a method.
 
-func CombinePerKey[K Keys, A, I, O Element, AM AccumulatorMerger[A]](s *Scope, input Output[KV[K, I]], comb Combiner[A, I, O, AM]) Output[KV[K, O]] {
+func CombinePerKey[K Keys, A, I, O Element, AM AccumulatorMerger[A]](s *Scope, input PCol[KV[K, I]], comb Combiner[A, I, O, AM]) PCol[KV[K, O]] {
 	edgeID := s.g.curEdgeIndex()
 	nodeID := s.g.curNodeIndex()
 	s.g.edges = append(s.g.edges, &edgeCombine{index: edgeID, input: input.globalIndex, output: nodeID, comb: &hiddenKeyedCombiner[K, A, I, O, AM]{Merger: comb.am}})
 	s.g.nodes = append(s.g.nodes, &typedNode[KV[K, O]]{index: nodeID, parentEdge: edgeID})
-	return Output[KV[K, O]]{globalIndex: nodeID}
+	return PCol[KV[K, O]]{globalIndex: nodeID}
 }
 
 // edgeCombine represents a combine transform.
@@ -162,7 +162,7 @@ type liftedAddingCombine[K Keys, I, A Element] struct {
 	Merger AccumulatorMerger[A]
 
 	// TODO implement and use WindowObserver
-	Output Output[KV[K, A]]
+	Output PCol[KV[K, A]]
 	OnBundleFinish
 	ObserveWindow
 }
@@ -231,7 +231,7 @@ type liftedMergedCombine[K Keys, A Element] struct {
 	Merger AccumulatorMerger[A]
 
 	// TODO implement and use WindowObserver
-	Output Output[KV[K, A]]
+	Output PCol[KV[K, A]]
 	OnBundleFinish
 	ObserveWindow
 }
@@ -293,7 +293,7 @@ func (fn *liftedMergedCombine[K, A]) ProcessBundle(dfc *DFC[KV[K, A]]) error {
 type mergingKeyedCombine[K Keys, A Element] struct {
 	Merger AccumulatorMerger[A]
 
-	Output Output[KV[K, A]]
+	Output PCol[KV[K, A]]
 }
 
 func (fn *mergingKeyedCombine[K, A]) ProcessBundle(dfc *DFC[KV[K, Iter[A]]]) error {
@@ -322,7 +322,7 @@ type outputExtractingKeyedCombine[K Keys, A, O Element] struct {
 	Merger AccumulatorMerger[A]
 
 	// TODO implement and use WindowObserver
-	Output Output[KV[K, O]]
+	Output PCol[KV[K, O]]
 	OnBundleFinish
 }
 
@@ -339,7 +339,7 @@ func (fn *outputExtractingKeyedCombine[K, A, O]) ProcessBundle(dfc *DFC[KV[K, A]
 }
 
 type identityFn[E Element] struct {
-	Output Output[E]
+	Output PCol[E]
 }
 
 func (fn *identityFn[E]) ProcessBundle(dfc *DFC[E]) error {

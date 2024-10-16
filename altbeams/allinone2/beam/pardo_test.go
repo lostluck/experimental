@@ -12,7 +12,7 @@ import (
 )
 
 // convenience function to allow the discard type to be inferred.
-func namedDiscard[E beam.Element](s *beam.Scope, input beam.Output[E], name string) {
+func namedDiscard[E beam.Element](s *beam.Scope, input beam.PCol[E], name string) {
 	beam.ParDo(s, input, &beam.DiscardFn[E]{}, beam.Name(name))
 }
 
@@ -171,7 +171,7 @@ var (
 type countingSplitterFn struct {
 	beam.BoundedSDF[simpleFac, int, *beam.ORTracker, beam.OffsetRange, int64, bool]
 
-	Output beam.Output[beam.KV[int, int64]]
+	Output beam.PCol[beam.KV[int, int64]]
 }
 
 func (fn *countingSplitterFn) ProcessBundle(dfc *beam.DFC[int]) error {

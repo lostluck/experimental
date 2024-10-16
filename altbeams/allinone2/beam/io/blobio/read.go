@@ -82,7 +82,7 @@ func ReadDirectoryDisallow() ReadOptionFn {
 // ReadMatches accepts a variadic number of ReadOptionFn that can be used to configure the
 // compression type of the blobs and treatment of directories. By default, the compression type is
 // determined by the blob extension and directories are skipped.
-func ReadMatches(s *beam.Scope, col beam.Output[BlobMetadata], opts ...ReadOptionFn) beam.Output[ReadableBlob] {
+func ReadMatches(s *beam.Scope, col beam.PCol[BlobMetadata], opts ...ReadOptionFn) beam.PCol[ReadableBlob] {
 	option := &readOption{
 		Compression:        compressionAuto,
 		DirectoryTreatment: directorySkip,
@@ -99,7 +99,7 @@ type readFn struct {
 	Compression        compressionType
 	DirectoryTreatment directoryTreatment
 
-	Output beam.Output[ReadableBlob]
+	Output beam.PCol[ReadableBlob]
 }
 
 func newReadFn(option *readOption) *readFn {

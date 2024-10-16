@@ -21,7 +21,7 @@ package beam
 type createFn[E Element] struct {
 	Values []E
 
-	Out Output[E]
+	Out PCol[E]
 }
 
 func (fn *createFn[E]) ProcessBundle(dfc *DFC[[]byte]) error {
@@ -43,7 +43,7 @@ func newCreateFn[E Element](values ...E) *createFn[E] {
 //
 // Values in create are serialzied as part of the Beam Pipeline graph, so it is
 // not suitable for large elements, or large numbers of elements.
-func Create[E Element](s *Scope, values ...E) Output[E] {
+func Create[E Element](s *Scope, values ...E) PCol[E] {
 	return ParDo(
 		s,
 		Impulse(s),

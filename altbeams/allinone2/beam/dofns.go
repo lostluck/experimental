@@ -21,14 +21,17 @@ type bypassInterface interface {
 	beamBypass()
 }
 
-// Output represents an output of a DoFn.
-//
-// At pipeline construction time, they represent an output PCollection, and
-// can be connected as inputs to downstream DoFns.
+// PCol or PCollection represents an a logical collection of elements produced,
+// or consumed by of a DoFn.
 //
 // At pipeline execution time, they are used in a ProcessBundle method to emit
 // elements and pass along per element context, such as the EventTime and Window.
-type Output[E Element] struct {
+//
+// Used as an Exported value field of a DoFn struct, they represent the outputs
+// from the DoFn. After the DoFn is added to the graph, the processed DoFn's 
+// PCol fields are initialized and can be passed around by value, to further
+// build the pipeline graph.
+type PCol[E Element] struct {
 	beamMixin
 
 	valid                bool
@@ -44,9 +47,9 @@ type emitIface interface {
 	newNode(protoID string, global nodeIndex, parent edgeIndex, bounded bool) node
 }
 
-var _ emitIface = (*Output[any])(nil)
+var _ emitIface = (*PCol[any])(nil)
 
-func (emt *Output[E]) setPColKey(global nodeIndex, id int, coder any) *pcollectionMetrics {
+func (emt *PCol[E]) setPColKey(global nodeIndex, id int, coder any) *pcollectionMetrics {
 	emt.valid = true
 	emt.globalIndex = global
 	emt.localDownstreamIndex = id
@@ -57,18 +60,18 @@ func (emt *Output[E]) setPColKey(global nodeIndex, id int, coder any) *pcollecti
 	return emt.mets
 }
 
-func (_ *Output[E]) newDFC(id nodeIndex) processor {
+func (_ *PCol[E]) newDFC(id nodeIndex) processor {
 	return &DFC[E]{id: id}
 }
 
-func (_ *Output[E]) newNode(protoID string, global nodeIndex, parent edgeIndex, bounded bool) node {
+func (_ *PCol[E]) newNode(protoID string, global nodeIndex, parent edgeIndex, bounded bool) node {
 	return &typedNode[E]{id: protoID, index: global, parentEdge: parent, isBounded: bounded}
 }
 
 // Emit the element within the current element's context.
 //
 // The ElmC value is sourced from the [DFC.Process] method.
-func (emt *Output[E]) Emit(ec ElmC, elm E) {
+func (emt *PCol[E]) Emit(ec ElmC, elm E) {
 	// IMPLEMENTATION NOTES:
 	// Emit is complicated due to manually inlining PCollection metrics gathering,
 	// and calling the downstream processElement function directly.

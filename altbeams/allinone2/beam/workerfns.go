@@ -12,7 +12,7 @@ package beam
 // multiple downstream Transforms. The same element is emitted to each
 // consuming emitter in order.
 type multiplex[E Element] struct {
-	Outs []Output[E]
+	Outs []PCol[E]
 }
 
 func (fn *multiplex[E]) ProcessBundle(dfc *DFC[E]) error {

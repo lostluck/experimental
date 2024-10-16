@@ -91,7 +91,7 @@ func iterClosure[E Element](r harness.NextBuffer) iter.Seq[E] {
 	}
 }
 
-func validateSideInput[E any](emt Output[E]) {
+func validateSideInput[E any](emt PCol[E]) {
 	if !emt.valid {
 		panic("emitter is invalid")
 	}
@@ -103,7 +103,7 @@ func validateSideInput[E any](emt Output[E]) {
 
 // AsSideIter initializes an IterSideInput from a valid upstream Emitter.
 // It allows access to the data of that Emitter's PCollection,
-func AsSideIter[E Element](emt Output[E]) SideInputIter[E] {
+func AsSideIter[E Element](emt PCol[E]) SideInputIter[E] {
 	validateSideInput(emt)
 	return SideInputIter[E]{sideInputCommon: sideInputCommon{valid: true, global: emt.globalIndex}}
 }
@@ -183,7 +183,7 @@ func (si *SideInputMap[K, V]) Keys(ec ElmC) iter.Seq[K] {
 }
 
 // AsSideMap initializes a MapSideInput from a valid upstream Emitter.
-func AsSideMap[K, V Element](emt Output[KV[K, V]]) SideInputMap[K, V] {
+func AsSideMap[K, V Element](emt PCol[KV[K, V]]) SideInputMap[K, V] {
 	validateSideInput(emt)
 	return SideInputMap[K, V]{sideInputCommon: sideInputCommon{valid: true, global: emt.globalIndex}}
 }

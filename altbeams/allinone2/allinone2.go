@@ -20,7 +20,7 @@ import (
 type MyDoFn struct {
 	Name string
 
-	Output beam.Output[string]
+	Output beam.PCol[string]
 	beam.OnBundleFinish
 }
 
@@ -47,7 +47,7 @@ func (fn *MyDoFn) ProcessBundle(dfc *beam.DFC[string]) error {
 type MyIncDoFn struct {
 	Name string
 
-	Output beam.Output[int]
+	Output beam.PCol[int]
 	beam.OnBundleFinish
 }
 
@@ -77,7 +77,7 @@ type SourceFn struct {
 	Name  string
 	Count int
 
-	Output beam.Output[int]
+	Output beam.PCol[int]
 	beam.OnBundleFinish
 }
 

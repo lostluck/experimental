@@ -10,7 +10,7 @@ type Keys interface {
 }
 
 // GBK produces an output PCollection of grouped values.
-func GBK[K Keys, V Element](s *Scope, input Output[KV[K, V]], opts ...Options) Output[KV[K, Iter[V]]] {
+func GBK[K Keys, V Element](s *Scope, input PCol[KV[K, V]], opts ...Options) PCol[KV[K, Iter[V]]] {
 	if s.g.consumers == nil {
 		s.g.consumers = map[nodeIndex][]edgeIndex{}
 	}
@@ -25,7 +25,7 @@ func GBK[K Keys, V Element](s *Scope, input Output[KV[K, V]], opts ...Options) O
 	s.g.edges = append(s.g.edges, &edgeGBK[K, V]{index: edgeID, input: input.globalIndex, output: nodeID, opts: opt})
 	s.g.nodes = append(s.g.nodes, &typedNode[KV[K, Iter[V]]]{index: nodeID, parentEdge: edgeID})
 
-	return Output[KV[K, Iter[V]]]{globalIndex: nodeID}
+	return PCol[KV[K, Iter[V]]]{globalIndex: nodeID}
 }
 
 // EdgeGBK represents a Group By Key transform.
@@ -64,7 +64,7 @@ var _ protoDescMultiEdge = (*edgeGBK[int, int])(nil)
 
 // Reshuffle inserts a fusion break in the pipeline, preventing a
 // producer transform from being fused with the consuming transform.
-func Reshuffle[E Element](s *Scope, input Output[E], opts ...Options) Output[E] {
+func Reshuffle[E Element](s *Scope, input PCol[E], opts ...Options) PCol[E] {
 	if s.g.consumers == nil {
 		s.g.consumers = map[nodeIndex][]edgeIndex{}
 	}
@@ -79,7 +79,7 @@ func Reshuffle[E Element](s *Scope, input Output[E], opts ...Options) Output[E] 
 	s.g.edges = append(s.g.edges, &edgeReshuffle[E]{index: edgeID, input: input.globalIndex, output: nodeID, opts: opt})
 	s.g.nodes = append(s.g.nodes, &typedNode[E]{index: nodeID, parentEdge: edgeID})
 
-	return Output[E]{globalIndex: nodeID}
+	return PCol[E]{globalIndex: nodeID}
 }
 
 // edgeReshuffle represents a
