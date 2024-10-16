@@ -11,6 +11,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"log/slog"
 	"maps"
 	"os"
 	"reflect"
@@ -597,8 +598,8 @@ func executeSubgraph(typeReg map[string]reflect.Type, edgeMeta map[string]any) h
 
 		// 3. Register the metrics handling function for this instruction with the harness.
 		//    * This handles progress and tentative metrics
-		ctrl.RegisterMonitor(dataCon, func() (map[string]*pipepb.MonitoringInfo, map[string][]byte) {
-			mons := mets.MonitoringInfos(newG)
+		ctrl.RegisterMonitor(dataCon, func(logger *slog.Logger) (map[string]*pipepb.MonitoringInfo, map[string][]byte) {
+			mons := mets.MonitoringInfos(logger, newG)
 			pylds := map[string][]byte{}
 			labels := map[string]*pipepb.MonitoringInfo{}
 			for _, mon := range mons {

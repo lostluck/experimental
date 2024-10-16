@@ -184,6 +184,7 @@ func processBundle[C consumer](base readBaseFn, dfc *beam.DFC[blobio.ReadableBlo
 			if err != nil {
 				return err
 			}
+			dfc.Logger().InfoContext(ctx, "textio.Read opening file", "file", rb.Metadata.Bucket+"/"+rb.Metadata.Key)
 
 			rd := bufio.NewReader(rr)
 			initialOffset := int64(0)
@@ -292,7 +293,7 @@ func (w *writeFilesFn) ProcessBundle(dfc *beam.DFC[beam.KV[beam.KV[string, strin
 	ctx := dfc.Context()
 	return dfc.Process(func(ec beam.ElmC, e beam.KV[beam.KV[string, string], beam.Iter[string]]) error {
 		k := e.Key
-		dfc.Logger().InfoContext(ctx, "textio.Write", "opening", k.Key+"/"+k.Value)
+		dfc.Logger().InfoContext(ctx, "textio.Write opening file", "file", k.Key+"/"+k.Value)
 		bucket, err := blob.OpenBucket(ctx, k.Key)
 		if err != nil {
 			return err

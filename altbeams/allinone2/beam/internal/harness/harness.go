@@ -181,7 +181,9 @@ var (
 
 func handleInstruction(ctx context.Context, req *fnpb.InstructionRequest, ctrl *Control, logChan chan *fnpb.LogEntry) *fnpb.InstructionResponse {
 	instID := instructionID(req.GetInstructionId())
-
+	logger := slog.New(newLoggingHandler(logChan, &handlerOptions{
+		InstID: instID,
+	}))
 	switch {
 	// case req.GetRegister() != nil:
 	// 	//	msg := req.GetRegister()
@@ -207,9 +209,6 @@ func handleInstruction(ctx context.Context, req *fnpb.InstructionRequest, ctrl *
 		data := NewScopedDataManager(ctrl.dataMan, instID)
 		state := NewScopedStateManager(ctrl.stateMan, instID)
 
-		logger := slog.New(newLoggingHandler(logChan, &handlerOptions{
-			InstID: instID,
-		}))
 		pbr, err := ctrl.exec(ctx, ctrl, DataContext{Data: data, State: state, bdID: bdID, instID: instID, logger: logger})
 		if err != nil {
 			return fail(ctx, instID, "process bundle failed %v", err)
@@ -219,7 +218,7 @@ func handleInstruction(ctx context.Context, req *fnpb.InstructionRequest, ctrl *
 		mon, ok := ctrl.monitors[instID]
 		ctrl.mu.Unlock()
 		if ok {
-			labels, pylds := mon()
+			labels, pylds := mon(logger)
 
 			labelMu.Lock()
 			maps.Copy(cachedLabels, labels)
@@ -382,7 +381,7 @@ func handleInstruction(ctx context.Context, req *fnpb.InstructionRequest, ctrl *
 			}
 		}
 
-		labels, pylds := mon()
+		labels, pylds := mon(logger)
 
 		labelMu.Lock()
 		maps.Copy(cachedLabels, labels)
@@ -605,7 +604,7 @@ func (ctrl *Control) GetOrLookupPlan(dc DataContext, unmarshal func(pbd *fnpb.Pr
 
 // Monitor is a function that returns any new labels, and the set of payloads
 // being returned to the runner.
-type Monitor func() (map[string]*pipepb.MonitoringInfo, map[string][]byte)
+type Monitor func(*slog.Logger) (map[string]*pipepb.MonitoringInfo, map[string][]byte)
 
 func (ctrl *Control) RegisterMonitor(dc DataContext, monFn Monitor) {
 	ctrl.mu.Lock()

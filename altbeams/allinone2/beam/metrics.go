@@ -3,7 +3,9 @@ package beam
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"math"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -47,7 +49,7 @@ func (ms *metricsStore) initMetric(transform, name string, v any) int {
 	return id
 }
 
-func (ms *metricsStore) MonitoringInfos(g *graph) []*pipepb.MonitoringInfo {
+func (ms *metricsStore) MonitoringInfos(logger *slog.Logger, g *graph) []*pipepb.MonitoringInfo {
 	var mons []*pipepb.MonitoringInfo
 
 	encVarInt := func(v int64) []byte {
@@ -109,16 +111,22 @@ func (ms *metricsStore) MonitoringInfos(g *graph) []*pipepb.MonitoringInfo {
 			enc.Varint(uint64(m.sampleMin))
 			enc.Varint(uint64(m.sampleMax))
 			m.sampleMu.Unlock()
-			sampleMon := &pipepb.MonitoringInfo{
+			mon = &pipepb.MonitoringInfo{
 				Urn:     "beam:metric:sampled_byte_size:v1",
 				Type:    "beam:metrics:distribution_int64:v1",
 				Payload: enc.Data(),
 				Labels:  labels,
 			}
-			mons = append(mons, sampleMon)
-			continue
 		default:
-			// panic(fmt.Sprintf("unknown metric type: %T", m))
+			if i == 0 {
+				// 0 is the uninitialized value so we skip it
+				continue
+			}
+			typ := "<nil>"
+			if m != nil {
+				typ = reflect.TypeOf(m).String()
+			}
+			logger.Warn("unknown metric type in SDK", slog.Int("index", i), slog.String("type", typ), slog.Any("labels", labels))
 		}
 		mons = append(mons, mon)
 	}

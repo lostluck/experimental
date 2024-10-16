@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"iter"
+	"log/slog"
 	"maps"
 	"math"
 	"net"
@@ -12,8 +13,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"golang.org/x/exp/slog"
 )
 
 // TestSplitHelper tests the underlying split logic to confirm that various
