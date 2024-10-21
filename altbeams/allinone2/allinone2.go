@@ -14,7 +14,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/lostluck/experimental/altbeams/allinone2/beam"
+	"lostluck.dev/beam-go"
 )
 
 type MyDoFn struct {
@@ -134,7 +134,7 @@ func (fn *DiscardFn[E]) ProcessBundle(dfc *beam.DFC[E]) error {
 func main() {
 	ctx := context.Background()
 
-	pr, err := beam.Launch(ctx, func(s *beam.Scope) error {
+	pr, err := beam.LaunchAndWait(ctx, func(s *beam.Scope) error {
 		imp := beam.Impulse(s)
 		src := beam.ParDo(s, imp, &SourceFn{
 			Name:  "Source",
