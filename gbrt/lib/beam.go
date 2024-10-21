@@ -160,7 +160,7 @@ func (f *MakeImageFn) ProcessElement(ctx context.Context, _ beam.T, iter func(*P
 		img.Set(f.Width-pc.K.X-1, f.Height-pc.K.Y-1, color.RGBA{uint8(pc.C.X), uint8(pc.C.Y), uint8(pc.C.Z), 255})
 	}
 	if err := writeToFile(ctx, f.Out, img); err != nil {
-		log.Infof(ctx, "ERROR:", err)
+		log.Infof(ctx, "ERROR: %v", err)
 		return false, err
 	}
 	return true, nil
