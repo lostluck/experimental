@@ -39,7 +39,9 @@
 // TODO - I need to model and bounding box specifc areas of the room (ceiling slats specifically)
 // TODO - Fix Bouncing so it doesn't make everything so bright (the only cure might be more samples)
 // TODO - Might need to convert from Path Tracer to Bi-Directional Ray Tracer for iteration purposes
-//     (would be faster?) - but less "authentic".
+//
+//	(would be faster?) - but less "authentic".
+//
 // TODO - Explicit Materials -> colours, reflections, speculars
 // TODO - Additional Lights
 // TODO - Refractive surfaces.
@@ -65,7 +67,8 @@
 // is passed throughout the scene.
 // Ideally this is tossed straight into the shuffle sink.
 // Then the rendering begins.
-//  - number of bounces are just iterations of the DoFn, just passing in the new {Colour,Origin,Ray}
+//   - number of bounces are just iterations of the DoFn, just passing in the new {Colour,Origin,Ray}
+//
 // triple down. The scene is fed in via a side inputs, and remains static. The keys are propagated
 // through each layer.
 // Might keep the bounce loop initially as a single DoFn.
@@ -113,8 +116,6 @@ import (
 	_ "github.com/apache/beam/sdks/v2/go/pkg/beam/runners/dataflow"
 	_ "github.com/apache/beam/sdks/v2/go/pkg/beam/runners/direct"
 	_ "github.com/apache/beam/sdks/v2/go/pkg/beam/runners/universal"
-
-	_ "github.com/lostluck/experimental/local"
 
 	// Be able to write to GCS and local systems.
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/io/filesystem"
